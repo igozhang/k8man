@@ -1,0 +1,49 @@
+﻿[2026-08-15T12:14:40.0620385+08:00] hook invoked
+[2026-08-15T12:14:40.0830241+08:00] no trigger marker; skip
+[2026-08-15T12:14:40.0870230+08:00] hook invoked
+[2026-08-15T12:14:40.1009764+08:00] no trigger marker; skip
+[2026-08-15T12:21:06.3657514+08:00] hook invoked
+[2026-08-15T12:21:06.3757517+08:00] no trigger marker; skip
+[2026-08-15T12:21:06.4207536+08:00] hook invoked
+[2026-08-15T12:21:06.4337508+08:00] no trigger marker; skip
+[2026-08-15T12:21:07.0897650+08:00] hook invoked
+[2026-08-15T12:21:07.0977663+08:00] no trigger marker; skip
+[2026-08-15T12:21:07.0987653+08:00] hook invoked
+[2026-08-15T12:21:07.1077668+08:00] no trigger marker; skip
+[2026-08-15T12:21:16.8018790+08:00] hook invoked
+[2026-08-15T12:21:16.8108961+08:00] no trigger marker; skip
+[2026-08-15T12:21:17.4258783+08:00] hook invoked
+[2026-08-15T12:21:17.4338797+08:00] no trigger marker; skip
+[2026-08-15T12:21:18.2769749+08:00] hook invoked
+[2026-08-15T12:21:18.2839815+08:00] no trigger marker; skip
+[2026-08-15T12:21:19.7261785+08:00] hook invoked
+[2026-08-15T12:21:19.7361547+08:00] no trigger marker; skip
+[2026-08-15T12:21:21.2397420+08:00] hook invoked
+[2026-08-15T12:21:21.2467407+08:00] no trigger marker; skip
+[2026-08-15T12:21:22.6349113+08:00] hook invoked
+[2026-08-15T12:21:22.6429155+08:00] no trigger marker; skip
+[2026-08-15T12:21:24.1910731+08:00] hook invoked
+[2026-08-15T12:21:24.1990858+08:00] no trigger marker; skip
+[2026-08-15T12:21:24.2331035+08:00] hook invoked
+[2026-08-15T12:21:24.2410734+08:00] no trigger marker; skip
+[2026-08-15T12:21:25.6765987+08:00] hook invoked
+[2026-08-15T12:21:25.6846494+08:00] no trigger marker; skip
+[2026-08-15T12:21:27.1233096+08:00] hook invoked
+[2026-08-15T12:21:27.1323153+08:00] no trigger marker; skip
+[2026-08-15T12:21:28.6221749+08:00] hook invoked
+[2026-08-15T12:21:28.6291726+08:00] no trigger marker; skip
+[2026-08-15T12:21:36.2602220+08:00] hook invoked
+[2026-08-15T12:21:36.2672032+08:00] no trigger marker; skip
+[2026-08-15T12:21:45.9510388+08:00] hook invoked (always-run-with-lock)
+[2026-08-15T12:21:45.9666416+08:00] launching _run_build.bat via Start-Process
+[2026-08-15T12:21:46.0312470+08:00] Start-Process returned
+[2026-08-15T12:22:39.6915285+08:00] hook invoked (always-run-with-lock)
+[2026-08-15T12:22:39.7135268+08:00] lock present; skip duplicate
+[2026-08-15T12:22:41.7080091+08:00] hook invoked
+[2026-08-15T12:22:41.7190103+08:00] no trigger marker; skip
+[2026-08-15T12:22:42.0850069+08:00] hook invoked
+[2026-08-15T12:22:42.0940077+08:00] no trigger marker; skip
+[2026-08-15T12:25:08.9403226+08:00] hook invoked
+[2026-08-15T12:25:08.9503071+08:00] no trigger marker; skip
+[2026-08-15T12:25:09.3193235+08:00] hook invoked
+[2026-08-15T12:25:09.3253252+08:00] no trigger marker; skip

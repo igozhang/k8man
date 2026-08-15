@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .cursor/hooks/async-build.ps1",
+        "matcher": "_TRIGGER_BUILD|_run_build\\.bat",
+        "timeout": 30
+      }
+    ]
+  }
+}

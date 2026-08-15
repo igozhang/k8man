@@ -1,0 +1,48 @@
+=== BUILD START 2026-08-15 12:21:46.18 
+WORKTREE=e:\gitee\k8man (main; isolated worktree skipped - shell sandbox) 
+GOPROXY=https://goproxy.cn,direct 
+GOSUMDB=sum.golang.google.cn 
+FIXES=respond package + router ../views paths 
+--- GO BUILD 1 --- 
+GO_BUILD1=success 
+--- NPM INSTALL --- 
+
+up to date, audited 62 packages in 2s
+
+11 packages are looking for funding
+  run `npm fund` for details
+
+2 vulnerabilities (1 moderate, 1 high)
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+NPM_INSTALL_EXIT=0 
+--- NPM BUILD --- 
+
+> k8man-web@0.1.0 build
+> vite build
+
+vite v5.4.21 building for production...
+transforming...
+âœ“ 93 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.41 kB â”‚ gzip:  0.31 kB
+dist/assets/index-n-1Runlj.css    4.86 kB â”‚ gzip:  1.64 kB
+dist/assets/index-BaATYOte.js   204.66 kB â”‚ gzip: 74.16 kB
+âœ“ built in 1.01s
+NPM_BUILD=success 
+web\dist\index.html
+web\dist\assets\index-BaATYOte.js
+web\dist\assets\index-n-1Runlj.css
+¸´ÖÆÁË 3 ¸öÎÄ¼þ
+COPY=success 
+--- GO BUILD 2 --- 
+GO_BUILD2=success 
+k8man.exe exists: True size=64640512 
+KEYFILE=web/dist/index.html 
+KEYFILE=cmd/server/webdist/index.html 
+PIPELINE_DONE 
+=== END 2026-08-15 12:22:36.38 
