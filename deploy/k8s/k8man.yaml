@@ -11,6 +11,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  storageClassName: local-path
   resources:
     requests:
       storage: 1Gi
@@ -24,6 +25,8 @@ metadata:
     app: k8man
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: k8man
@@ -32,10 +35,13 @@ spec:
       labels:
         app: k8man
     spec:
+      # 若节点未配置腾讯云 CCR 拉取凭证，取消注释并创建同名 Secret：
+      # imagePullSecrets:
+      #   - name: tcr-igokorea
       containers:
         - name: k8man
-          image: k8man:0.1.0
-          imagePullPolicy: IfNotPresent
+          image: krccr.ccs.tencentyun.com/igokorea/k8man:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               name: http
@@ -46,6 +52,8 @@ spec:
               value: /data
             - name: K8MAN_DB_PATH
               value: /data/k8man.db
+            - name: TZ
+              value: Asia/Shanghai
           volumeMounts:
             - name: data
               mountPath: /data
@@ -85,3 +93,25 @@ spec:
     - name: http
       port: 80
       targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: k8man
+  namespace: k8man
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "32m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: k8man.sunwoda-evb.co
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: k8man
+                port:
+                  name: http

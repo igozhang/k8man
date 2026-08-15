@@ -40,14 +40,13 @@ npm run build
 # 或：npm run dev  （Vite 代理 /api -> :8080）
 ```
 
-### 容器
+### 容器 / 生产部署
 
-```bash
-docker build -f deploy/Dockerfile -t k8man:0.1.0 .
-kubectl apply -f deploy/k8s/k8man.yaml
-```
+- 镜像仓库：`krccr.ccs.tencentyun.com/igokorea/k8man`
+- 构建机：`VM-4-11-ubuntu`（nerdctl）→ 推送仓库
+- 运行：`zabbix68` 单节点，`k8man` namespace，域名 `k8man.sunwoda-evb.co`
 
-详见 [docs/deploy.md](docs/deploy.md)。
+详见 [docs/deploy.md](docs/deploy.md)（含 build/push/apply 完整步骤）。
 
 ## 导入 kubeconfig
 
