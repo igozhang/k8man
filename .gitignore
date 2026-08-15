@@ -2,6 +2,8 @@ data/
 web/node_modules/
 web/dist/
 *.exe
+k8man
+!cmd/
 *.db
 .DS_Store
 .idea/

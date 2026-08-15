@@ -43,10 +43,10 @@ npm run build
 ### 容器 / 生产部署
 
 - 镜像仓库：`krccr.ccs.tencentyun.com/igokorea/k8man`
-- 构建机：`VM-4-11-ubuntu`（nerdctl）→ 推送仓库
-- 运行：`zabbix68` 单节点，`k8man` namespace，域名 `k8man.sunwoda-evb.co`
+- 构建机：`VM-4-11-ubuntu`（nerdctl，2C2G 限并行 + cache）
+- 运行：`zabbix68`，`k8man` namespace，域名 `k8man.sunwoda-evb.co`
 
-详见 [docs/deploy.md](docs/deploy.md)（含 build/push/apply 完整步骤）。
+步骤见 [docs/deploy.md](docs/deploy.md)（单条 build/push 命令，无脚本）。
 
 ## 导入 kubeconfig
 
