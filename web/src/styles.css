@@ -271,14 +271,28 @@ h1 {
   font-weight: 600;
 }
 .table tr:last-child td { border-bottom: none; }
-/* 表格内操作列：与同行文字垂直对齐，去掉表单用的上边距 */
+/*
+ * 表格操作列：必须保持 table-cell。
+ * .actions 的 display:flex 会让 td 脱离表格布局，剩余宽度全堆到该列，
+ * 再叠加 flex-wrap，按钮就会竖排挤在左边。
+ */
 .table td.actions {
+  display: table-cell;
   width: 1%;
   white-space: nowrap;
   vertical-align: middle;
+  text-align: right;
 }
 .table td.actions .btn {
+  display: inline-flex;
   vertical-align: middle;
+}
+.table td.actions .btn + .btn {
+  margin-left: 6px;
+}
+.table td.res-cell {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .panel {

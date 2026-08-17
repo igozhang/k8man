@@ -2,16 +2,23 @@
 import { ref, watch, onMounted } from 'vue'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
+import { fmtCPU, fmtMemory } from '../utils/quantity'
+import { metricsErrorTip } from '../utils/metrics'
 
 const { currentClusterId } = useClusterStore()
 const namespaces = ref([])
 const ns = ref('')
-/** pods | controllers | services | configmaps */
+/** pods | controllers | services | configmaps | metrics */
 const tab = ref('pods')
 const rows = ref([])
+const podMetrics = ref([])
+const metricsTip = ref('')
 const loading = ref(false)
 const error = ref('')
 const drawer = ref(null) // { title, content }
+let metricsSeq = 0
+let rowsSeq = 0
+
 const yamlEditor = ref({ open: false, kind: '', name: '', yaml: '' })
 const scaleForm = ref({ open: false, kind: 'deployment', name: '', replicas: 1 })
 
@@ -45,10 +52,16 @@ async function loadNamespaces() {
     namespaces.value = []
     ns.value = ''
     rows.value = []
+    podMetrics.value = []
     return
   }
   namespaces.value = await readApi.listNamespaces(currentClusterId.value)
-  if (!ns.value && namespaces.value.length) ns.value = namespaces.value[0].name
+  const names = (namespaces.value || []).map((n) => n.name)
+  if (!names.length) {
+    ns.value = ''
+    return
+  }
+  if (!names.includes(ns.value)) ns.value = names[0]
 }
 
 function mapDeployment(d) {
@@ -113,25 +126,60 @@ async function loadControllers() {
   return list
 }
 
+async function loadPodMetrics() {
+  const seq = ++metricsSeq
+  metricsTip.value = ''
+  podMetrics.value = []
+  if (!currentClusterId.value || !ns.value) return
+  try {
+    const items = (await readApi.podMetrics(currentClusterId.value, ns.value)) || []
+    if (seq !== metricsSeq) return
+    podMetrics.value = items
+  } catch (e) {
+    if (seq !== metricsSeq) return
+    metricsTip.value = metricsErrorTip(e)
+  }
+}
+
 async function loadRows() {
+  const seq = ++rowsSeq
   error.value = ''
   rows.value = []
-  if (!currentClusterId.value || !ns.value) return
+  metricsTip.value = ''
+  if (tab.value !== 'metrics') {
+    metricsSeq++
+    podMetrics.value = []
+  }
+  if (!currentClusterId.value || !ns.value) {
+    if (seq === rowsSeq) loading.value = false
+    return
+  }
   loading.value = true
   try {
-    if (tab.value === 'pods') {
-      rows.value = await readApi.listPods(currentClusterId.value, ns.value)
+    if (tab.value === 'metrics') {
+      await loadPodMetrics()
+    } else if (tab.value === 'pods') {
+      const items = await readApi.listPods(currentClusterId.value, ns.value)
+      if (seq !== rowsSeq) return
+      rows.value = items
     } else if (tab.value === 'controllers') {
-      rows.value = await loadControllers()
+      const items = await loadControllers()
+      if (seq !== rowsSeq) return
+      rows.value = items
     } else if (tab.value === 'configmaps') {
-      rows.value = await readApi.listConfigMaps(currentClusterId.value, ns.value)
-    } else {
-      rows.value = await readApi.listServices(currentClusterId.value, ns.value)
+      const items = await readApi.listConfigMaps(currentClusterId.value, ns.value)
+      if (seq !== rowsSeq) return
+      rows.value = items
+    } else if (tab.value === 'services') {
+      const items = await readApi.listServices(currentClusterId.value, ns.value)
+      if (seq !== rowsSeq) return
+      rows.value = items
     }
   } catch (e) {
+    if (seq !== rowsSeq) return
     error.value = e.message
   } finally {
-    loading.value = false
+    if (seq === rowsSeq) loading.value = false
   }
 }
 
@@ -489,7 +537,7 @@ onMounted(async () => {
   <div>
     <h1>工作负载</h1>
     <p class="page-desc">
-      查看与运维 Pod / 控制器 / Service / ConfigMap；支持常用字段编辑与 YAML。
+      查看与运维 Pod / 控制器 / Service / ConfigMap；支持常用字段编辑与 YAML。Pod 指标仅在选中对应 Tab 时加载。
     </p>
     <div v-if="!currentClusterId" class="empty">请先选择集群。</div>
     <template v-else>
@@ -510,6 +558,11 @@ onMounted(async () => {
             :class="{ active: tab === 'configmaps' }"
             @click="tab = 'configmaps'"
           >ConfigMap</button>
+          <button
+            class="tab"
+            :class="{ active: tab === 'metrics' }"
+            @click="tab = 'metrics'"
+          >Pod 指标</button>
         </div>
       </div>
       <p v-if="error" class="error">{{ error }}</p>
@@ -612,6 +665,26 @@ onMounted(async () => {
           </tbody>
         </table>
         <div v-else-if="!loading" class="empty">该命名空间下暂无 ConfigMap。</div>
+      </template>
+
+      <template v-else-if="tab === 'metrics'">
+        <p v-if="metricsTip" class="muted">{{ metricsTip }}</p>
+        <table v-if="!loading && podMetrics.length" class="table">
+          <thead><tr><th>Pod</th><th>容器</th><th>CPU</th><th>内存</th></tr></thead>
+          <tbody>
+            <template v-for="m in podMetrics" :key="m.metadata?.name">
+              <tr v-for="c in (m.containers || [])" :key="m.metadata.name + c.name">
+                <td>{{ m.metadata?.name }}</td>
+                <td>{{ c.name }}</td>
+                <td>{{ fmtCPU(c.usage?.cpu) }}</td>
+                <td>{{ fmtMemory(c.usage?.memory) }}</td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+        <div v-else-if="!loading" class="empty">
+          {{ metricsTip ? '无法加载 Pod 指标。' : '该命名空间下暂无 Pod 指标数据。' }}
+        </div>
       </template>
     </template>
 

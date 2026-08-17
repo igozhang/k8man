@@ -372,15 +372,30 @@ func (h *Handler) GetYAML(c *gin.Context) {
 }
 
 func (h *Handler) NodeMetrics(c *gin.Context) {
-	clients, ok := h.clients(c)
-	if !ok {
+	cl, err := h.Store.GetCluster(c.Param("id"), true)
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	if cl == nil {
+		respond.NotFound(c, "cluster not found")
+		return
+	}
+	if cl.PermType == "project" {
+		respond.Forbidden(c, "project kubeconfig cannot list node metrics")
+		return
+	}
+	clients, err := h.Pool.Get(cl.ID, cl.Kubeconfig)
+	if err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
 		return
 	}
 	ctx, cancel := h.ctx(c)
 	defer cancel()
 	items, err := clients.NodeMetrics(ctx)
 	if err != nil {
-		respond.Fail(c, http.StatusBadGateway, 502, "metrics unavailable: "+err.Error())
+		st, code, msg := kube.ClassifyMetricsError(err)
+		respond.Fail(c, st, code, msg)
 		return
 	}
 	respond.OK(c, items)
@@ -403,7 +418,8 @@ func (h *Handler) PodMetrics(c *gin.Context) {
 	defer cancel()
 	items, err := clients.PodMetrics(ctx, ns)
 	if err != nil {
-		respond.Fail(c, http.StatusBadGateway, 502, "metrics unavailable: "+err.Error())
+		st, code, msg := kube.ClassifyMetricsError(err)
+		respond.Fail(c, st, code, msg)
 		return
 	}
 	respond.OK(c, items)

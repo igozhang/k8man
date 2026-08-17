@@ -52,7 +52,15 @@
 | GET | `/clusters/:id/metrics/nodes` | 节点指标 |
 | GET | `/clusters/:id/metrics/pods?namespace=` | Pod 指标 |
 
-无 metrics-server 时返回 502，前端降级提示。
+指标接口错误码（前端按码降级提示）：
+
+| code | 含义 |
+|------|------|
+| 403 | 权限不足（含 project 调节点指标） |
+| 404 | 未安装 metrics-server 或指标 API 不可用 |
+| 502 | 其它不可用（超时、连接失败等） |
+
+`project` kubeconfig 调用节点指标返回 403；Pod 指标仍可按命名空间读取（在有权时）。
 
 ### 文档
 

@@ -83,3 +83,36 @@ export function fmtTime(t) {
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
+
+/** metrics-server NodeMetrics / Pod container usage（用量可为 0，不能用 ||） */
+export function metricCPU(m) {
+  const u = m?.usage ?? m?.Usage
+  if (!u) return null
+  const v = u.cpu ?? u.Cpu
+  return v == null || v === '' ? null : v
+}
+export function metricMem(m) {
+  const u = m?.usage ?? m?.Usage
+  if (!u) return null
+  const v = u.memory ?? u.Memory
+  return v == null || v === '' ? null : v
+}
+
+/** 按节点名把 metrics 用量合并进节点列表（以节点列表为准） */
+export function mergeNodeUsage(nodes, metrics) {
+  const byName = new Map()
+  for (const m of metrics || []) {
+    const name = m?.metadata?.name || m?.name
+    if (!name) continue
+    byName.set(name, m)
+  }
+  return (nodes || []).map((n) => {
+    const m = byName.get(n.name)
+    return {
+      ...n,
+      usedCPU: m ? metricCPU(m) : null,
+      usedMemory: m ? metricMem(m) : null,
+      metricsTime: m ? (m.timestamp ?? m.metadata?.creationTimestamp ?? null) : null
+    }
+  })
+}

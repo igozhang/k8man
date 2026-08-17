@@ -3,11 +3,13 @@ package kube
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -471,6 +473,28 @@ func (c *Clients) PodMetrics(ctx context.Context, ns string) (interface{}, error
 		return nil, err
 	}
 	return list.Items, nil
+}
+
+// ClassifyMetricsError maps metrics-server / RBAC failures to stable API codes for UI degradation.
+// Returns httpStatus, business code, user-facing message.
+func ClassifyMetricsError(err error) (int, int, string) {
+	if err == nil {
+		return http.StatusOK, 0, ""
+	}
+	if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+		return http.StatusForbidden, 403, "insufficient permission to read metrics"
+	}
+	if apierrors.IsNotFound(err) {
+		return http.StatusNotFound, 404, "metrics-server not installed or API unavailable"
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "metrics.k8s.io") ||
+		strings.Contains(msg, "the server could not find the requested resource") ||
+		strings.Contains(msg, "no matches for") ||
+		strings.Contains(msg, "could not find the requested resource") {
+		return http.StatusNotFound, 404, "metrics-server not installed or API unavailable"
+	}
+	return http.StatusBadGateway, 502, "metrics unavailable: " + err.Error()
 }
 
 // Ensure discovery works (optional health)
