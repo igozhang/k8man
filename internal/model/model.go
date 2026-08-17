@@ -17,7 +17,7 @@ type Cluster struct {
 }
 
 type ClusterInput struct {
-	Name        string `json:"name" binding:"required"`
+	Name        string `json:"name"` // optional; derived from kubeconfig when empty
 	Description string `json:"description"`
 	Kubeconfig  string `json:"kubeconfig" binding:"required"`
 }

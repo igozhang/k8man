@@ -52,8 +52,15 @@ func (h *Handler) CreateCluster(c *gin.Context) {
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	in.Kubeconfig = strings.TrimSpace(in.Kubeconfig)
-	if in.Name == "" || in.Kubeconfig == "" {
-		respond.BadRequest(c, "name and kubeconfig required")
+	if in.Kubeconfig == "" {
+		respond.BadRequest(c, "kubeconfig required")
+		return
+	}
+	if in.Name == "" {
+		in.Name = kube.SuggestNameFromKubeconfig(in.Kubeconfig)
+	}
+	if in.Name == "" {
+		respond.BadRequest(c, "name required (or provide a kubeconfig with current-context)")
 		return
 	}
 	ctx, cancel := h.ctx(c)
@@ -102,7 +109,12 @@ func (h *Handler) UpdateCluster(c *gin.Context) {
 		return
 	}
 	if in.Name != nil {
-		existing.Name = strings.TrimSpace(*in.Name)
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			respond.BadRequest(c, "name required")
+			return
+		}
+		existing.Name = name
 	}
 	if in.Description != nil {
 		existing.Description = *in.Description

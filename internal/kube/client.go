@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,6 +68,28 @@ func (p *Pool) Get(id, kubeconfigYAML string) (*Clients, error) {
 	p.clients[id] = c
 	p.mu.Unlock()
 	return c, nil
+}
+
+// SuggestNameFromKubeconfig returns current-context, else first context/cluster name.
+func SuggestNameFromKubeconfig(kubeconfigYAML string) string {
+	cfg, err := clientcmd.Load([]byte(kubeconfigYAML))
+	if err != nil {
+		return ""
+	}
+	if name := strings.TrimSpace(cfg.CurrentContext); name != "" {
+		return name
+	}
+	for name := range cfg.Contexts {
+		if name = strings.TrimSpace(name); name != "" {
+			return name
+		}
+	}
+	for name := range cfg.Clusters {
+		if name = strings.TrimSpace(name); name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 func BuildClients(kubeconfigYAML string) (*Clients, error) {
