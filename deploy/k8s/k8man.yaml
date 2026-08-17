@@ -25,8 +25,12 @@ metadata:
     app: k8man
 spec:
   replicas: 1
+  # 先起新再下旧，避免 Recreate 空窗；RWO 需新旧 Pod 同节点（见 affinity）
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: k8man
@@ -36,6 +40,17 @@ spec:
         app: k8man
     spec:
       # Hosts / conf：K8MAN_ETC_DIR=/data/etc（与 DB 同 PVC，重启不丢）
+      # RWO PVC 允许多个 Pod 在同一节点挂载；滚动时优先调度到旧 Pod 所在节点
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: k8man
+                topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 45
       # 若节点未配置腾讯云 CCR 拉取凭证，取消注释并创建同名 Secret：
       # imagePullSecrets:
       #   - name: tcr-igokorea
@@ -61,17 +76,23 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+          lifecycle:
+            preStop:
+              exec:
+                # 给 Ingress/连接一点排空时间，再结束旧 Pod
+                command: ["/bin/sh", "-c", "sleep 8"]
           readinessProbe:
             httpGet:
               path: /api/health
               port: http
-            initialDelaySeconds: 3
-            periodSeconds: 10
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /api/health
               port: http
-            initialDelaySeconds: 10
+            initialDelaySeconds: 15
             periodSeconds: 20
           resources:
             requests:

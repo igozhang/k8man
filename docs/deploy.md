@@ -33,7 +33,8 @@ curl -sS http://k8man.sunwoda-evb.com/api/health
 
 ## 说明
 
-- PVC：`local-path` → `/data`（库文件、`/data/etc/hosts`、`k8man.conf`、banner 均在此，重启不丢）
-- Hosts：文件 `{K8MAN_ETC_DIR}/hosts`，集群部署默认为 `/data/etc/hosts`；格式 `IP hostname`；页面与直接改文件均可，约 2 秒热加载
+- 滚动更新：`RollingUpdate`（`maxUnavailable: 0`），新 Pod Ready 后再下旧 Pod，避免短暂不可访问
+- PVC：`local-path` RWO → `/data`；滚动时依赖同节点挂载（已配置 podAffinity 优先同节点）。若新 Pod 一直 Pending，检查是否被调度到其他节点
+- Hosts：`/data/etc/hosts`；格式 `IP hostname`；页面与直接改文件均可
 - 环境变量：`K8MAN_ADDR` / `K8MAN_DATA_DIR` / `K8MAN_DB_PATH` / `K8MAN_ETC_DIR` / `TZ`
 - 无登录鉴权；保留 PVC 升级
