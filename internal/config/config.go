@@ -41,8 +41,8 @@ title=k8s多集群运维工具
 # | addr      | K8MAN_ADDR       | :8080                   | HTTP 监听 |
 # | data_dir  | K8MAN_DATA_DIR   | ./data                  | 数据目录 |
 # | db_path   | K8MAN_DB_PATH    | <data_dir>/k8man.db     | SQLite 路径，可省略 |
-# | title     | （仅 conf）      | k8s多集群运维工具       | 头部居中标题 |
-# | tagline   | （仅 conf）      | （空）                  | 标题下方副标题，可选 |
+# | title     | （仅 conf）      | k8s多集群运维工具       | 页眉左侧品牌名；兼浏览器标签页标题 |
+# | tagline   | （仅 conf）      | （空）                  | 页眉副标题（品牌名下方），可选 |
 # | banner    | （仅 conf）      | （自动探测）            | etc 下图片文件名 |
 # | hosts     | （文件）         | <etc>/hosts             | 私有解析，格式：IP hostname |
 #

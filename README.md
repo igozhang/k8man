@@ -31,7 +31,7 @@ go run ./cmd/server
 | `K8MAN_DB_PATH` | `$DATA_DIR/k8man.db` | SQLite 路径 |
 | `K8MAN_ETC_DIR` | `./etc` | 配置与可选自有 banner 目录（容器内 `/etc/k8man`） |
 
-`etc/k8man.conf`：头部为生效配置，尾部为说明与示例；缺失或无效时启动自动生成。将自有 `banner.jpg`（或 png/webp/gif）放入 `etc` 即启用头部 banner；无文件则默认浅青面板风格（配色/布局参考同类站点，不使用外部 banner 图）。
+`etc/k8man.conf`：头部为生效配置，尾部为说明与示例；缺失或无效时启动自动生成。`title` / `tagline` 分别为页眉左侧品牌名（兼浏览器标签页标题）与可选副标题。将自有 `banner.jpg`（或 png/webp/gif）放入 `etc` 即启用头部 banner；无文件则默认浅青面板风格（配色/布局参考同类站点，不使用外部 banner 图）。
 
 ### 前端（开发）
 
