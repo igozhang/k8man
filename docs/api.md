@@ -8,6 +8,11 @@
 
 - `GET /api/health`
 
+## UI
+
+- `GET /api/v1/read/ui` — 页面标题、tagline、是否有 banner（读 `etc/k8man.conf`）
+- `GET /banner` — 头部 banner 图片（`etc` 下有图则返回，否则 404）
+
 ## 只读 `/api/v1/read`
 
 ### 集群

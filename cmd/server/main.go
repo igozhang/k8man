@@ -29,7 +29,6 @@ func main() {
 	var webFS fs.FS
 	sub, err := fs.Sub(webEmbed, "webdist")
 	if err == nil {
-		// check index exists
 		if f, err := sub.Open("index.html"); err == nil {
 			_ = f.Close()
 			webFS = sub
@@ -41,9 +40,17 @@ func main() {
 		Pool:    kube.NewPool(),
 		WebFS:   webFS,
 		Version: version,
+		UI: api.UIConfig{
+			EtcDir: cfg.EtcDir,
+		},
 	})
 
-	log.Printf("k8man %s listening on %s (db=%s)", version, cfg.Addr, cfg.DBPath)
+	ui := config.LoadUI(cfg.EtcDir)
+	bannerNote := "default"
+	if ui.BannerPath != "" {
+		bannerNote = ui.BannerPath
+	}
+	log.Printf("k8man %s listening on %s (db=%s etc=%s banner=%s)", version, cfg.Addr, cfg.DBPath, cfg.EtcDir, bannerNote)
 	if err := r.Run(cfg.Addr); err != nil && err != http.ErrServerClosed {
 		log.Println(err)
 		os.Exit(1)

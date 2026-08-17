@@ -1,0 +1,26 @@
+﻿
+> k8man-web@0.1.0 build
+> vite build
+
+vite v5.4.21 building for production...
+transforming...
+鉁?93 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.41 kB 鈹?gzip:  0.32 kB
+dist/assets/index-Z23c8f4y.css    7.07 kB 鈹?gzip:  2.19 kB
+dist/assets/index-cAAz7U6F.js   205.49 kB 鈹?gzip: 74.46 kB
+鉁?built in 1.07s
+npm : npm notice
+所在位置 C:\Users\2602095014\AppData\Local\Temp\ps-script-f7e8d342-e556-46ff-8dea-aef4451681cb.ps1:47 字符: 107
++ ... es)) { npm install --no-audit --no-fund }; npm run build 2>&1 | Out-F ...
++                                                ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (npm notice:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+npm notice New major version of npm available! 10.8.2 -> 12.0.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+npm notice To update run: npm install -g npm@12.0.2
+npm notice
+npm_exit=0
+copied_webdist=1

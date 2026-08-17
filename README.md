@@ -20,15 +20,18 @@ go mod tidy
 go run ./cmd/server
 ```
 
-默认监听 `:8080`，数据库 `./data/k8man.db`。
+默认监听 `:8080`，数据库 `./data/k8man.db`，配置目录 `./etc`。
 
-环境变量：
+环境变量（优先级高于 `etc/k8man.conf`）：
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `K8MAN_ADDR` | `:8080` | 监听地址 |
 | `K8MAN_DATA_DIR` | `./data` | 数据目录 |
 | `K8MAN_DB_PATH` | `$DATA_DIR/k8man.db` | SQLite 路径 |
+| `K8MAN_ETC_DIR` | `./etc` | 配置与可选自有 banner 目录（容器内 `/etc/k8man`） |
+
+`etc/k8man.conf`：头部为生效配置，尾部为说明与示例；缺失或无效时启动自动生成。将自有 `banner.jpg`（或 png/webp/gif）放入 `etc` 即启用头部 banner；无文件则默认浅青面板风格（配色/布局参考同类站点，不使用外部 banner 图）。
 
 ### 前端（开发）
 
@@ -55,7 +58,7 @@ npm run build
 3. 保存后自动探测权限类型：
    - 能 List Node → `cluster`
    - 否则 → `project`（仅其可访问 Namespace）
-4. 右上角选择当前集群后进行运维/监控
+4. 在页面功能区顶部「选择集群」后进行运维/监控
 
 能力边界完全由导入的 kubeconfig 决定。
 
@@ -63,6 +66,7 @@ npm run build
 
 ```
 cmd/server/          入口与嵌入前端
+etc/                 k8man.conf 与可选 banner 图片
 internal/api/read|write  读写 API 分包
 internal/kube        client-go 封装
 internal/store       SQLite

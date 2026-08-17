@@ -52,11 +52,16 @@ spec:
               value: /data
             - name: K8MAN_DB_PATH
               value: /data/k8man.db
+            - name: K8MAN_ETC_DIR
+              value: /etc/k8man
             - name: TZ
               value: Asia/Shanghai
           volumeMounts:
             - name: data
               mountPath: /data
+            # 可选：挂载自定义 etc（含 k8man.conf / banner.jpg）；不挂则用镜像内默认 conf
+            # - name: etc
+            #   mountPath: /etc/k8man
           readinessProbe:
             httpGet:
               path: /api/health

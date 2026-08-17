@@ -1,6 +1,7 @@
 import http from './http'
 
 export const readApi = {
+  getUI: () => http.get('/read/ui'),
   listClusters: () => http.get('/read/clusters'),
   getCluster: (id) => http.get(`/read/clusters/${id}`),
   testCluster: (id) => http.post(`/read/clusters/${id}/test`),

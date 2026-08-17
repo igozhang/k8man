@@ -33,7 +33,10 @@ COPY --from=build /out/k8man /k8man
 ENV K8MAN_ADDR=:8080 \
     K8MAN_DATA_DIR=/data \
     K8MAN_DB_PATH=/data/k8man.db \
+    K8MAN_ETC_DIR=/etc/k8man \
     TZ=Asia/Shanghai
+COPY etc/k8man.conf /etc/k8man/k8man.conf
 EXPOSE 8080
 VOLUME ["/data"]
+# 自定义 banner / conf：docker run -v /host/etc:/etc/k8man
 ENTRYPOINT ["/k8man"]

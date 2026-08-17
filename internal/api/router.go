@@ -9,16 +9,23 @@ import (
 
 	"gitee.com/k8man/internal/api/middleware"
 	"gitee.com/k8man/internal/api/read"
+	"gitee.com/k8man/internal/api/respond"
 	"gitee.com/k8man/internal/api/write"
+	"gitee.com/k8man/internal/config"
 	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/store"
 )
 
+type UIConfig struct {
+	EtcDir string
+}
+
 type Deps struct {
-	Store    *store.Store
-	Pool     *kube.Pool
-	WebFS    fs.FS // optional embedded web/dist
-	Version  string
+	Store   *store.Store
+	Pool    *kube.Pool
+	WebFS   fs.FS // optional embedded web/dist
+	Version string
+	UI      UIConfig
 }
 
 func NewRouter(d Deps) *gin.Engine {
@@ -30,6 +37,27 @@ func NewRouter(d Deps) *gin.Engine {
 
 	r.GET("/api/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "version": d.Version})
+	})
+
+	r.GET("/api/v1/read/ui", func(c *gin.Context) {
+		ui := config.LoadUI(d.UI.EtcDir)
+		respond.OK(c, gin.H{
+			"title":     ui.Title,
+			"tagline":   ui.Tagline,
+			"hasBanner": ui.BannerPath != "",
+			"bannerUrl": "/banner",
+			"version":   d.Version,
+		})
+	})
+
+	r.GET("/banner", func(c *gin.Context) {
+		ui := config.LoadUI(d.UI.EtcDir)
+		if ui.BannerPath == "" {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		c.Header("Cache-Control", "public, max-age=30")
+		c.File(ui.BannerPath)
 	})
 
 	readGroup := r.Group("/api/v1/read")
@@ -73,7 +101,6 @@ func NewRouter(d Deps) *gin.Engine {
 				c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "not found"})
 				return
 			}
-			// try file; fallback index.html for SPA
 			f, err := d.WebFS.Open(strings.TrimPrefix(path, "/"))
 			if err == nil {
 				_ = f.Close()

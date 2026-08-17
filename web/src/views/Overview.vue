@@ -61,7 +61,7 @@ onMounted(load)
   <div>
     <h1>概览</h1>
     <p class="page-desc">基于当前导入的 kubeconfig 查看集群概况。</p>
-    <div v-if="!currentClusterId" class="empty">请先在「KubeConfig」导入集群，并在右上角选择。</div>
+    <div v-if="!currentClusterId" class="empty">请先在「KubeConfig」导入集群，并在上方选择集群。</div>
     <template v-else>
       <div class="panel">
         <div><strong>{{ currentCluster?.name }}</strong>
