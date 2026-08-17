@@ -2,6 +2,7 @@
 import { ref, watch, onMounted } from 'vue'
 import { readApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
+import { fmtCPU, fmtMemory } from '../utils/quantity'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 const rows = ref([])
@@ -54,8 +55,8 @@ onMounted(load)
           <td>{{ n.status }}</td>
           <td>{{ n.internalIP }}</td>
           <td>{{ n.version }}</td>
-          <td>{{ n.allocatableCPU }}</td>
-          <td>{{ n.allocatableMemory }}</td>
+          <td>{{ fmtCPU(n.allocatableCPU) }}</td>
+          <td>{{ fmtMemory(n.allocatableMemory) }}</td>
         </tr>
       </tbody>
     </table>

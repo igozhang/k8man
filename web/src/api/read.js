@@ -15,6 +15,10 @@ export const readApi = {
   listStatefulSets: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/statefulsets`),
   listDaemonSets: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/daemonsets`),
   listServices: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/services`),
+  listConfigMaps: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/configmaps`),
+  getConfigMap: (id, ns, name) => http.get(`/read/clusters/${id}/namespaces/${ns}/configmaps/${encodeURIComponent(name)}`),
+  getWorkloadSpecEdit: (id, ns, kind, name) =>
+    http.get(`/read/clusters/${id}/namespaces/${ns}/workloads/${kind}/${encodeURIComponent(name)}/spec-edit`),
   getYAML: (id, ns, kind, name) =>
     http.get(`/read/clusters/${id}/namespaces/${ns}/resources/${kind}/${name}/yaml`),
   nodeMetrics: (id) => http.get(`/read/clusters/${id}/metrics/nodes`),

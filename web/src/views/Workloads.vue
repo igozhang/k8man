@@ -6,7 +6,7 @@ import { useClusterStore } from '../stores/cluster'
 const { currentClusterId } = useClusterStore()
 const namespaces = ref([])
 const ns = ref('')
-/** pods | controllers | services */
+/** pods | controllers | services | configmaps */
 const tab = ref('pods')
 const rows = ref([])
 const loading = ref(false)
@@ -14,6 +14,31 @@ const error = ref('')
 const drawer = ref(null) // { title, content }
 const yamlEditor = ref({ open: false, kind: '', name: '', yaml: '' })
 const scaleForm = ref({ open: false, kind: 'deployment', name: '', replicas: 1 })
+
+const cmEditor = ref({
+  open: false,
+  name: '',
+  mode: 'kv', // kv | yaml
+  entries: [], // { key, value }
+  binaryKeys: [],
+  yaml: '',
+  busy: false
+})
+
+const specEditor = ref({
+  open: false,
+  kind: '',
+  name: '',
+  containers: [],
+  configMaps: [],
+  secrets: [],
+  selected: '',
+  image: '',
+  env: [],
+  envFrom: [],
+  resources: { requestsCpu: '', requestsMemory: '', limitsCpu: '', limitsMemory: '' },
+  busy: false
+})
 
 async function loadNamespaces() {
   if (!currentClusterId.value) {
@@ -98,6 +123,8 @@ async function loadRows() {
       rows.value = await readApi.listPods(currentClusterId.value, ns.value)
     } else if (tab.value === 'controllers') {
       rows.value = await loadControllers()
+    } else if (tab.value === 'configmaps') {
+      rows.value = await readApi.listConfigMaps(currentClusterId.value, ns.value)
     } else {
       rows.value = await readApi.listServices(currentClusterId.value, ns.value)
     }
@@ -191,6 +218,254 @@ function yamlKind(kind) {
   return String(kind || '').toLowerCase()
 }
 
+function dataToEntries(data) {
+  return Object.keys(data || {})
+    .sort()
+    .map((key) => ({ key, value: data[key] ?? '' }))
+}
+
+function entriesToData(entries) {
+  const data = {}
+  for (const e of entries) {
+    const k = String(e.key || '').trim()
+    if (!k) continue
+    if (Object.prototype.hasOwnProperty.call(data, k)) {
+      throw new Error(`重复键：${k}`)
+    }
+    data[k] = e.value ?? ''
+  }
+  return data
+}
+
+async function openConfigMap(name) {
+  error.value = ''
+  try {
+    const detail = await readApi.getConfigMap(currentClusterId.value, ns.value, name)
+    cmEditor.value = {
+      open: true,
+      name,
+      mode: 'kv',
+      entries: dataToEntries(detail.data),
+      binaryKeys: detail.binaryKeys || [],
+      yaml: '',
+      busy: false
+    }
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function addCmEntry() {
+  cmEditor.value.entries.push({ key: '', value: '' })
+}
+
+function removeCmEntry(i) {
+  cmEditor.value.entries.splice(i, 1)
+}
+
+async function switchCmMode(mode) {
+  if (mode === cmEditor.value.mode) return
+  if (
+    !confirm(
+      mode === 'yaml'
+        ? '切换到 YAML 会丢弃未保存的键值修改，并从集群重新加载。继续？'
+        : '切换到键值会丢弃未保存的 YAML 修改，并从集群重新加载。继续？'
+    )
+  ) {
+    return
+  }
+  error.value = ''
+  if (mode === 'yaml') {
+    try {
+      const r = await readApi.getYAML(
+        currentClusterId.value,
+        ns.value,
+        'configmap',
+        cmEditor.value.name
+      )
+      cmEditor.value.yaml = r.yaml || ''
+      cmEditor.value.mode = 'yaml'
+    } catch (e) {
+      error.value = e.message
+    }
+    return
+  }
+  try {
+    const detail = await readApi.getConfigMap(
+      currentClusterId.value,
+      ns.value,
+      cmEditor.value.name
+    )
+    cmEditor.value.entries = dataToEntries(detail.data)
+    cmEditor.value.binaryKeys = detail.binaryKeys || []
+    cmEditor.value.mode = 'kv'
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function saveConfigMap() {
+  error.value = ''
+  cmEditor.value.busy = true
+  try {
+    if (cmEditor.value.mode === 'yaml') {
+      await writeApi.applyYAML(
+        currentClusterId.value,
+        ns.value,
+        'configmap',
+        cmEditor.value.name,
+        cmEditor.value.yaml
+      )
+    } else {
+      const data = entriesToData(cmEditor.value.entries)
+      await writeApi.patchConfigMapData(
+        currentClusterId.value,
+        ns.value,
+        cmEditor.value.name,
+        data
+      )
+    }
+    cmEditor.value.open = false
+    await loadRows()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    cmEditor.value.busy = false
+  }
+}
+
+function applyContainerToForm(ctr) {
+  specEditor.value.selected = ctr.name
+  specEditor.value.image = ctr.image || ''
+  specEditor.value.env = (ctr.env || []).map((e) => ({
+    name: e.name || '',
+    value: e.value || '',
+    valueFrom: e.valueFrom ? { ...e.valueFrom } : null
+  }))
+  specEditor.value.envFrom = (ctr.envFrom || []).map((e) => ({
+    type: e.type || 'configMapRef',
+    name: e.name || '',
+    optional: !!e.optional,
+    prefix: e.prefix || ''
+  }))
+  const r = ctr.resources || {}
+  specEditor.value.resources = {
+    requestsCpu: r.requestsCpu || '',
+    requestsMemory: r.requestsMemory || '',
+    limitsCpu: r.limitsCpu || '',
+    limitsMemory: r.limitsMemory || ''
+  }
+}
+
+async function openSpecEdit(row) {
+  error.value = ''
+  const kind = yamlKind(row.kind)
+  try {
+    const data = await readApi.getWorkloadSpecEdit(
+      currentClusterId.value,
+      ns.value,
+      kind,
+      row.name
+    )
+    const containers = data.containers || []
+    specEditor.value = {
+      open: true,
+      kind,
+      name: row.name,
+      containers,
+      configMaps: data.configMaps || [],
+      secrets: data.secrets || [],
+      selected: '',
+      image: '',
+      env: [],
+      envFrom: [],
+      resources: { requestsCpu: '', requestsMemory: '', limitsCpu: '', limitsMemory: '' },
+      busy: false
+    }
+    if (containers.length) applyContainerToForm(containers[0])
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function onSpecContainerChange() {
+  const ctr = specEditor.value.containers.find((c) => c.name === specEditor.value.selected)
+  if (ctr) applyContainerToForm(ctr)
+}
+
+function onEnvFromTypeChange(row) {
+  row.name = ''
+}
+
+function addEnvRow() {
+  specEditor.value.env.push({ name: '', value: '', valueFrom: null })
+}
+
+function removeEnvRow(i) {
+  specEditor.value.env.splice(i, 1)
+}
+
+function addEnvFromRow() {
+  specEditor.value.envFrom.push({
+    type: 'configMapRef',
+    name: '',
+    optional: false,
+    prefix: ''
+  })
+}
+
+function removeEnvFromRow(i) {
+  specEditor.value.envFrom.splice(i, 1)
+}
+
+function envFromNameOptions(row) {
+  if (row.type === 'secretRef') return specEditor.value.secrets
+  return specEditor.value.configMaps
+}
+
+async function saveSpecEdit() {
+  error.value = ''
+  if (!specEditor.value.selected) {
+    error.value = '请选择容器'
+    return
+  }
+  if (!String(specEditor.value.image || '').trim()) {
+    error.value = '镜像不能为空'
+    return
+  }
+  specEditor.value.busy = true
+  try {
+    const env = specEditor.value.env
+      .filter((e) => String(e.name || '').trim())
+      .map((e) => {
+        if (e.valueFrom) {
+          return { name: e.name, valueFrom: e.valueFrom }
+        }
+        return { name: e.name, value: e.value }
+      })
+    const envFrom = specEditor.value.envFrom.filter((e) => String(e.name || '').trim())
+    await writeApi.patchWorkloadSpecEdit(
+      currentClusterId.value,
+      ns.value,
+      specEditor.value.kind,
+      specEditor.value.name,
+      {
+        container: specEditor.value.selected,
+        image: specEditor.value.image,
+        env,
+        envFrom,
+        resources: { ...specEditor.value.resources }
+      }
+    )
+    specEditor.value.open = false
+    await loadRows()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    specEditor.value.busy = false
+  }
+}
+
 watch([currentClusterId], async () => {
   try {
     await loadNamespaces()
@@ -213,7 +488,9 @@ onMounted(async () => {
 <template>
   <div>
     <h1>工作负载</h1>
-    <p class="page-desc">查看与运维 Pod / 控制器（Deployment · StatefulSet · DaemonSet）/ Service。</p>
+    <p class="page-desc">
+      查看与运维 Pod / 控制器 / Service / ConfigMap；支持常用字段编辑与 YAML。
+    </p>
     <div v-if="!currentClusterId" class="empty">请先选择集群。</div>
     <template v-else>
       <div class="toolbar">
@@ -228,6 +505,11 @@ onMounted(async () => {
             @click="tab = 'controllers'"
           >控制器</button>
           <button class="tab" :class="{ active: tab === 'services' }" @click="tab = 'services'">Services</button>
+          <button
+            class="tab"
+            :class="{ active: tab === 'configmaps' }"
+            @click="tab = 'configmaps'"
+          >ConfigMap</button>
         </div>
       </div>
       <p v-if="error" class="error">{{ error }}</p>
@@ -277,6 +559,7 @@ onMounted(async () => {
                   class="btn btn-sm"
                   @click="openScale(r)"
                 >扩缩容</button>
+                <button class="btn btn-sm" @click="openSpecEdit(r)">常用编辑</button>
                 <button
                   class="btn btn-sm"
                   @click="openYAML(yamlKind(r.kind), r.name)"
@@ -304,6 +587,31 @@ onMounted(async () => {
           </tbody>
         </table>
         <div v-else-if="!loading" class="empty">该命名空间下暂无 Service。</div>
+      </template>
+
+      <template v-else-if="tab === 'configmaps'">
+        <table v-if="rows.length" class="table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>键数量</th>
+              <th>Age</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="cm in rows" :key="cm.name">
+              <td><strong>{{ cm.name }}</strong></td>
+              <td>{{ cm.keyCount }}</td>
+              <td>{{ cm.age }}</td>
+              <td class="actions">
+                <button class="btn btn-sm" @click="openConfigMap(cm.name)">编辑</button>
+                <button class="btn btn-sm" @click="openYAML('configmap', cm.name)">YAML</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else-if="!loading" class="empty">该命名空间下暂无 ConfigMap。</div>
       </template>
     </template>
 
@@ -338,6 +646,137 @@ onMounted(async () => {
       <div class="actions">
         <button class="btn btn-primary" @click="doScale">确定</button>
         <button class="btn" @click="scaleForm.open = false">取消</button>
+      </div>
+    </div>
+
+    <!-- ConfigMap editor -->
+    <div v-if="cmEditor.open" class="drawer-backdrop" @click="cmEditor.open = false"></div>
+    <div v-if="cmEditor.open" class="drawer drawer-wide">
+      <div class="toolbar">
+        <strong>ConfigMap · {{ cmEditor.name }}</strong>
+        <div class="actions">
+          <button
+            class="btn btn-sm"
+            :class="{ 'btn-primary': cmEditor.mode === 'kv' }"
+            @click="switchCmMode('kv')"
+          >键值</button>
+          <button
+            class="btn btn-sm"
+            :class="{ 'btn-primary': cmEditor.mode === 'yaml' }"
+            @click="switchCmMode('yaml')"
+          >YAML</button>
+          <button class="btn btn-primary btn-sm" :disabled="cmEditor.busy" @click="saveConfigMap">
+            {{ cmEditor.busy ? '保存中…' : '保存' }}
+          </button>
+          <button class="btn btn-sm" @click="cmEditor.open = false">关闭</button>
+        </div>
+      </div>
+      <p v-if="error" class="error">{{ error }}</p>
+      <p v-if="cmEditor.binaryKeys.length" class="muted">
+        含二进制键（不可在键值表编辑）：{{ cmEditor.binaryKeys.join(', ') }}
+      </p>
+      <template v-if="cmEditor.mode === 'kv'">
+        <div class="kv-list">
+          <div v-for="(e, i) in cmEditor.entries" :key="i" class="kv-row">
+            <input v-model="e.key" placeholder="key" class="kv-key" />
+            <textarea v-model="e.value" placeholder="value" class="kv-val" rows="2"></textarea>
+            <button class="btn btn-sm btn-danger" @click="removeCmEntry(i)">删</button>
+          </div>
+        </div>
+        <button class="btn btn-sm" @click="addCmEntry">添加键</button>
+      </template>
+      <textarea
+        v-else
+        v-model="cmEditor.yaml"
+        style="min-height:65vh;width:100%"
+      ></textarea>
+    </div>
+
+    <!-- Spec edit -->
+    <div v-if="specEditor.open" class="drawer-backdrop" @click="specEditor.open = false"></div>
+    <div v-if="specEditor.open" class="drawer drawer-wide">
+      <div class="toolbar">
+        <strong>常用编辑 · {{ specEditor.kind }}/{{ specEditor.name }}</strong>
+        <div class="actions">
+          <button class="btn btn-primary btn-sm" :disabled="specEditor.busy" @click="saveSpecEdit">
+            {{ specEditor.busy ? '保存中…' : '保存' }}
+          </button>
+          <button class="btn btn-sm" @click="specEditor.open = false">关闭</button>
+        </div>
+      </div>
+      <p class="muted">仅改镜像、环境变量、envFrom、资源；复杂变更请用 YAML。</p>
+      <p v-if="error" class="error">{{ error }}</p>
+
+      <div class="form-row">
+        <label>容器</label>
+        <select v-model="specEditor.selected" @change="onSpecContainerChange">
+          <option v-for="c in specEditor.containers" :key="c.name" :value="c.name">{{ c.name }}</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>镜像</label>
+        <input v-model="specEditor.image" />
+      </div>
+
+      <h4>环境变量</h4>
+      <div class="kv-list">
+        <div v-for="(e, i) in specEditor.env" :key="'env-' + i" class="kv-row">
+          <template v-if="e.valueFrom">
+            <input v-model="e.name" class="kv-key" disabled />
+            <input
+              class="kv-val"
+              disabled
+              :value="`${e.valueFrom.type}: ${e.valueFrom.ref}`"
+            />
+            <button class="btn btn-sm btn-danger" @click="removeEnvRow(i)">删</button>
+          </template>
+          <template v-else>
+            <input v-model="e.name" placeholder="NAME" class="kv-key" />
+            <input v-model="e.value" placeholder="value" class="kv-val" />
+            <button class="btn btn-sm btn-danger" @click="removeEnvRow(i)">删</button>
+          </template>
+        </div>
+      </div>
+      <button class="btn btn-sm" @click="addEnvRow">添加明文环境变量</button>
+
+      <h4 style="margin-top:16px">envFrom</h4>
+      <div class="kv-list">
+        <div v-for="(e, i) in specEditor.envFrom" :key="'ef-' + i" class="kv-row envfrom-row">
+          <select v-model="e.type" class="kv-key" @change="onEnvFromTypeChange(e)">
+            <option value="configMapRef">ConfigMap</option>
+            <option value="secretRef">Secret</option>
+          </select>
+          <select v-model="e.name" class="kv-val">
+            <option value="">选择…</option>
+            <option
+              v-for="n in envFromNameOptions(e)"
+              :key="n"
+              :value="n"
+            >{{ n }}</option>
+          </select>
+          <button class="btn btn-sm btn-danger" @click="removeEnvFromRow(i)">删</button>
+        </div>
+      </div>
+      <button class="btn btn-sm" @click="addEnvFromRow">添加 envFrom</button>
+
+      <h4 style="margin-top:16px">资源</h4>
+      <div class="resource-grid">
+        <div class="form-row">
+          <label>requests CPU</label>
+          <input v-model="specEditor.resources.requestsCpu" placeholder="如 100m" />
+        </div>
+        <div class="form-row">
+          <label>requests 内存</label>
+          <input v-model="specEditor.resources.requestsMemory" placeholder="如 256Mi" />
+        </div>
+        <div class="form-row">
+          <label>limits CPU</label>
+          <input v-model="specEditor.resources.limitsCpu" placeholder="如 500m" />
+        </div>
+        <div class="form-row">
+          <label>limits 内存</label>
+          <input v-model="specEditor.resources.limitsMemory" placeholder="如 512Mi" />
+        </div>
       </div>
     </div>
   </div>

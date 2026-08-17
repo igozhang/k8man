@@ -12,6 +12,10 @@ export const writeApi = {
     http.patch(`/write/clusters/${id}/namespaces/${ns}/statefulsets/${name}/scale`, { replicas }),
   applyYAML: (id, ns, kind, name, yaml) =>
     http.put(`/write/clusters/${id}/namespaces/${ns}/resources/${kind}/${name}/yaml`, { yaml }),
+  patchConfigMapData: (id, ns, name, data) =>
+    http.patch(`/write/clusters/${id}/namespaces/${ns}/configmaps/${encodeURIComponent(name)}/data`, { data }),
+  patchWorkloadSpecEdit: (id, ns, kind, name, payload) =>
+    http.patch(`/write/clusters/${id}/namespaces/${ns}/workloads/${kind}/${encodeURIComponent(name)}/spec-edit`, payload),
   createDoc: (payload) => http.post('/write/docs', payload),
   updateDoc: (docId, payload) => http.put(`/write/docs/${docId}`, payload),
   deleteDoc: (docId) => http.delete(`/write/docs/${docId}`),

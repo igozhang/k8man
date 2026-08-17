@@ -85,6 +85,10 @@ type YAMLRequest struct {
 	YAML string `json:"yaml" binding:"required"`
 }
 
+type ConfigMapDataRequest struct {
+	Data map[string]string `json:"data" binding:"required"`
+}
+
 type APIResponse struct {
 	Code    int         `json:"code"`
 	Message string      `json:"message"`

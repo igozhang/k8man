@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -443,6 +444,56 @@ func (h *Handler) ListHostAliases(c *gin.Context) {
 		"path":  h.Hosts.Path(),
 		"items": list,
 	})
+}
+
+func (h *Handler) ListConfigMaps(c *gin.Context) {
+	clients, ok := h.clients(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	items, err := clients.ListConfigMaps(ctx, c.Param("ns"))
+	if err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	respond.OK(c, items)
+}
+
+func (h *Handler) GetConfigMap(c *gin.Context) {
+	clients, ok := h.clients(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	item, err := clients.GetConfigMapDetail(ctx, c.Param("ns"), c.Param("name"))
+	if err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	respond.OK(c, item)
+}
+
+func (h *Handler) GetWorkloadSpecEdit(c *gin.Context) {
+	clients, ok := h.clients(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	item, err := clients.GetWorkloadSpecEdit(ctx, c.Param("ns"), c.Param("kind"), c.Param("name"))
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "not supported") {
+			respond.BadRequest(c, msg)
+			return
+		}
+		respond.Fail(c, http.StatusBadGateway, 502, msg)
+		return
+	}
+	respond.OK(c, item)
 }
 
 func formatAge(t time.Time) string {

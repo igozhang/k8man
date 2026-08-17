@@ -33,10 +33,17 @@
 | GET | `/clusters/:id/namespaces/:ns/pods/:name` | Pod 详情 |
 | GET | `/clusters/:id/namespaces/:ns/pods/:name/logs?tail=500` | Pod 日志 |
 | GET | `/clusters/:id/namespaces/:ns/deployments` | Deployment 列表 |
+| GET | `/clusters/:id/namespaces/:ns/statefulsets` | StatefulSet 列表 |
+| GET | `/clusters/:id/namespaces/:ns/daemonsets` | DaemonSet 列表 |
 | GET | `/clusters/:id/namespaces/:ns/services` | Service 列表 |
+| GET | `/clusters/:id/namespaces/:ns/configmaps` | ConfigMap 列表 |
+| GET | `/clusters/:id/namespaces/:ns/configmaps/:name` | ConfigMap 详情（data） |
+| GET | `/clusters/:id/namespaces/:ns/workloads/:kind/:name/spec-edit` | 控制器常用字段摘要 |
 | GET | `/clusters/:id/namespaces/:ns/resources/:kind/:name/yaml` | YAML 查看 |
 
-`kind` 白名单：`pod` / `deployment` / `service` / `namespace`（及复数形式）。
+`kind` YAML 白名单：`pod` / `deployment` / `statefulset` / `daemonset` / `service` / `configmap` / `namespace`（及复数形式）。
+
+`spec-edit` 的 `kind`：`deployment` / `statefulset` / `daemonset`。
 
 ### 监控
 
@@ -54,6 +61,12 @@
 | GET | `/docs?category=&q=` | 文档列表 |
 | GET | `/docs/:docId` | 文档详情 |
 
+### Hosts
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/hosts` | 私有解析列表（`{path,items}`） |
+
 ## 写操作 `/api/v1/write`
 
 ### 集群
@@ -70,7 +83,29 @@
 |------|------|------|
 | POST | `/clusters/:id/namespaces/:ns/pods/:name/restart` | 删除 Pod 触发重建 |
 | PATCH | `/clusters/:id/namespaces/:ns/deployments/:name/scale` | body: `{replicas}` |
+| PATCH | `/clusters/:id/namespaces/:ns/statefulsets/:name/scale` | body: `{replicas}` |
 | PUT | `/clusters/:id/namespaces/:ns/resources/:kind/:name/yaml` | body: `{yaml}` |
+| PATCH | `/clusters/:id/namespaces/:ns/configmaps/:name/data` | body: `{data}` 替换明文 data |
+| PATCH | `/clusters/:id/namespaces/:ns/workloads/:kind/:name/spec-edit` | 常用字段 merge 更新 |
+
+`spec-edit` body 示例：
+
+```json
+{
+  "container": "app",
+  "image": "registry/app:1.2.3",
+  "env": [{ "name": "FOO", "value": "bar" }],
+  "envFrom": [{ "type": "configMapRef", "name": "app-config" }],
+  "resources": {
+    "requestsCpu": "100m",
+    "requestsMemory": "256Mi",
+    "limitsCpu": "500m",
+    "limitsMemory": "512Mi"
+  }
+}
+```
+
+带 `valueFrom` 的环境变量仅可保留/删除，不可在此新建或改引用目标。
 
 ### 文档
 
@@ -81,3 +116,11 @@
 | DELETE | `/docs/:docId` | 删除 |
 
 文档 body：`{title,slug,category,tags,summary,content,pinned}`。
+
+### Hosts
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/hosts` | 添加 |
+| PUT | `/hosts/:hostId` | 更新 |
+| DELETE | `/hosts/:hostId` | 删除 |

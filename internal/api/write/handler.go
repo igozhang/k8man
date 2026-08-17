@@ -302,6 +302,58 @@ func (h *Handler) ApplyYAML(c *gin.Context) {
 	respond.OK(c, gin.H{"updated": c.Param("name")})
 }
 
+func (h *Handler) PatchConfigMapData(c *gin.Context) {
+	var in model.ConfigMapDataRequest
+	if err := c.ShouldBindJSON(&in); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	clients, ok := h.clients(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	if err := clients.PatchConfigMapData(ctx, c.Param("ns"), c.Param("name"), in.Data); err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	respond.OK(c, gin.H{"updated": c.Param("name")})
+}
+
+func (h *Handler) PatchWorkloadSpecEdit(c *gin.Context) {
+	var in kube.SpecEditPatch
+	if err := c.ShouldBindJSON(&in); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	if strings.TrimSpace(in.Container) == "" {
+		respond.BadRequest(c, "container required")
+		return
+	}
+	clients, ok := h.clients(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	if err := clients.PatchWorkloadSpecEdit(ctx, c.Param("ns"), c.Param("kind"), c.Param("name"), in); err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "required") ||
+			strings.Contains(msg, "not supported") ||
+			strings.Contains(msg, "not found") ||
+			strings.Contains(msg, "invalid") ||
+			strings.Contains(msg, "cannot") ||
+			strings.Contains(msg, "duplicate") {
+			respond.BadRequest(c, msg)
+			return
+		}
+		respond.Fail(c, http.StatusBadGateway, 502, msg)
+		return
+	}
+	respond.OK(c, gin.H{"updated": c.Param("name"), "container": in.Container})
+}
+
 func (h *Handler) CreateDoc(c *gin.Context) {
 	var in model.DocInput
 	if err := c.ShouldBindJSON(&in); err != nil {

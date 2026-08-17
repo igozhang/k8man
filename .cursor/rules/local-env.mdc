@@ -1,0 +1,30 @@
+---
+description: 本机 Windows 下 Go 编译与 Shell 环境约定
+alwaysApply: true
+---
+
+# k8man 本机环境约定
+
+## Shell / 沙箱
+
+- 本机是 **Windows**。Cursor 默认沙箱（`workspace_readwrite`）**不可用**，会直接报错。
+- 跑 `go build` / `go test` / `npm` 等**不改系统配置、不碰无关目录**的命令时：直接用 `required_permissions: ["all"]`（无沙箱），**不要**反复用默认沙箱重试，也**不必**向用户申请额外确认。
+- 长任务约每 **30 秒**看一次输出；长时间无新输出视为异常，杀掉进程并换方式介入（例如换代理、缩小编译范围）。
+
+## Go 模块代理
+
+- 默认 `proxy.golang.org` 在本机容易卡住（拉 client-go 等大包时长时间只有 downloading）。
+- 本机编译 / `go mod download` 前设置：
+  - `GOPROXY=https://goproxy.cn,direct`
+  - `GOMODCACHE` 用用户目录下的正常缓存（如 `%USERPROFILE%\go\pkg\mod`），避免落在临时 sandbox-cache。
+- PowerShell 示例：
+
+```powershell
+$env:GOPROXY='https://goproxy.cn,direct'
+$env:GOMODCACHE=Join-Path $env:USERPROFILE 'go\pkg\mod'
+go build -o NUL ./cmd/server
+```
+
+## 构建机
+
+- 正式镜像构建仍在 `VM-4-11-ubuntu` 用 `docs/deploy.md` 里的 nerdctl 命令；本机检查以 `go build` 通过即可。

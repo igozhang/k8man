@@ -5,7 +5,7 @@
 ## 特性
 
 - 多集群 kubeconfig 导入、连通性测试、cluster / project 权限自动探测
-- 工作负载查看与运维：Pod 日志/重启、Deployment 扩缩容、受限 YAML 查看与应用
+- 工作负载查看与运维：Pod 日志/重启、Deployment/StatefulSet 扩缩容、ConfigMap 键值编辑、控制器常用字段（镜像/环境变量/资源）编辑、受限 YAML 查看与应用
 - 节点与基础监控（依赖目标集群 metrics-server）
 - 产品内运维文档（Markdown）
 - 内置 SQLite + PVC 持久化，无独立数据库
