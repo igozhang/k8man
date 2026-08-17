@@ -457,21 +457,19 @@ onMounted(() => {
         </div>
       </div>
 
-      <table v-if="hosts.length" class="table hosts-table">
+      <table v-if="hosts.length" class="table">
         <thead>
           <tr>
             <th>hosts</th>
-            <th class="hosts-ops-col">操作</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="h in hosts" :key="h.id">
-            <td class="hosts-line-cell"><code>{{ formatHostLine(h) }}</code></td>
-            <td class="hosts-ops-col">
-              <div class="hosts-ops">
-                <button class="btn btn-sm" @click="openHostEdit(h)">编辑</button>
-                <button class="btn btn-sm btn-danger" @click="removeHost(h)">删除</button>
-              </div>
+            <td><code class="host-line-cell">{{ formatHostLine(h) }}</code></td>
+            <td class="actions">
+              <button class="btn btn-sm" @click="openHostEdit(h)">编辑</button>
+              <button class="btn btn-sm btn-danger" @click="removeHost(h)">删除</button>
             </td>
           </tr>
         </tbody>
@@ -528,25 +526,11 @@ onMounted(() => {
 .host-line-input {
   font-family: var(--mono);
 }
-.hosts-table th,
-.hosts-table td {
-  vertical-align: middle;
-}
-.hosts-line-cell code {
+code.host-line-cell,
+.host-line-cell {
   font-family: var(--mono);
   font-size: 13px;
   white-space: nowrap;
-}
-.hosts-ops-col {
-  width: 1%;
-  white-space: nowrap;
-  text-align: right;
-}
-.hosts-ops {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
 }
 code {
   font-family: var(--mono);

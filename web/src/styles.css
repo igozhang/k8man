@@ -263,7 +263,7 @@ h1 {
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
   font-size: 13px;
-  vertical-align: top;
+  vertical-align: middle;
 }
 .table th {
   background: var(--surface);
@@ -271,6 +271,15 @@ h1 {
   font-weight: 600;
 }
 .table tr:last-child td { border-bottom: none; }
+/* 表格内操作列：与同行文字垂直对齐，去掉表单用的上边距 */
+.table td.actions {
+  width: 1%;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.table td.actions .btn {
+  vertical-align: middle;
+}
 
 .panel {
   background: var(--panel);
@@ -309,7 +318,19 @@ textarea {
   min-height: 180px;
   line-height: 1.45;
 }
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+/* 表单/抽屉底部按钮组保留间距；表格单元格内不顶开 */
+.actions:not(td) {
+  margin-top: 12px;
+}
+td.actions {
+  margin-top: 0;
+}
 .tag {
   display: inline-block;
   font-size: 12px;
