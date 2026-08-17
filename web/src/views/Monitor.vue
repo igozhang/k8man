@@ -4,12 +4,13 @@ import { readApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory, fmtTime, mergeNodeUsage } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
+import { asArray, createSeq, errMessage } from '../utils/safe'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 const namespaces = ref([])
 const ns = ref('')
-/** nodes | pods — 初始 pods，避免 project 下 nodes+隐藏 tab 导致空白；换集群再落到默认 */
-const tab = ref('pods')
+/** '' | nodes | pods */
+const tab = ref('')
 const nodeRows = ref([])
 const podMetrics = ref([])
 const error = ref('')
@@ -17,35 +18,51 @@ const nodeTip = ref('')
 const podTip = ref('')
 const nodeLoading = ref(false)
 const podLoading = ref(false)
+const nsLoading = ref(false)
 
-let nodesSeq = 0
-let podsSeq = 0
-/** 抑制 load() 内改 tab/ns 触发的 watch，避免进页误拉未选中 tab 的数据 */
-let syncing = false
-let lastClusterId = undefined
+const nodesSeq = createSeq()
+const podsSeq = createSeq()
+const pageSeq = createSeq()
 
 const isProject = computed(() => currentCluster.value?.permType === 'project')
 const showNodesTab = computed(() => !isProject.value)
 
-function pickNamespace(list) {
-  const names = (list || []).map((n) => n.name)
-  if (!names.length) {
-    ns.value = ''
-    return
-  }
-  if (!names.includes(ns.value)) ns.value = names[0]
+function clearAll() {
+  nodesSeq.bump()
+  podsSeq.bump()
+  nodeRows.value = []
+  podMetrics.value = []
+  nodeTip.value = ''
+  podTip.value = ''
+  nodeLoading.value = false
+  podLoading.value = false
+  nsLoading.value = false
+  namespaces.value = []
+  ns.value = ''
+  error.value = ''
 }
 
-function coerceTab() {
-  if (!showNodesTab.value) {
-    tab.value = 'pods'
-    return
+async function ensureNamespaces() {
+  if (!currentClusterId.value) return
+  if (namespaces.value.length || nsLoading.value) return
+  const clusterId = currentClusterId.value
+  nsLoading.value = true
+  try {
+    const list = asArray(await readApi.listNamespaces(clusterId))
+    // 请求期间若已换集群，丢弃结果
+    if (currentClusterId.value !== clusterId) return
+    namespaces.value = list
+  } catch (e) {
+    if (currentClusterId.value !== clusterId) return
+    error.value = errMessage(e)
+    namespaces.value = []
+  } finally {
+    nsLoading.value = false
   }
-  if (tab.value !== 'nodes' && tab.value !== 'pods') tab.value = 'nodes'
 }
 
 async function loadNodes() {
-  const seq = ++nodesSeq
+  const seq = nodesSeq.next()
   nodeRows.value = []
   nodeTip.value = ''
   if (!currentClusterId.value || isProject.value) return
@@ -54,101 +71,117 @@ async function loadNodes() {
     const [nodes, metrics] = await Promise.all([
       readApi.listNodes(currentClusterId.value),
       readApi.nodeMetrics(currentClusterId.value).catch((e) => {
-        if (seq === nodesSeq) nodeTip.value = metricsErrorTip(e)
+        if (nodesSeq.is(seq)) nodeTip.value = metricsErrorTip(e)
         return []
       })
     ])
-    if (seq !== nodesSeq) return
-    nodeRows.value = mergeNodeUsage(nodes || [], metrics || [])
+    if (!nodesSeq.is(seq)) return
+    nodeRows.value = mergeNodeUsage(asArray(nodes), asArray(metrics))
   } catch (e) {
-    if (seq !== nodesSeq) return
-    nodeTip.value = e.message
+    if (!nodesSeq.is(seq)) return
+    nodeTip.value = errMessage(e)
+    nodeRows.value = []
   } finally {
-    if (seq === nodesSeq) nodeLoading.value = false
+    if (nodesSeq.is(seq)) nodeLoading.value = false
   }
 }
 
 async function loadPodMetrics() {
-  const seq = ++podsSeq
+  const seq = podsSeq.next()
   podMetrics.value = []
   podTip.value = ''
   if (!currentClusterId.value || !ns.value) return
   podLoading.value = true
   try {
-    const items = (await readApi.podMetrics(currentClusterId.value, ns.value)) || []
-    if (seq !== podsSeq) return
+    const items = asArray(await readApi.podMetrics(currentClusterId.value, ns.value))
+    if (!podsSeq.is(seq)) return
     podMetrics.value = items
   } catch (e) {
-    if (seq !== podsSeq) return
+    if (!podsSeq.is(seq)) return
     podTip.value = metricsErrorTip(e)
+    podMetrics.value = []
   } finally {
-    if (seq === podsSeq) podLoading.value = false
+    if (podsSeq.is(seq)) podLoading.value = false
   }
 }
 
-async function loadActive() {
-  if (tab.value === 'nodes') await loadNodes()
-  else if (tab.value === 'pods') await loadPodMetrics()
-}
-
-async function load() {
-  error.value = ''
-  nodeTip.value = ''
-  podTip.value = ''
-  nodeRows.value = []
-  podMetrics.value = []
-  namespaces.value = []
-  nodesSeq++
-  podsSeq++
-  nodeLoading.value = false
-  podLoading.value = false
-
-  const id = currentClusterId.value
-  if (!id) {
+function selectTab(next) {
+  if (next === 'nodes' && !showNodesTab.value) return
+  tab.value = next
+  if (next === 'nodes') {
     ns.value = ''
-    lastClusterId = id
+    podsSeq.bump()
+    podMetrics.value = []
+    podTip.value = ''
+    loadNodes()
     return
   }
-
-  syncing = true
-  try {
-    try {
-      namespaces.value = (await readApi.listNamespaces(id)) || []
-    } catch (e) {
-      error.value = e.message
-      ns.value = ''
-      lastClusterId = id
-      return
-    }
-    pickNamespace(namespaces.value)
-    // 换集群时回到默认 tab；同集群刷新保留用户当前 tab（仅校正非法）
-    if (id !== lastClusterId) {
-      tab.value = showNodesTab.value ? 'nodes' : 'pods'
-      lastClusterId = id
-    } else {
-      coerceTab()
-    }
-  } finally {
-    syncing = false
+  if (next === 'pods') {
+    nodesSeq.bump()
+    nodeRows.value = []
+    nodeTip.value = ''
+    ns.value = ''
+    podMetrics.value = []
+    podTip.value = ''
+    ensureNamespaces()
   }
-  await loadActive()
 }
 
-watch([currentClusterId, currentCluster], load)
-watch(tab, () => {
-  if (!syncing) loadActive()
+function enterPage() {
+  const seq = pageSeq.next()
+  clearAll()
+  tab.value = ''
+  if (!currentClusterId.value) return
+  // 等集群元数据就绪再决定是否自动拉节点，避免 project 误打 nodes API
+  if (!currentCluster.value) return
+  if (showNodesTab.value) {
+    tab.value = 'nodes'
+    loadNodes().then(() => {
+      if (!pageSeq.is(seq)) return
+    })
+  }
+}
+
+watch(currentClusterId, enterPage)
+watch(
+  () => currentCluster.value?.permType,
+  () => {
+    if (!currentClusterId.value || !currentCluster.value) return
+    if (isProject.value) {
+      if (tab.value === 'nodes') {
+        nodesSeq.bump()
+        nodeRows.value = []
+        nodeTip.value = ''
+        nodeLoading.value = false
+        tab.value = ''
+      }
+      return
+    }
+    // cluster 元数据刚就绪且尚未选 tab：自动进入节点
+    if (!tab.value) {
+      tab.value = 'nodes'
+      loadNodes()
+    }
+  }
+)
+watch(ns, (v) => {
+  if (tab.value !== 'pods') return
+  if (v) loadPodMetrics()
+  else {
+    podsSeq.bump()
+    podMetrics.value = []
+    podTip.value = ''
+    podLoading.value = false
+  }
 })
-watch(ns, () => {
-  if (!syncing && tab.value === 'pods') loadPodMetrics()
-})
-onMounted(load)
+onMounted(enterPage)
 </script>
 
 <template>
   <div>
     <h1>监控</h1>
     <p class="page-desc">
-      基于目标集群 metrics-server 的 CPU / 内存用量（CPU：m=毫核；内存：Ki/Mi/Gi）。按 Tab 按需加载；未安装或权限不足时降级提示。
+      基于目标集群 metrics-server 的 CPU / 内存用量。进入页面默认加载节点指标；Pod 指标需手动选择命名空间。未安装或权限不足时降级提示。
     </p>
     <div v-if="!currentClusterId" class="empty">请先选择集群。</div>
     <template v-else>
@@ -159,16 +192,18 @@ onMounted(load)
           v-if="showNodesTab"
           class="tab"
           :class="{ active: tab === 'nodes' }"
-          @click="tab = 'nodes'"
-        >节点指标</button>
+          @click="selectTab('nodes')"
+        >节点</button>
         <button
           class="tab"
           :class="{ active: tab === 'pods' }"
-          @click="tab = 'pods'"
+          @click="selectTab('pods')"
         >Pod 指标</button>
       </div>
 
-      <template v-if="tab === 'nodes' && showNodesTab">
+      <div v-if="!tab" class="empty">请选择「Pod 指标」并指定命名空间。</div>
+
+      <template v-else-if="tab === 'nodes' && showNodesTab">
         <p v-if="nodeTip" class="muted">{{ nodeTip }}</p>
         <p v-if="nodeLoading" class="muted">加载中…</p>
         <table v-else-if="nodeRows.length" class="table">
@@ -205,27 +240,32 @@ onMounted(load)
       <template v-else-if="tab === 'pods'">
         <div class="toolbar" style="margin-bottom:12px">
           <select v-model="ns" style="max-width:220px">
+            <option value="">请选择命名空间</option>
             <option v-for="n in namespaces" :key="n.name" :value="n.name">{{ n.name }}</option>
           </select>
         </div>
-        <p v-if="podTip" class="muted">{{ podTip }}</p>
-        <p v-if="podLoading" class="muted">加载中…</p>
-        <table v-else-if="podMetrics.length" class="table">
-          <thead><tr><th>Pod</th><th>容器</th><th>CPU</th><th>内存</th></tr></thead>
-          <tbody>
-            <template v-for="m in podMetrics" :key="m.metadata?.name">
-              <tr v-for="c in (m.containers || [])" :key="m.metadata.name + c.name">
-                <td>{{ m.metadata?.name }}</td>
-                <td>{{ c.name }}</td>
-                <td>{{ fmtCPU(c.usage?.cpu) }}</td>
-                <td>{{ fmtMemory(c.usage?.memory) }}</td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
-        <div v-else-if="!podLoading" class="muted">
-          {{ podTip ? '无法加载 Pod 指标。' : '暂无 Pod 指标数据。' }}
-        </div>
+        <p v-if="nsLoading" class="muted">加载命名空间列表…</p>
+        <div v-else-if="!ns" class="empty">请选择命名空间后再加载 Pod 指标。</div>
+        <template v-else>
+          <p v-if="podTip" class="muted">{{ podTip }}</p>
+          <p v-if="podLoading" class="muted">加载中…</p>
+          <table v-else-if="podMetrics.length" class="table">
+            <thead><tr><th>Pod</th><th>容器</th><th>CPU</th><th>内存</th></tr></thead>
+            <tbody>
+              <template v-for="m in podMetrics" :key="m.metadata?.name || m.name">
+                <tr v-for="c in asArray(m.containers)" :key="(m.metadata?.name || '') + c.name">
+                  <td>{{ m.metadata?.name }}</td>
+                  <td>{{ c.name }}</td>
+                  <td>{{ fmtCPU(c.usage?.cpu) }}</td>
+                  <td>{{ fmtMemory(c.usage?.memory) }}</td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+          <div v-else-if="!podLoading" class="muted">
+            {{ podTip ? '无法加载 Pod 指标。' : '暂无 Pod 指标数据。' }}
+          </div>
+        </template>
       </template>
     </template>
   </div>

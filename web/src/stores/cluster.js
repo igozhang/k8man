@@ -1,4 +1,5 @@
 import { ref, watch, computed } from 'vue'
+import { asArray } from '../utils/safe'
 
 const STORAGE_KEY = 'k8man.currentClusterId'
 
@@ -20,13 +21,15 @@ export function useClusterStore() {
   async function refreshClusters(fetcher) {
     loadingClusters.value = true
     try {
-      const list = await fetcher()
-      clusters.value = list || []
+      const list = asArray(await fetcher())
+      clusters.value = list
       if (currentClusterId.value && !clusters.value.some((c) => c.id === currentClusterId.value)) {
         setCurrentClusterId(clusters.value[0]?.id || '')
       } else if (!currentClusterId.value && clusters.value.length) {
         setCurrentClusterId(clusters.value[0].id)
       }
+    } catch {
+      // 保留上次列表，避免顶部集群选择器被清空导致整页不可用
     } finally {
       loadingClusters.value = false
     }

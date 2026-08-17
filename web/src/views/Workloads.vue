@@ -4,6 +4,7 @@ import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
+import { asArray, createSeq, errMessage } from '../utils/safe'
 
 const { currentClusterId } = useClusterStore()
 const namespaces = ref([])
@@ -16,8 +17,9 @@ const metricsTip = ref('')
 const loading = ref(false)
 const error = ref('')
 const drawer = ref(null) // { title, content }
-let metricsSeq = 0
-let rowsSeq = 0
+const metricsSeq = createSeq()
+const rowsSeq = createSeq()
+const nsSeq = createSeq()
 
 const yamlEditor = ref({ open: false, kind: '', name: '', yaml: '' })
 const scaleForm = ref({ open: false, kind: 'deployment', name: '', replicas: 1 })
@@ -48,20 +50,40 @@ const specEditor = ref({
 })
 
 async function loadNamespaces() {
+  const seq = nsSeq.next()
   if (!currentClusterId.value) {
     namespaces.value = []
     ns.value = ''
     rows.value = []
     podMetrics.value = []
+    loading.value = false
     return
   }
-  namespaces.value = await readApi.listNamespaces(currentClusterId.value)
-  const names = (namespaces.value || []).map((n) => n.name)
-  if (!names.length) {
+  try {
+    const list = asArray(await readApi.listNamespaces(currentClusterId.value))
+    if (!nsSeq.is(seq)) return
+    namespaces.value = list
+    // 换集群后清空选择，不自动选中、不拉业务数据
     ns.value = ''
-    return
+    rows.value = []
+    podMetrics.value = []
+    metricsTip.value = ''
+    error.value = ''
+    rowsSeq.bump()
+    metricsSeq.bump()
+    loading.value = false
+  } catch (e) {
+    if (!nsSeq.is(seq)) return
+    namespaces.value = []
+    ns.value = ''
+    rows.value = []
+    podMetrics.value = []
+    metricsTip.value = ''
+    rowsSeq.bump()
+    metricsSeq.bump()
+    loading.value = false
+    error.value = errMessage(e)
   }
-  if (!names.includes(ns.value)) ns.value = names[0]
 }
 
 function mapDeployment(d) {
@@ -112,46 +134,57 @@ function mapDaemonSet(ds) {
 async function loadControllers() {
   const id = currentClusterId.value
   const namespace = ns.value
-  const [deps, sts, dss] = await Promise.all([
+  const settled = await Promise.allSettled([
     readApi.listDeployments(id, namespace),
     readApi.listStatefulSets(id, namespace),
     readApi.listDaemonSets(id, namespace)
   ])
+  const deps = settled[0].status === 'fulfilled' ? asArray(settled[0].value) : []
+  const sts = settled[1].status === 'fulfilled' ? asArray(settled[1].value) : []
+  const dss = settled[2].status === 'fulfilled' ? asArray(settled[2].value) : []
+  const failed = settled.filter((s) => s.status === 'rejected')
+  if (failed.length === settled.length) {
+    throw failed[0].reason || new Error('控制器列表加载失败')
+  }
+  if (failed.length) {
+    error.value = errMessage(failed[0].reason, '部分控制器类型加载失败')
+  }
   const list = [
-    ...(deps || []).map(mapDeployment),
-    ...(sts || []).map(mapStatefulSet),
-    ...(dss || []).map(mapDaemonSet)
+    ...deps.map(mapDeployment),
+    ...sts.map(mapStatefulSet),
+    ...dss.map(mapDaemonSet)
   ]
   list.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name))
   return list
 }
 
 async function loadPodMetrics() {
-  const seq = ++metricsSeq
+  const seq = metricsSeq.next()
   metricsTip.value = ''
   podMetrics.value = []
   if (!currentClusterId.value || !ns.value) return
   try {
-    const items = (await readApi.podMetrics(currentClusterId.value, ns.value)) || []
-    if (seq !== metricsSeq) return
+    const items = asArray(await readApi.podMetrics(currentClusterId.value, ns.value))
+    if (!metricsSeq.is(seq)) return
     podMetrics.value = items
   } catch (e) {
-    if (seq !== metricsSeq) return
+    if (!metricsSeq.is(seq)) return
     metricsTip.value = metricsErrorTip(e)
+    podMetrics.value = []
   }
 }
 
 async function loadRows() {
-  const seq = ++rowsSeq
+  const seq = rowsSeq.next()
   error.value = ''
   rows.value = []
   metricsTip.value = ''
   if (tab.value !== 'metrics') {
-    metricsSeq++
+    metricsSeq.bump()
     podMetrics.value = []
   }
   if (!currentClusterId.value || !ns.value) {
-    if (seq === rowsSeq) loading.value = false
+    if (rowsSeq.is(seq)) loading.value = false
     return
   }
   loading.value = true
@@ -159,36 +192,37 @@ async function loadRows() {
     if (tab.value === 'metrics') {
       await loadPodMetrics()
     } else if (tab.value === 'pods') {
-      const items = await readApi.listPods(currentClusterId.value, ns.value)
-      if (seq !== rowsSeq) return
+      const items = asArray(await readApi.listPods(currentClusterId.value, ns.value))
+      if (!rowsSeq.is(seq)) return
       rows.value = items
     } else if (tab.value === 'controllers') {
       const items = await loadControllers()
-      if (seq !== rowsSeq) return
+      if (!rowsSeq.is(seq)) return
       rows.value = items
     } else if (tab.value === 'configmaps') {
-      const items = await readApi.listConfigMaps(currentClusterId.value, ns.value)
-      if (seq !== rowsSeq) return
+      const items = asArray(await readApi.listConfigMaps(currentClusterId.value, ns.value))
+      if (!rowsSeq.is(seq)) return
       rows.value = items
     } else if (tab.value === 'services') {
-      const items = await readApi.listServices(currentClusterId.value, ns.value)
-      if (seq !== rowsSeq) return
+      const items = asArray(await readApi.listServices(currentClusterId.value, ns.value))
+      if (!rowsSeq.is(seq)) return
       rows.value = items
     }
   } catch (e) {
-    if (seq !== rowsSeq) return
-    error.value = e.message
+    if (!rowsSeq.is(seq)) return
+    error.value = errMessage(e)
+    rows.value = []
   } finally {
-    if (seq === rowsSeq) loading.value = false
+    if (rowsSeq.is(seq)) loading.value = false
   }
 }
 
 async function showLogs(pod) {
   try {
     const r = await readApi.podLogs(currentClusterId.value, ns.value, pod.name)
-    drawer.value = { title: `日志 · ${pod.name}`, content: r.logs || '(empty)' }
+    drawer.value = { title: `日志 · ${pod.name}`, content: r?.logs || '(empty)' }
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 
@@ -196,19 +230,19 @@ async function restart(pod) {
   if (!confirm(`重启 Pod ${pod.name}？（删除后由控制器重建）`)) return
   try {
     const r = await writeApi.restartPod(currentClusterId.value, ns.value, pod.name)
-    alert(r.message)
+    alert(r?.message || '已提交重启')
     await loadRows()
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 
 async function openYAML(kind, name) {
   try {
     const r = await readApi.getYAML(currentClusterId.value, ns.value, kind, name)
-    yamlEditor.value = { open: true, kind, name, yaml: r.yaml || '' }
+    yamlEditor.value = { open: true, kind, name, yaml: r?.yaml || '' }
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 
@@ -224,7 +258,7 @@ async function saveYAML() {
     yamlEditor.value.open = false
     await loadRows()
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 
@@ -258,7 +292,7 @@ async function doScale() {
     scaleForm.value.open = false
     await loadRows()
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 
@@ -267,14 +301,15 @@ function yamlKind(kind) {
 }
 
 function dataToEntries(data) {
-  return Object.keys(data || {})
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return []
+  return Object.keys(data)
     .sort()
     .map((key) => ({ key, value: data[key] ?? '' }))
 }
 
 function entriesToData(entries) {
   const data = {}
-  for (const e of entries) {
+  for (const e of asArray(entries)) {
     const k = String(e.key || '').trim()
     if (!k) continue
     if (Object.prototype.hasOwnProperty.call(data, k)) {
@@ -293,13 +328,13 @@ async function openConfigMap(name) {
       open: true,
       name,
       mode: 'kv',
-      entries: dataToEntries(detail.data),
-      binaryKeys: detail.binaryKeys || [],
+      entries: dataToEntries(detail?.data),
+      binaryKeys: asArray(detail?.binaryKeys),
       yaml: '',
       busy: false
     }
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 
@@ -331,10 +366,10 @@ async function switchCmMode(mode) {
         'configmap',
         cmEditor.value.name
       )
-      cmEditor.value.yaml = r.yaml || ''
+      cmEditor.value.yaml = r?.yaml || ''
       cmEditor.value.mode = 'yaml'
     } catch (e) {
-      error.value = e.message
+      error.value = errMessage(e)
     }
     return
   }
@@ -344,11 +379,11 @@ async function switchCmMode(mode) {
       ns.value,
       cmEditor.value.name
     )
-    cmEditor.value.entries = dataToEntries(detail.data)
-    cmEditor.value.binaryKeys = detail.binaryKeys || []
+    cmEditor.value.entries = dataToEntries(detail?.data)
+    cmEditor.value.binaryKeys = asArray(detail?.binaryKeys)
     cmEditor.value.mode = 'kv'
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 
@@ -376,21 +411,22 @@ async function saveConfigMap() {
     cmEditor.value.open = false
     await loadRows()
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   } finally {
     cmEditor.value.busy = false
   }
 }
 
 function applyContainerToForm(ctr) {
+  if (!ctr) return
   specEditor.value.selected = ctr.name
   specEditor.value.image = ctr.image || ''
-  specEditor.value.env = (ctr.env || []).map((e) => ({
+  specEditor.value.env = asArray(ctr.env).map((e) => ({
     name: e.name || '',
     value: e.value || '',
     valueFrom: e.valueFrom ? { ...e.valueFrom } : null
   }))
-  specEditor.value.envFrom = (ctr.envFrom || []).map((e) => ({
+  specEditor.value.envFrom = asArray(ctr.envFrom).map((e) => ({
     type: e.type || 'configMapRef',
     name: e.name || '',
     optional: !!e.optional,
@@ -415,14 +451,14 @@ async function openSpecEdit(row) {
       kind,
       row.name
     )
-    const containers = data.containers || []
+    const containers = asArray(data?.containers)
     specEditor.value = {
       open: true,
       kind,
       name: row.name,
       containers,
-      configMaps: data.configMaps || [],
-      secrets: data.secrets || [],
+      configMaps: asArray(data?.configMaps),
+      secrets: asArray(data?.secrets),
       selected: '',
       image: '',
       env: [],
@@ -432,7 +468,7 @@ async function openSpecEdit(row) {
     }
     if (containers.length) applyContainerToForm(containers[0])
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 
@@ -467,8 +503,8 @@ function removeEnvFromRow(i) {
 }
 
 function envFromNameOptions(row) {
-  if (row.type === 'secretRef') return specEditor.value.secrets
-  return specEditor.value.configMaps
+  if (row.type === 'secretRef') return asArray(specEditor.value.secrets)
+  return asArray(specEditor.value.configMaps)
 }
 
 async function saveSpecEdit() {
@@ -508,28 +544,29 @@ async function saveSpecEdit() {
     specEditor.value.open = false
     await loadRows()
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   } finally {
     specEditor.value.busy = false
   }
 }
 
 watch([currentClusterId], async () => {
-  try {
-    await loadNamespaces()
-    await loadRows()
-  } catch (e) {
-    error.value = e.message
-  }
+  await loadNamespaces()
 })
-watch([ns, tab], loadRows)
 onMounted(async () => {
-  try {
-    await loadNamespaces()
-    await loadRows()
-  } catch (e) {
-    error.value = e.message
+  await loadNamespaces()
+})
+watch([ns, tab], () => {
+  if (!ns.value) {
+    rowsSeq.bump()
+    metricsSeq.bump()
+    rows.value = []
+    podMetrics.value = []
+    metricsTip.value = ''
+    loading.value = false
+    return
   }
+  loadRows()
 })
 </script>
 
@@ -537,12 +574,13 @@ onMounted(async () => {
   <div>
     <h1>工作负载</h1>
     <p class="page-desc">
-      查看与运维 Pod / 控制器 / Service / ConfigMap；支持常用字段编辑与 YAML。Pod 指标仅在选中对应 Tab 时加载。
+      查看与运维 Pod / 控制器 / Service / ConfigMap；请先选择命名空间后再加载。Pod 指标仅在选中对应 Tab 且已选命名空间时请求。
     </p>
     <div v-if="!currentClusterId" class="empty">请先选择集群。</div>
     <template v-else>
       <div class="toolbar">
         <select v-model="ns" style="max-width:240px">
+          <option value="">请选择命名空间</option>
           <option v-for="n in namespaces" :key="n.name" :value="n.name">{{ n.name }}</option>
         </select>
         <div class="tabs">
@@ -566,6 +604,8 @@ onMounted(async () => {
         </div>
       </div>
       <p v-if="error" class="error">{{ error }}</p>
+      <div v-if="!ns" class="empty">请选择命名空间后再加载资源。</div>
+      <template v-else>
       <p v-if="loading" class="muted">加载中…</p>
 
       <template v-if="tab === 'pods'">
@@ -673,7 +713,7 @@ onMounted(async () => {
           <thead><tr><th>Pod</th><th>容器</th><th>CPU</th><th>内存</th></tr></thead>
           <tbody>
             <template v-for="m in podMetrics" :key="m.metadata?.name">
-              <tr v-for="c in (m.containers || [])" :key="m.metadata.name + c.name">
+              <tr v-for="c in asArray(m.containers)" :key="(m.metadata?.name || '') + c.name">
                 <td>{{ m.metadata?.name }}</td>
                 <td>{{ c.name }}</td>
                 <td>{{ fmtCPU(c.usage?.cpu) }}</td>
@@ -685,6 +725,7 @@ onMounted(async () => {
         <div v-else-if="!loading" class="empty">
           {{ metricsTip ? '无法加载 Pod 指标。' : '该命名空间下暂无 Pod 指标数据。' }}
         </div>
+      </template>
       </template>
     </template>
 

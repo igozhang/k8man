@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { readApi, writeApi } from '../api'
+import { asArray, errMessage } from '../utils/safe'
 
 const list = ref([])
 const q = ref('')
@@ -11,9 +12,12 @@ const error = ref('')
 async function load() {
   error.value = ''
   try {
-    list.value = await readApi.listDocs({ q: q.value || undefined, category: category.value || undefined })
+    list.value = asArray(
+      await readApi.listDocs({ q: q.value || undefined, category: category.value || undefined })
+    )
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
+    list.value = []
   }
 }
 
@@ -23,7 +27,7 @@ async function remove(d) {
     await writeApi.deleteDoc(d.id)
     await load()
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 

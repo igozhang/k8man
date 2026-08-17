@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
+import { asArray, errMessage } from '../utils/safe'
 
 const { refreshClusters, setCurrentClusterId } = useClusterStore()
 const list = ref([])
@@ -45,10 +46,11 @@ function applyKubeconfig(text, { fillName = true } = {}) {
 async function load() {
   error.value = ''
   try {
-    list.value = await readApi.listClusters()
+    list.value = asArray(await readApi.listClusters())
     await refreshClusters(async () => list.value)
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
+    list.value = []
   }
 }
 
@@ -60,11 +62,12 @@ async function loadHosts() {
       hosts.value = data
       hostsPath.value = ''
     } else {
-      hosts.value = data?.items || []
+      hosts.value = asArray(data?.items)
       hostsPath.value = data?.path || ''
     }
   } catch (e) {
-    hostError.value = e.message
+    hostError.value = errMessage(e)
+    hosts.value = []
   }
 }
 
@@ -118,7 +121,7 @@ async function saveHost() {
     await loadHosts()
     notice.value = 'Hosts 已更新（对后续「测试」与 API 请求立即生效）'
   } catch (e) {
-    hostError.value = e.message
+    hostError.value = errMessage(e)
   } finally {
     hostBusy.value = false
   }
@@ -131,7 +134,7 @@ async function removeHost(h) {
     if (hostEditingId.value === h.id) resetHostForm()
     await loadHosts()
   } catch (e) {
-    hostError.value = e.message
+    hostError.value = errMessage(e)
   }
 }
 
@@ -237,7 +240,7 @@ async function save() {
       notice.value = '已保存'
     }
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   } finally {
     busy.value = false
   }
@@ -249,7 +252,7 @@ async function remove(c) {
     await writeApi.deleteCluster(c.id)
     await load()
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 
@@ -270,7 +273,7 @@ async function testCurrent() {
       error.value = `测试失败：${r.lastError || r.status}`
     }
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   } finally {
     testing.value = false
   }

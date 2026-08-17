@@ -3,6 +3,7 @@ import { ref, watch, onMounted, computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { readApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
+import { asArray, createSeq, errMessage } from '../utils/safe'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 const loading = ref(false)
@@ -13,6 +14,9 @@ const stats = ref({
   pods: 0,
   badPods: 0
 })
+const loadSeq = createSeq()
+
+const emptyStats = () => ({ namespaces: 0, nodes: 0, pods: 0, badPods: 0 })
 
 const dnsHostHint = computed(() => {
   const msg = error.value || ''
@@ -31,42 +35,55 @@ const dnsHostHint = computed(() => {
 const isDNSError = computed(() => /no such host|lookup /i.test(error.value || ''))
 
 async function load() {
+  const seq = loadSeq.next()
   error.value = ''
   if (!currentClusterId.value) {
-    stats.value = { namespaces: 0, nodes: 0, pods: 0, badPods: 0 }
+    stats.value = emptyStats()
+    loading.value = false
     return
   }
   loading.value = true
+  const next = emptyStats()
   try {
-    const ns = await readApi.listNamespaces(currentClusterId.value)
-    stats.value.namespaces = ns.length
+    const ns = asArray(await readApi.listNamespaces(currentClusterId.value))
+    if (!loadSeq.is(seq)) return
+    next.namespaces = ns.length
+
     let nodes = []
     if (currentCluster.value?.permType !== 'project') {
       try {
-        nodes = await readApi.listNodes(currentClusterId.value)
+        nodes = asArray(await readApi.listNodes(currentClusterId.value))
       } catch {
         nodes = []
       }
     }
-    stats.value.nodes = nodes.length
+    if (!loadSeq.is(seq)) return
+    next.nodes = nodes.length
+
     let pods = 0
     let bad = 0
     const sample = ns.slice(0, 8)
     for (const n of sample) {
+      if (!loadSeq.is(seq)) return
+      if (!n?.name) continue
       try {
-        const list = await readApi.listPods(currentClusterId.value, n.name)
+        const list = asArray(await readApi.listPods(currentClusterId.value, n.name))
         pods += list.length
-        bad += list.filter((p) => p.status !== 'Running' && p.status !== 'Succeeded').length
+        bad += list.filter((p) => p?.status !== 'Running' && p?.status !== 'Succeeded').length
       } catch {
         /* skip ns without access */
       }
     }
-    stats.value.pods = pods
-    stats.value.badPods = bad
+    if (!loadSeq.is(seq)) return
+    next.pods = pods
+    next.badPods = bad
+    stats.value = next
   } catch (e) {
-    error.value = e.message
+    if (!loadSeq.is(seq)) return
+    error.value = errMessage(e)
+    stats.value = emptyStats()
   } finally {
-    loading.value = false
+    if (loadSeq.is(seq)) loading.value = false
   }
 }
 
@@ -100,8 +117,8 @@ onMounted(load)
         </p>
       </div>
       <div class="grid">
-        <div class="panel stat"><div class="label">Namespaces</div><div class="value">{{ stats.namespaces }}</div></div>
-        <div class="panel stat"><div class="label">Nodes</div><div class="value">{{ currentCluster?.permType === 'project' ? '—' : stats.nodes }}</div></div>
+        <div class="panel stat"><div class="label">Namespaces</div><div class="value">{{ loading ? '…' : stats.namespaces }}</div></div>
+        <div class="panel stat"><div class="label">Nodes</div><div class="value">{{ currentCluster?.permType === 'project' ? '—' : (loading ? '…' : stats.nodes) }}</div></div>
         <div class="panel stat"><div class="label">Pods（抽样）</div><div class="value">{{ loading ? '…' : stats.pods }}</div></div>
         <div class="panel stat"><div class="label">异常 Pod（抽样）</div><div class="value">{{ loading ? '…' : stats.badPods }}</div></div>
       </div>

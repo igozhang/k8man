@@ -3,17 +3,25 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { marked } from 'marked'
 import { readApi } from '../api'
+import { errMessage } from '../utils/safe'
 
 const route = useRoute()
 const doc = ref(null)
 const error = ref('')
-const html = computed(() => (doc.value?.content ? marked.parse(doc.value.content) : ''))
+const html = computed(() => {
+  try {
+    return doc.value?.content ? marked.parse(doc.value.content) : ''
+  } catch {
+    return '<p class="error">文档内容解析失败</p>'
+  }
+})
 
 onMounted(async () => {
   try {
     doc.value = await readApi.getDoc(route.params.id)
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
+    doc.value = null
   }
 })
 </script>

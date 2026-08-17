@@ -4,20 +4,27 @@ import { readApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory, mergeNodeUsage } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
+import { asArray, createSeq, errMessage } from '../utils/safe'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 const rows = ref([])
 const error = ref('')
 const tip = ref('')
 const loading = ref(false)
+const loadSeq = createSeq()
 
 async function load() {
+  const seq = loadSeq.next()
   error.value = ''
   tip.value = ''
   rows.value = []
-  if (!currentClusterId.value) return
+  if (!currentClusterId.value) {
+    loading.value = false
+    return
+  }
   if (currentCluster.value?.permType === 'project') {
     error.value = 'Project kubeconfig 无法查看节点'
+    loading.value = false
     return
   }
   loading.value = true
@@ -25,19 +32,22 @@ async function load() {
     const [nodes, metrics] = await Promise.all([
       readApi.listNodes(currentClusterId.value),
       readApi.nodeMetrics(currentClusterId.value).catch((e) => {
-        tip.value = metricsErrorTip(e)
+        if (loadSeq.is(seq)) tip.value = metricsErrorTip(e)
         return []
       })
     ])
-    rows.value = mergeNodeUsage(nodes || [], metrics || [])
+    if (!loadSeq.is(seq)) return
+    rows.value = mergeNodeUsage(asArray(nodes), asArray(metrics))
   } catch (e) {
-    error.value = e.message
+    if (!loadSeq.is(seq)) return
+    error.value = errMessage(e)
+    rows.value = []
   } finally {
-    loading.value = false
+    if (loadSeq.is(seq)) loading.value = false
   }
 }
 
-watch([currentClusterId, currentCluster], load)
+watch(currentClusterId, load)
 onMounted(load)
 </script>
 

@@ -106,7 +106,8 @@ export function mergeNodeUsage(nodes, metrics) {
     if (!name) continue
     byName.set(name, m)
   }
-  return (nodes || []).map((n) => {
+  return (Array.isArray(nodes) ? nodes : []).map((n) => {
+    if (!n || typeof n !== 'object') return n
     const m = byName.get(n.name)
     return {
       ...n,

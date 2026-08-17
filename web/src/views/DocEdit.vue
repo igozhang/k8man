@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { readApi, writeApi } from '../api'
+import { asArray, errMessage } from '../utils/safe'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,16 +23,16 @@ onMounted(async () => {
   try {
     const d = await readApi.getDoc(route.params.id)
     form.value = {
-      title: d.title,
-      slug: d.slug || '',
-      category: d.category || 'general',
-      tags: (d.tags || []).join(','),
-      summary: d.summary || '',
-      content: d.content || '',
-      pinned: !!d.pinned
+      title: d?.title || '',
+      slug: d?.slug || '',
+      category: d?.category || 'general',
+      tags: asArray(d?.tags).join(','),
+      summary: d?.summary || '',
+      content: d?.content || '',
+      pinned: !!d?.pinned
     }
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 })
 
@@ -50,9 +51,13 @@ async function save() {
     const d = isEdit
       ? await writeApi.updateDoc(route.params.id, payload)
       : await writeApi.createDoc(payload)
+    if (!d?.id) {
+      error.value = '保存成功但未返回文档 ID'
+      return
+    }
     router.push(`/docs/${d.id}`)
   } catch (e) {
-    error.value = e.message
+    error.value = errMessage(e)
   }
 }
 </script>
