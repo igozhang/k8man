@@ -101,16 +101,16 @@ a:hover { text-decoration: underline; }
 .site-head-inner {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 0.35rem;
 }
 
-/* 标题 + 导航：中间区域同组排版 */
+/* 标题 + 导航：与正文同宽区域左对齐 */
 .head-mid {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 0.65rem 1.35rem;
   max-width: 100%;
 }
@@ -122,6 +122,7 @@ a:hover { text-decoration: underline; }
   line-height: 1.35;
   color: var(--text);
   white-space: nowrap;
+  text-align: left;
 }
 .site-head.has-banner .brand {
   text-shadow:
@@ -132,7 +133,7 @@ a:hover { text-decoration: underline; }
   margin: 0.15rem 0 0;
   font-size: 0.88rem;
   color: var(--muted);
-  text-align: center;
+  text-align: left;
 }
 .site-head.has-banner .site-tagline {
   text-shadow:
@@ -144,7 +145,7 @@ a:hover { text-decoration: underline; }
   flex-wrap: wrap;
   gap: 0.55rem 1rem;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
 }
 .nav a {
   color: var(--muted);
@@ -409,9 +410,10 @@ textarea {
 @media (max-width: 720px) {
   .head-mid {
     flex-direction: column;
+    align-items: flex-start;
     gap: 0.45rem 0.75rem;
   }
-  .brand { font-size: 1.05rem; white-space: normal; text-align: center; }
-  .nav { gap: 0.45rem 0.75rem; }
+  .brand { font-size: 1.05rem; white-space: normal; text-align: left; }
+  .nav { gap: 0.45rem 0.75rem; justify-content: flex-start; }
   .cluster-select { min-width: 140px; }
 }
