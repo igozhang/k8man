@@ -1,5 +1,6 @@
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, computed } from 'vue'
+import { RouterLink } from 'vue-router'
 import { readApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 
@@ -12,6 +13,22 @@ const stats = ref({
   pods: 0,
   badPods: 0
 })
+
+const dnsHostHint = computed(() => {
+  const msg = error.value || ''
+  const m = msg.match(/lookup\s+([^\s:]+)\s+on\s+/i)
+  if (m?.[1]) return m[1]
+  try {
+    if (currentCluster.value?.server) {
+      return new URL(currentCluster.value.server).hostname
+    }
+  } catch {
+    /* ignore */
+  }
+  return ''
+})
+
+const isDNSError = computed(() => /no such host|lookup /i.test(error.value || ''))
 
 async function load() {
   error.value = ''
@@ -72,7 +89,16 @@ onMounted(load)
           <span v-if="currentCluster?.lastError" class="error"> — {{ currentCluster.lastError }}</span>
         </div>
       </div>
-      <p v-if="error" class="error">{{ error }}</p>
+      <div v-if="error" class="error-block">
+        <p class="error" style="white-space: pre-wrap; margin: 0">{{ error }}</p>
+        <p v-if="isDNSError" class="hint">
+          域名无法解析（走的是集群 DNS）。请到
+          <RouterLink to="/clusters">KubeConfig → Hosts</RouterLink>
+          添加映射，例如：
+          <code>10.80.238.34 {{ dnsHostHint || 'api-host' }}</code>
+          ，保存后再刷新本页。列表里显示「暂无 hosts」时，概览一定会失败。
+        </p>
+      </div>
       <div class="grid">
         <div class="panel stat"><div class="label">Namespaces</div><div class="value">{{ stats.namespaces }}</div></div>
         <div class="panel stat"><div class="label">Nodes</div><div class="value">{{ currentCluster?.permType === 'project' ? '—' : stats.nodes }}</div></div>
@@ -82,3 +108,19 @@ onMounted(load)
     </template>
   </div>
 </template>
+
+<style scoped>
+.error-block {
+  margin-bottom: 12px;
+}
+.hint {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.hint code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+</style>

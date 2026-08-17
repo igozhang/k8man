@@ -289,6 +289,36 @@ func (h *Handler) ListDeployments(c *gin.Context) {
 	respond.OK(c, items)
 }
 
+func (h *Handler) ListStatefulSets(c *gin.Context) {
+	clients, ok := h.clients(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	items, err := clients.ListStatefulSets(ctx, c.Param("ns"))
+	if err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	respond.OK(c, items)
+}
+
+func (h *Handler) ListDaemonSets(c *gin.Context) {
+	clients, ok := h.clients(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	items, err := clients.ListDaemonSets(ctx, c.Param("ns"))
+	if err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	respond.OK(c, items)
+}
+
 func (h *Handler) ListServices(c *gin.Context) {
 	clients, ok := h.clients(c)
 	if !ok {

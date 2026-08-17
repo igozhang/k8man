@@ -8,6 +8,8 @@ export const writeApi = {
     http.post(`/write/clusters/${id}/namespaces/${ns}/pods/${name}/restart`),
   scaleDeployment: (id, ns, name, replicas) =>
     http.patch(`/write/clusters/${id}/namespaces/${ns}/deployments/${name}/scale`, { replicas }),
+  scaleStatefulSet: (id, ns, name, replicas) =>
+    http.patch(`/write/clusters/${id}/namespaces/${ns}/statefulsets/${name}/scale`, { replicas }),
   applyYAML: (id, ns, kind, name, yaml) =>
     http.put(`/write/clusters/${id}/namespaces/${ns}/resources/${kind}/${name}/yaml`, { yaml }),
   createDoc: (payload) => http.post('/write/docs', payload),

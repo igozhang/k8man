@@ -264,6 +264,25 @@ func (h *Handler) ScaleDeployment(c *gin.Context) {
 	respond.OK(c, gin.H{"name": c.Param("name"), "replicas": *in.Replicas})
 }
 
+func (h *Handler) ScaleStatefulSet(c *gin.Context) {
+	var in model.ScaleRequest
+	if err := c.ShouldBindJSON(&in); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	clients, ok := h.clients(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	if err := clients.ScaleStatefulSet(ctx, c.Param("ns"), c.Param("name"), *in.Replicas); err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	respond.OK(c, gin.H{"name": c.Param("name"), "replicas": *in.Replicas})
+}
+
 func (h *Handler) ApplyYAML(c *gin.Context) {
 	var in model.YAMLRequest
 	if err := c.ShouldBindJSON(&in); err != nil {

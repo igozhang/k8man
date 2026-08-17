@@ -12,6 +12,8 @@ export const readApi = {
   podLogs: (id, ns, name, tail = 500) =>
     http.get(`/read/clusters/${id}/namespaces/${ns}/pods/${name}/logs`, { params: { tail } }),
   listDeployments: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/deployments`),
+  listStatefulSets: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/statefulsets`),
+  listDaemonSets: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/daemonsets`),
   listServices: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/services`),
   getYAML: (id, ns, kind, name) =>
     http.get(`/read/clusters/${id}/namespaces/${ns}/resources/${kind}/${name}/yaml`),

@@ -324,6 +324,22 @@ func (c *Clients) ListDeployments(ctx context.Context, ns string) (interface{}, 
 	return list.Items, nil
 }
 
+func (c *Clients) ListStatefulSets(ctx context.Context, ns string) (interface{}, error) {
+	list, err := c.Clientset.AppsV1().StatefulSets(ns).List(ctx, metav1.ListOptions{Limit: 1000})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *Clients) ListDaemonSets(ctx context.Context, ns string) (interface{}, error) {
+	list, err := c.Clientset.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{Limit: 1000})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
 func (c *Clients) ScaleDeployment(ctx context.Context, ns, name string, replicas int32) error {
 	scale, err := c.Clientset.AppsV1().Deployments(ns).GetScale(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -331,6 +347,16 @@ func (c *Clients) ScaleDeployment(ctx context.Context, ns, name string, replicas
 	}
 	scale.Spec.Replicas = replicas
 	_, err = c.Clientset.AppsV1().Deployments(ns).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
+	return err
+}
+
+func (c *Clients) ScaleStatefulSet(ctx context.Context, ns, name string, replicas int32) error {
+	scale, err := c.Clientset.AppsV1().StatefulSets(ns).GetScale(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	scale.Spec.Replicas = replicas
+	_, err = c.Clientset.AppsV1().StatefulSets(ns).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
 	return err
 }
 
@@ -343,14 +369,18 @@ func (c *Clients) ListServices(ctx context.Context, ns string) ([]corev1.Service
 }
 
 var allowedKinds = map[string]schema.GroupVersionResource{
-	"pod":        {Group: "", Version: "v1", Resource: "pods"},
-	"pods":       {Group: "", Version: "v1", Resource: "pods"},
-	"deployment": {Group: "apps", Version: "v1", Resource: "deployments"},
-	"deployments":{Group: "apps", Version: "v1", Resource: "deployments"},
-	"service":    {Group: "", Version: "v1", Resource: "services"},
-	"services":   {Group: "", Version: "v1", Resource: "services"},
-	"namespace":  {Group: "", Version: "v1", Resource: "namespaces"},
-	"namespaces": {Group: "", Version: "v1", Resource: "namespaces"},
+	"pod":          {Group: "", Version: "v1", Resource: "pods"},
+	"pods":         {Group: "", Version: "v1", Resource: "pods"},
+	"deployment":   {Group: "apps", Version: "v1", Resource: "deployments"},
+	"deployments":  {Group: "apps", Version: "v1", Resource: "deployments"},
+	"statefulset":  {Group: "apps", Version: "v1", Resource: "statefulsets"},
+	"statefulsets":  {Group: "apps", Version: "v1", Resource: "statefulsets"},
+	"daemonset":    {Group: "apps", Version: "v1", Resource: "daemonsets"},
+	"daemonsets":   {Group: "apps", Version: "v1", Resource: "daemonsets"},
+	"service":      {Group: "", Version: "v1", Resource: "services"},
+	"services":     {Group: "", Version: "v1", Resource: "services"},
+	"namespace":    {Group: "", Version: "v1", Resource: "namespaces"},
+	"namespaces":   {Group: "", Version: "v1", Resource: "namespaces"},
 }
 
 func ResolveGVR(kind string) (schema.GroupVersionResource, bool) {
