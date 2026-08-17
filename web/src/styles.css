@@ -489,23 +489,44 @@ td.actions {
   resize: vertical;
   line-height: 1.45;
   overflow-y: hidden;
-  padding-right: 3.25rem;
 }
-/* 框内半透明复制：默认隐藏，hover/聚焦框内才出现（键值 / YAML 共用） */
+/* 框内半透明复制：边框在 wrap 上，按钮相对 wrap 内缩，避开滚动条且不溢出圆角 */
 .field-copy-wrap {
+  --field-copy-inset: 8px;
+  /* Windows 经典滚动条约 12–17px；按钮落在滚动条左侧 */
+  --field-copy-scrollbar: 16px;
   position: relative;
   min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--input);
+  box-sizing: border-box;
 }
 .field-copy-wrap > textarea {
   display: block;
   width: 100%;
-  padding-right: 3.25rem;
+  margin: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  /* 内容避开右上角按钮 + 滚动条 */
+  padding-right: calc(4.25rem + var(--field-copy-scrollbar));
+}
+.field-copy-wrap > textarea:focus {
+  outline: none;
+}
+.field-copy-wrap:focus-within {
+  border-color: var(--accent);
+}
+.cm-kv-row .field-copy-wrap > textarea.kv-val {
+  padding-right: calc(4.25rem + var(--field-copy-scrollbar));
 }
 .field-copy {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 1;
+  top: var(--field-copy-inset);
+  right: calc(var(--field-copy-inset) + var(--field-copy-scrollbar));
+  z-index: 2;
   margin: 0;
   padding: 3px 8px;
   border: 1px solid rgba(45, 59, 45, 0.22);
@@ -518,8 +539,10 @@ td.actions {
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s ease, background 0.12s ease;
+  transition: opacity 0.12s ease, background 0.12s ease, border-color 0.12s ease;
   backdrop-filter: blur(2px);
+  box-sizing: border-box;
+  max-width: calc(100% - var(--field-copy-inset) * 2 - var(--field-copy-scrollbar));
 }
 .field-copy-wrap:hover .field-copy,
 .field-copy-wrap:focus-within .field-copy,
@@ -613,6 +636,10 @@ td.actions {
   display: flex;
   align-items: center;
   min-height: calc(var(--ctrl-pad-y) * 2 + var(--ctrl-font-sm) * var(--ctrl-line));
+}
+/* 工具栏内说明文字不要再吃大块底边距，避免和右侧按钮视觉错位 */
+.toolbar .page-desc {
+  margin-bottom: 0;
 }
 .drawer > h3 {
   margin: 0 0 12px;

@@ -29,7 +29,9 @@ alwaysApply: true
    - 仅当同一行有多行 `textarea` 且按钮应对齐顶部时，才局部 `align-items: start`，并注释原因。
 
 5. **框内复制**
-   - 复制内容对应某输入框/文本域时：用 `.field-copy-wrap` + `.field-copy`，叠在框内右上角；默认隐藏，仅 hover / focus-within 显示；不要放在框外工具栏。
+   - 复制内容对应某输入框/文本域时：用 `.field-copy-wrap` + `.field-copy`。
+   - **边框画在 wrap 上**，textarea 去边框；按钮相对 wrap 内缩，`right` 须避开滚动条槽（见 `--field-copy-scrollbar`），禁止贴边/压滚动条/溢出圆角。
+   - 默认隐藏，仅 hover / focus-within 显示；不要放在框外工具栏。
 
 6. **改完自检**
    - 抽屉标题行、ConfigMap 键值/YAML、环境变量行、表格操作列、筛选工具栏：肉眼确认中线对齐与复制按钮归属清晰。

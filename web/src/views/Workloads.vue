@@ -742,7 +742,9 @@ watch([ns, tab], () => {
               <td>{{ s.type }}</td>
               <td>{{ s.clusterIP }}</td>
               <td>{{ s.ports }}</td>
-              <td><button class="btn btn-sm" @click="openYAML('service', s.name)">YAML</button></td>
+              <td class="actions">
+                <button class="btn btn-sm" @click="openYAML('service', s.name)">YAML</button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -800,7 +802,9 @@ watch([ns, tab], () => {
     <div v-if="drawer" class="drawer">
       <div class="toolbar">
         <strong>{{ drawer.title }}</strong>
-        <button class="btn btn-sm" @click="drawer = null">关闭</button>
+        <div class="actions">
+          <button class="btn btn-sm" @click="drawer = null">关闭</button>
+        </div>
       </div>
       <pre class="pre">{{ drawer.content }}</pre>
     </div>
@@ -827,7 +831,12 @@ watch([ns, tab], () => {
 
     <div v-if="scaleForm.open" class="drawer-backdrop" @click="scaleForm.open = false"></div>
     <div v-if="scaleForm.open" class="drawer" style="width:min(360px,100%)">
-      <h3>扩缩容 {{ scaleForm.kind }} / {{ scaleForm.name }}</h3>
+      <div class="toolbar">
+        <strong>扩缩容 · {{ scaleForm.kind }}/{{ scaleForm.name }}</strong>
+        <div class="actions">
+          <button class="btn btn-sm" @click="scaleForm.open = false">关闭</button>
+        </div>
+      </div>
       <div class="form-row">
         <label>Replicas</label>
         <input v-model.number="scaleForm.replicas" type="number" min="0" />
