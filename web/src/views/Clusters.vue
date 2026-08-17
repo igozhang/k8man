@@ -7,7 +7,7 @@ const { refreshClusters, setCurrentClusterId } = useClusterStore()
 const list = ref([])
 const error = ref('')
 const showForm = ref(false)
-/** create | edit | rename */
+/** create | edit */
 const formMode = ref('create')
 const editingId = ref('')
 const form = ref({ name: '', description: '', kubeconfig: '', serverOverride: '', insecureSkipTLS: false })
@@ -17,6 +17,7 @@ const importMode = ref('paste')
 const uploadFileName = ref('')
 const fileInput = ref(null)
 const notice = ref('')
+const testing = ref(false)
 
 const hosts = ref([])
 const hostsPath = ref('')
@@ -157,21 +158,7 @@ function openEdit(c) {
   importMode.value = 'paste'
   uploadFileName.value = ''
   notice.value = ''
-  showForm.value = true
-}
-
-function openRename(c) {
-  editingId.value = c.id
-  formMode.value = 'rename'
-  form.value = {
-    name: c.name,
-    description: c.description || '',
-    kubeconfig: '',
-    serverOverride: '',
-    insecureSkipTLS: !!c.insecureSkipTLS
-  }
-  uploadFileName.value = ''
-  notice.value = ''
+  error.value = ''
   showForm.value = true
 }
 
@@ -224,9 +211,7 @@ async function save() {
       return
     }
     let saved = null
-    if (formMode.value === 'rename') {
-      saved = await writeApi.updateCluster(editingId.value, { name })
-    } else if (formMode.value === 'edit') {
+    if (formMode.value === 'edit') {
       const payload = {
         name,
         description: form.value.description,
@@ -248,7 +233,7 @@ async function save() {
     await load()
     if (saved?.status === 'error' && saved?.lastError) {
       notice.value = `已保存，但连通性检测失败：${saved.lastError}`
-    } else if (formMode.value !== 'rename') {
+    } else {
       notice.value = '已保存'
     }
   } catch (e) {
@@ -268,19 +253,26 @@ async function remove(c) {
   }
 }
 
-async function test(c) {
+async function testCurrent() {
+  if (!editingId.value) return
+  testing.value = true
+  error.value = ''
+  notice.value = ''
   try {
-    const r = await readApi.testCluster(c.id)
+    const r = await readApi.testCluster(editingId.value)
     await load()
+    // 刷新后保持编辑态展示最新状态标记
+    const cur = list.value.find((c) => c.id === editingId.value)
+    if (cur) form.value.insecureSkipTLS = !!cur.insecureSkipTLS
     if (r.status === 'ok') {
       notice.value = `测试通过：${r.permType} · ${r.server}`
-      error.value = ''
     } else {
-      notice.value = ''
       error.value = `测试失败：${r.lastError || r.status}`
     }
   } catch (e) {
     error.value = e.message
+  } finally {
+    testing.value = false
   }
 }
 
@@ -304,21 +296,22 @@ onMounted(() => {
 
     <div v-if="showForm" class="panel">
       <h2 class="form-title">
-        {{ formMode === 'create' ? '导入 kubeconfig' : formMode === 'rename' ? '修改标题' : '编辑集群' }}
+        {{ formMode === 'create' ? '导入 kubeconfig' : '编辑集群' }}
       </h2>
       <div class="form-row">
         <label>
           标题
           <span v-if="formMode === 'create'" class="muted">（可留空，将使用 kubeconfig 的 current-context）</span>
+          <span v-else class="muted">（可直接修改显示名称）</span>
         </label>
         <input v-model="form.name" type="text" placeholder="例如 pre-harbor / prod-cluster" />
       </div>
-      <div v-if="formMode !== 'rename'" class="form-row">
+      <div class="form-row">
         <label>描述</label>
         <input v-model="form.description" type="text" />
       </div>
 
-      <div v-if="formMode !== 'rename'" class="form-row">
+      <div class="form-row">
         <label>{{ formMode === 'edit' ? 'Kubeconfig（留空则不更新）' : 'Kubeconfig' }}</label>
         <div class="tabs">
           <button
@@ -361,7 +354,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="formMode !== 'rename'" class="form-row">
+      <div class="form-row">
         <label>
           API Server 覆盖
           <span class="muted">（可选；当前环境 DNS 解析失败时可填可连通地址，如 https://x.x.x.x/k8s/clusters/local）</span>
@@ -373,7 +366,7 @@ onMounted(() => {
         />
       </div>
 
-      <div v-if="formMode !== 'rename'" class="form-row">
+      <div class="form-row">
         <label class="check-label">
           <input v-model="form.insecureSkipTLS" type="checkbox" />
           跳过 TLS 证书校验
@@ -382,9 +375,13 @@ onMounted(() => {
       </div>
 
       <div class="actions">
-        <button class="btn btn-primary" :disabled="busy" @click="save">
-          {{ formMode === 'rename' ? '保存标题' : '保存' }}
-        </button>
+        <button class="btn btn-primary" :disabled="busy" @click="save">保存</button>
+        <button
+          v-if="formMode === 'edit'"
+          class="btn"
+          :disabled="testing || busy"
+          @click="testCurrent"
+        >{{ testing ? '测试中…' : '测试连接' }}</button>
         <button class="btn" @click="showForm = false">取消</button>
       </div>
     </div>
@@ -414,8 +411,6 @@ onMounted(() => {
           </td>
           <td class="actions">
             <button class="btn btn-sm" @click="setCurrentClusterId(c.id)">选用</button>
-            <button class="btn btn-sm" @click="test(c)">测试</button>
-            <button class="btn btn-sm" @click="openRename(c)">改标题</button>
             <button class="btn btn-sm" @click="openEdit(c)">编辑</button>
             <button class="btn btn-sm btn-danger" @click="remove(c)">删除</button>
           </td>
