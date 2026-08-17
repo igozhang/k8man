@@ -17,6 +17,12 @@
   --footer-h: 44px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
   --mono: "JetBrains Mono", "Consolas", monospace;
+  /* 同行控件统一高度，避免 input / btn / btn-sm 错位 */
+  --ctrl-pad-y: 7px;
+  --ctrl-pad-x: 10px;
+  --ctrl-line: 1.25;
+  --ctrl-font: 13px;
+  --ctrl-font-sm: 12px;
 }
 
 * { box-sizing: border-box; }
@@ -228,13 +234,17 @@ h1 {
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--text);
   border-radius: 8px;
-  padding: 7px 12px;
-  font-size: 13px;
+  padding: var(--ctrl-pad-y) 12px;
+  font-size: var(--ctrl-font);
+  line-height: var(--ctrl-line);
+  font-family: inherit;
+  box-sizing: border-box;
   cursor: pointer;
 }
 .btn:hover { background: rgba(61, 107, 74, 0.08); }
@@ -248,7 +258,11 @@ h1 {
   color: var(--danger);
   border-color: #e8b4b0;
 }
-.btn-sm { padding: 4px 8px; font-size: 12px; }
+/* 与单行 input 同高：只缩水平 padding / 字号，不压扁垂直 */
+.btn-sm {
+  padding: var(--ctrl-pad-y) 8px;
+  font-size: var(--ctrl-font-sm);
+}
 
 .table {
   width: 100%;
@@ -320,12 +334,15 @@ h1 {
 }
 input[type="text"], input[type="number"], select, textarea {
   width: 100%;
-  padding: 8px 10px;
+  padding: var(--ctrl-pad-y) var(--ctrl-pad-x);
   border: 1px solid var(--line);
   border-radius: 8px;
   font: inherit;
+  font-size: var(--ctrl-font);
+  line-height: var(--ctrl-line);
   background: var(--input);
   color: var(--text);
+  box-sizing: border-box;
 }
 textarea {
   font-family: var(--mono);
@@ -338,10 +355,17 @@ textarea {
   flex-wrap: wrap;
   align-items: center;
 }
-/* 表单/抽屉底部按钮组保留间距；表格单元格内不顶开 */
-.actions:not(td) {
+/*
+ * 仅表单/抽屉底部按钮组需要上边距。
+ * toolbar 内、表格单元格内的 .actions 绝不能加 margin-top，否则标题/按钮垂直错位。
+ */
+.drawer > .actions,
+.panel > .actions,
+.doc-item > .actions,
+.form-actions {
   margin-top: 12px;
 }
+.toolbar .actions,
 td.actions {
   margin-top: 0;
 }
@@ -357,14 +381,29 @@ td.actions {
 .tag.error { background: #fef2f2; color: #b91c1c; }
 .muted { color: var(--muted); }
 .error { color: var(--danger); font-size: 13px; }
-.tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+.toolbar .tabs {
+  margin-bottom: 0;
+}
 .tab {
-  padding: 6px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--ctrl-pad-y) 12px;
   border-radius: 8px;
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
   color: var(--muted);
+  font: inherit;
+  font-size: var(--ctrl-font);
+  line-height: var(--ctrl-line);
+  box-sizing: border-box;
 }
 .tab.active {
   background: var(--panel);
@@ -393,19 +432,24 @@ td.actions {
   display: grid;
   grid-template-columns: minmax(100px, 0.35fr) 1fr auto;
   gap: 8px;
-  align-items: start;
+  align-items: center;
 }
 .kv-row .kv-key,
 .kv-row .kv-val {
   width: 100%;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--ctrl-font-sm);
+  line-height: var(--ctrl-line);
+}
+.kv-row > .btn {
+  align-self: center;
 }
 .kv-row textarea.kv-val {
   min-height: 44px;
   resize: vertical;
+  line-height: 1.45;
 }
-/* ConfigMap 键值：键与操作同一行，值按内容有限度自动增高 */
+/* ConfigMap 键值：键与操作同一行垂直居中，值按内容有限度自动增高 */
 .cm-kv-list {
   gap: 14px;
 }
@@ -414,10 +458,12 @@ td.actions {
   grid-template-areas:
     "key actions"
     "val val";
+  align-items: center;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
+  box-sizing: border-box;
 }
 .cm-kv-row .kv-key { grid-area: key; }
 .cm-kv-actions {
@@ -425,15 +471,67 @@ td.actions {
   display: flex;
   gap: 6px;
   align-items: center;
+  align-self: center;
   flex-shrink: 0;
+  margin: 0;
+}
+.cm-kv-val-wrap {
+  grid-area: val;
+  position: relative;
+  align-self: stretch;
+  min-width: 0;
 }
 .cm-kv-row textarea.kv-val {
-  grid-area: val;
+  display: block;
+  width: 100%;
   min-height: 120px;
   height: 120px;
   resize: vertical;
   line-height: 1.45;
   overflow-y: hidden;
+  padding-right: 3.25rem;
+}
+/* 框内半透明复制：默认隐藏，hover/聚焦框内才出现（键值 / YAML 共用） */
+.field-copy-wrap {
+  position: relative;
+  min-width: 0;
+}
+.field-copy-wrap > textarea {
+  display: block;
+  width: 100%;
+  padding-right: 3.25rem;
+}
+.field-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  margin: 0;
+  padding: 3px 8px;
+  border: 1px solid rgba(45, 59, 45, 0.22);
+  border-radius: 6px;
+  background: rgba(232, 239, 232, 0.72);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--ctrl-font-sm);
+  line-height: var(--ctrl-line);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, background 0.12s ease;
+  backdrop-filter: blur(2px);
+}
+.field-copy-wrap:hover .field-copy,
+.field-copy-wrap:focus-within .field-copy,
+.field-copy.is-copied {
+  opacity: 0.88;
+  pointer-events: auto;
+}
+.field-copy:hover,
+.field-copy:focus-visible {
+  opacity: 1;
+  background: rgba(232, 239, 232, 0.95);
+  outline: none;
 }
 .cm-yaml {
   display: block;
@@ -503,6 +601,22 @@ td.actions {
   gap: 12px;
   margin-bottom: 16px;
   flex-wrap: wrap;
+}
+/* 筛选条等：控件靠左成组，不要被 space-between 拉散 */
+.toolbar.toolbar-start {
+  justify-content: flex-start;
+}
+.toolbar > strong,
+.toolbar > h3 {
+  margin: 0;
+  line-height: var(--ctrl-line);
+  display: flex;
+  align-items: center;
+  min-height: calc(var(--ctrl-pad-y) * 2 + var(--ctrl-font-sm) * var(--ctrl-line));
+}
+.drawer > h3 {
+  margin: 0 0 12px;
+  line-height: var(--ctrl-line);
 }
 .empty {
   padding: 32px;

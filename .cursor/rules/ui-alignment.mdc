@@ -1,0 +1,55 @@
+---
+description: 全站 UI 元素垂直/水平对齐规范，避免工具栏、表单行、表格操作列反复错位
+globs: web/**/*.{vue,css,scss}
+alwaysApply: true
+---
+
+# 前端元素对齐（强制）
+
+用户已多次反馈对齐问题。**任何 UI 改动（含新组件）都必须保证同行元素垂直居中对齐**，不要只修当前屏、下次又偏。
+
+## 硬性要求
+
+1. **同行控件必须垂直居中**
+   - 标题 + 按钮组、`input`/`select` + 按钮、表格操作列按钮：容器用 `display: flex|grid` + `align-items: center`（表格单元格用 `vertical-align: middle`）。
+   - 禁止用裸 `margin-top` 把按钮组相对标题顶歪（尤其 `.toolbar` 内的 `.actions`）。
+
+2. **同排控件高度一致**
+   - 单行 `input` / `select` / `.btn` / `.btn-sm` / `.tab` 共用 `--ctrl-*`（见 `web/src/styles.css`）。
+   - 不要给 `.btn-sm` 单独压扁高度后再和输入框并排。
+   - 工具栏内的 `.tabs` 须 `margin-bottom: 0`（全局 `.tabs` 的下边距只给独立 tab 条用）。
+
+3. **`.actions` 的上边距**
+   - 仅表单/抽屉**底部**按钮组需要 `margin-top`。
+   - `.toolbar .actions`、`td.actions` **必须** `margin-top: 0`。
+   - 筛选条（多控件横排、无左右分区）用 `.toolbar.toolbar-start`，避免被 `space-between` 拉散。
+
+4. **键值 / 表单行**
+   - 单行键值（input + 操作按钮）用 `align-items: center`。
+   - 仅当同一行有多行 `textarea` 且按钮应对齐顶部时，才局部 `align-items: start`，并注释原因。
+
+5. **框内复制**
+   - 复制内容对应某输入框/文本域时：用 `.field-copy-wrap` + `.field-copy`，叠在框内右上角；默认隐藏，仅 hover / focus-within 显示；不要放在框外工具栏。
+
+6. **改完自检**
+   - 抽屉标题行、ConfigMap 键值/YAML、环境变量行、表格操作列、筛选工具栏：肉眼确认中线对齐与复制按钮归属清晰。
+
+## 反例
+
+```css
+/* ❌ toolbar 内 actions 被全局 margin-top 顶歪 */
+.actions:not(td) { margin-top: 12px; }
+
+/* ❌ 输入框旁按钮顶对齐，高度又更矮 → 视觉错位 */
+.kv-row { align-items: start; }
+.btn-sm { padding: 4px 8px; }
+```
+
+```css
+/* ✅ */
+.toolbar { align-items: center; }
+.toolbar .actions { margin-top: 0; }
+.kv-row { align-items: center; }
+/* 控件共用 --ctrl-pad-y / --ctrl-line */
+/* 复制：.field-copy-wrap > textarea + .field-copy */
+```

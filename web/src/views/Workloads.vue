@@ -810,14 +810,19 @@ watch([ns, tab], () => {
       <div class="toolbar">
         <strong>YAML · {{ yamlEditor.kind }}/{{ yamlEditor.name }}</strong>
         <div class="actions">
-          <button class="btn btn-sm" @click="copyText(yamlEditor.yaml, 'res-yaml')">
-            {{ cmCopied === 'res-yaml' ? '已复制' : '复制' }}
-          </button>
           <button class="btn btn-primary btn-sm" @click="saveYAML">应用</button>
           <button class="btn btn-sm" @click="yamlEditor.open = false">关闭</button>
         </div>
       </div>
-      <textarea v-model="yamlEditor.yaml" class="cm-yaml"></textarea>
+      <div class="field-copy-wrap">
+        <textarea v-model="yamlEditor.yaml" class="cm-yaml"></textarea>
+        <button
+          type="button"
+          class="field-copy"
+          :class="{ 'is-copied': cmCopied === 'res-yaml' }"
+          @click="copyText(yamlEditor.yaml, 'res-yaml')"
+        >{{ cmCopied === 'res-yaml' ? '已复制' : '复制' }}</button>
+      </div>
     </div>
 
     <div v-if="scaleForm.open" class="drawer-backdrop" @click="scaleForm.open = false"></div>
@@ -849,11 +854,6 @@ watch([ns, tab], () => {
             :class="{ 'btn-primary': cmEditor.mode === 'yaml' }"
             @click="switchCmMode('yaml')"
           >YAML</button>
-          <button
-            v-if="cmEditor.mode === 'yaml'"
-            class="btn btn-sm"
-            @click="copyCmYaml"
-          >{{ cmCopied === 'yaml' ? '已复制' : '复制' }}</button>
           <button class="btn btn-primary btn-sm" :disabled="cmEditor.busy" @click="saveConfigMap">
             {{ cmEditor.busy ? '保存中…' : '保存' }}
           </button>
@@ -869,27 +869,39 @@ watch([ns, tab], () => {
           <div v-for="(e, i) in cmEditor.entries" :key="i" class="kv-row cm-kv-row">
             <input v-model="e.key" placeholder="key" class="kv-key" />
             <div class="cm-kv-actions">
-              <button class="btn btn-sm" @click="copyCmValue(i)">
-                {{ cmCopied === 'v:' + i ? '已复制' : '复制' }}
-              </button>
               <button class="btn btn-sm btn-danger" @click="removeCmEntry(i)">删</button>
             </div>
-            <textarea
-              v-model="e.value"
-              placeholder="value"
-              class="kv-val"
-              rows="4"
-              @input="fitCmValue($event.target)"
-            ></textarea>
+            <div class="cm-kv-val-wrap field-copy-wrap">
+              <textarea
+                v-model="e.value"
+                placeholder="value"
+                class="kv-val"
+                rows="4"
+                @input="fitCmValue($event.target)"
+              ></textarea>
+              <button
+                type="button"
+                class="field-copy"
+                :class="{ 'is-copied': cmCopied === 'v:' + i }"
+                @click="copyCmValue(i)"
+              >{{ cmCopied === 'v:' + i ? '已复制' : '复制' }}</button>
+            </div>
           </div>
         </div>
         <button class="btn btn-sm" @click="addCmEntry">添加键</button>
       </template>
-      <textarea
-        v-else
-        v-model="cmEditor.yaml"
-        class="cm-yaml"
-      ></textarea>
+      <div v-else class="field-copy-wrap">
+        <textarea
+          v-model="cmEditor.yaml"
+          class="cm-yaml"
+        ></textarea>
+        <button
+          type="button"
+          class="field-copy"
+          :class="{ 'is-copied': cmCopied === 'yaml' }"
+          @click="copyCmYaml"
+        >{{ cmCopied === 'yaml' ? '已复制' : '复制' }}</button>
+      </div>
     </div>
 
     <!-- Spec edit -->

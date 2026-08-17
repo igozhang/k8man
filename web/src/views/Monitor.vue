@@ -238,7 +238,7 @@ onMounted(enterPage)
       </template>
 
       <template v-else-if="tab === 'pods'">
-        <div class="toolbar" style="margin-bottom:12px">
+        <div class="toolbar toolbar-start" style="margin-bottom:12px">
           <select v-model="ns" style="max-width:220px">
             <option value="">请选择命名空间</option>
             <option v-for="n in namespaces" :key="n.name" :value="n.name">{{ n.name }}</option>
