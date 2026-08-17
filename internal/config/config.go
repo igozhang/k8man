@@ -51,7 +51,7 @@ title=k8s多集群运维工具
 #   探测顺序：banner= 指定名 → banner.jpg → .jpeg → .png → .webp → .gif
 #
 # 私有 hosts（etc/hosts）：
-#   10.80.238.34 pre-harbor-xyl.sunwoda-evb.com
+#   10.10.10.10 igozhang.cn
 #   可直接编辑该文件，或在页面 Hosts 管理中修改。
 #
 # ----- 示例 -----

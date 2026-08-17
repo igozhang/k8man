@@ -82,6 +82,14 @@ func (h *Handler) CreateCluster(c *gin.Context) {
 		}
 		in.Kubeconfig = rewritten
 	}
+	if in.InsecureSkipTLS {
+		rewritten, err := kube.SetKubeconfigInsecureSkipTLS(in.Kubeconfig, true)
+		if err != nil {
+			respond.BadRequest(c, err.Error())
+			return
+		}
+		in.Kubeconfig = rewritten
+	}
 	h.syncHosts()
 	ctx, cancel := h.ctx(c)
 	defer cancel()
@@ -108,6 +116,7 @@ func (h *Handler) CreateCluster(c *gin.Context) {
 		respond.Internal(c, err.Error())
 		return
 	}
+	cl.InsecureSkipTLS = kube.KubeconfigInsecureSkipTLS(cl.Kubeconfig)
 	cl.Kubeconfig = ""
 	respond.OK(c, cl)
 }
@@ -156,6 +165,15 @@ func (h *Handler) UpdateCluster(c *gin.Context) {
 			needProbe = true
 		}
 	}
+	if in.InsecureSkipTLS != nil {
+		rewritten, err := kube.SetKubeconfigInsecureSkipTLS(existing.Kubeconfig, *in.InsecureSkipTLS)
+		if err != nil {
+			respond.BadRequest(c, err.Error())
+			return
+		}
+		existing.Kubeconfig = rewritten
+		needProbe = true
+	}
 	if needProbe {
 		h.syncHosts()
 		ctx, cancel := h.ctx(c)
@@ -177,6 +195,7 @@ func (h *Handler) UpdateCluster(c *gin.Context) {
 		respond.Internal(c, err.Error())
 		return
 	}
+	existing.InsecureSkipTLS = kube.KubeconfigInsecureSkipTLS(existing.Kubeconfig)
 	existing.Kubeconfig = ""
 	respond.OK(c, existing)
 }

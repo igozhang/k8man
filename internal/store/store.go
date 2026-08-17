@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/model"
 	_ "modernc.org/sqlite"
 )
@@ -124,6 +125,7 @@ func (s *Store) ListClusters() ([]model.Cluster, error) {
 		if err != nil {
 			return nil, err
 		}
+		c.InsecureSkipTLS = kube.KubeconfigInsecureSkipTLS(c.Kubeconfig)
 		c.Kubeconfig = "" // hide in list
 		list = append(list, c)
 	}
@@ -143,7 +145,10 @@ func (s *Store) GetCluster(id string, withKubeconfig bool) (*model.Cluster, erro
 		return nil, err
 	}
 	if !withKubeconfig {
+		c.InsecureSkipTLS = kube.KubeconfigInsecureSkipTLS(c.Kubeconfig)
 		c.Kubeconfig = ""
+	} else {
+		c.InsecureSkipTLS = kube.KubeconfigInsecureSkipTLS(c.Kubeconfig)
 	}
 	return &c, nil
 }

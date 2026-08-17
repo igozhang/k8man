@@ -218,6 +218,44 @@ func OverrideKubeconfigServer(kubeconfigYAML, server string) (string, error) {
 	return string(out), nil
 }
 
+// SetKubeconfigInsecureSkipTLS toggles insecure-skip-tls-verify on all clusters.
+// When skip is true, embedded CA data is cleared so client-go does not still verify.
+func SetKubeconfigInsecureSkipTLS(kubeconfigYAML string, skip bool) (string, error) {
+	cfg, err := clientcmd.Load([]byte(kubeconfigYAML))
+	if err != nil {
+		return "", fmt.Errorf("parse kubeconfig: %w", err)
+	}
+	for _, cluster := range cfg.Clusters {
+		if cluster == nil {
+			continue
+		}
+		cluster.InsecureSkipTLSVerify = skip
+		if skip {
+			cluster.CertificateAuthority = ""
+			cluster.CertificateAuthorityData = nil
+		}
+	}
+	out, err := clientcmd.Write(*cfg)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// KubeconfigInsecureSkipTLS reports whether any cluster has insecure-skip-tls-verify.
+func KubeconfigInsecureSkipTLS(kubeconfigYAML string) bool {
+	cfg, err := clientcmd.Load([]byte(kubeconfigYAML))
+	if err != nil {
+		return false
+	}
+	for _, cluster := range cfg.Clusters {
+		if cluster != nil && cluster.InsecureSkipTLSVerify {
+			return true
+		}
+	}
+	return false
+}
+
 // FriendlyConnectivityError turns common dial/DNS failures into actionable Chinese hints.
 func FriendlyConnectivityError(err error) string {
 	if err == nil {
@@ -226,11 +264,11 @@ func FriendlyConnectivityError(err error) string {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "no such host"):
-		return msg + "\n提示：域名无法解析。请在「KubeConfig 管理」页底部的 Hosts 中添加 hostname→IP，或填写 API Server 覆盖地址。"
+		return msg + "\n提示：域名无法解析。请在「KubeConfig 管理」页底部的 Hosts 中添加「IP hostname」，或填写 API Server 覆盖地址。"
 	case strings.Contains(msg, "i/o timeout"), strings.Contains(msg, "deadline exceeded"):
 		return msg + "\n提示：连接超时，请检查 k8man 所在网络能否访问该 API Server（防火墙/路由/安全组）。"
-	case strings.Contains(msg, "certificate"), strings.Contains(msg, "x509"):
-		return msg + "\n提示：证书校验失败。若使用 IP 覆盖域名，需保证证书匹配，或使用带正确 SAN 的入口地址。"
+	case strings.Contains(msg, "certificate"), strings.Contains(msg, "x509"), strings.Contains(msg, "unknown authority"):
+		return msg + "\n提示：证书校验失败（内网/Rancher 常见）。请编辑该集群并勾选「跳过 TLS 证书校验」后重试。"
 	default:
 		return msg
 	}

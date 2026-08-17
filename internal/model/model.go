@@ -12,22 +12,25 @@ type Cluster struct {
 	Server      string    `json:"server"`
 	Status      string    `json:"status"` // ok | error
 	LastError   string    `json:"lastError,omitempty"`
+	InsecureSkipTLS bool  `json:"insecureSkipTLS,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 type ClusterInput struct {
-	Name           string `json:"name"` // optional; derived from kubeconfig when empty
-	Description    string `json:"description"`
-	Kubeconfig     string `json:"kubeconfig" binding:"required"`
-	ServerOverride string `json:"serverOverride"` // optional; rewrite kubeconfig cluster.server
+	Name             string `json:"name"` // optional; derived from kubeconfig when empty
+	Description      string `json:"description"`
+	Kubeconfig       string `json:"kubeconfig" binding:"required"`
+	ServerOverride   string `json:"serverOverride"`   // optional; rewrite kubeconfig cluster.server
+	InsecureSkipTLS  bool   `json:"insecureSkipTLS"`  // set insecure-skip-tls-verify on clusters
 }
 
 type ClusterUpdate struct {
-	Name           *string `json:"name"`
-	Description    *string `json:"description"`
-	Kubeconfig     *string `json:"kubeconfig"`
-	ServerOverride *string `json:"serverOverride"`
+	Name            *string `json:"name"`
+	Description     *string `json:"description"`
+	Kubeconfig      *string `json:"kubeconfig"`
+	ServerOverride  *string `json:"serverOverride"`
+	InsecureSkipTLS *bool   `json:"insecureSkipTLS"`
 }
 
 type Doc struct {

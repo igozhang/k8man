@@ -10,7 +10,7 @@ const showForm = ref(false)
 /** create | edit | rename */
 const formMode = ref('create')
 const editingId = ref('')
-const form = ref({ name: '', description: '', kubeconfig: '', serverOverride: '' })
+const form = ref({ name: '', description: '', kubeconfig: '', serverOverride: '', insecureSkipTLS: false })
 const busy = ref(false)
 /** paste | upload */
 const importMode = ref('paste')
@@ -76,9 +76,10 @@ function formatHostLine(h) {
   return `${h.ip} ${h.hostname}`
 }
 
-/** 解析原生 hosts 行：IP hostname（空格分隔，hostname 可多别名取第一个） */
+/** 解析原生 hosts 行：IP hostname；多个空格/制表符均视为分隔 */
 function parseHostLine(line) {
   const parts = String(line || '')
+    .replace(/\u00a0/g, ' ')
     .trim()
     .split(/\s+/)
     .filter(Boolean)
@@ -100,9 +101,11 @@ async function saveHost() {
   try {
     const parsed = parseHostLine(hostForm.value.line)
     if (!parsed) {
-      hostError.value = '格式应为：IP hostname，例如 10.80.238.34 pre-harbor-xyl.sunwoda-evb.com'
+      hostError.value = '格式应为：IP hostname，例如 10.10.10.10 igozhang.cn（中间一个或多个空格均可）'
       return
     }
+    // 防呆：写回规范化「IP hostname」单空格
+    hostForm.value.line = `${parsed.ip} ${parsed.hostname}`
     const note = hostForm.value.note.trim()
     const { hostname, ip } = parsed
     if (hostEditingId.value) {
@@ -134,7 +137,7 @@ async function removeHost(h) {
 function openCreate() {
   editingId.value = ''
   formMode.value = 'create'
-  form.value = { name: '', description: '', kubeconfig: '', serverOverride: '' }
+  form.value = { name: '', description: '', kubeconfig: '', serverOverride: '', insecureSkipTLS: false }
   importMode.value = 'paste'
   uploadFileName.value = ''
   notice.value = ''
@@ -148,7 +151,8 @@ function openEdit(c) {
     name: c.name,
     description: c.description || '',
     kubeconfig: '',
-    serverOverride: ''
+    serverOverride: '',
+    insecureSkipTLS: !!c.insecureSkipTLS
   }
   importMode.value = 'paste'
   uploadFileName.value = ''
@@ -163,7 +167,8 @@ function openRename(c) {
     name: c.name,
     description: c.description || '',
     kubeconfig: '',
-    serverOverride: ''
+    serverOverride: '',
+    insecureSkipTLS: !!c.insecureSkipTLS
   }
   uploadFileName.value = ''
   notice.value = ''
@@ -224,7 +229,8 @@ async function save() {
     } else if (formMode.value === 'edit') {
       const payload = {
         name,
-        description: form.value.description
+        description: form.value.description,
+        insecureSkipTLS: !!form.value.insecureSkipTLS
       }
       if (kubeconfig) payload.kubeconfig = kubeconfig
       if (serverOverride) payload.serverOverride = serverOverride
@@ -234,7 +240,8 @@ async function save() {
         name,
         description: form.value.description,
         kubeconfig,
-        serverOverride: serverOverride || undefined
+        serverOverride: serverOverride || undefined,
+        insecureSkipTLS: !!form.value.insecureSkipTLS
       })
     }
     showForm.value = false
@@ -366,6 +373,14 @@ onMounted(() => {
         />
       </div>
 
+      <div v-if="formMode !== 'rename'" class="form-row">
+        <label class="check-label">
+          <input v-model="form.insecureSkipTLS" type="checkbox" />
+          跳过 TLS 证书校验
+          <span class="muted">（内网 / Rancher 证书不受信时勾选；等同 kubeconfig 的 insecure-skip-tls-verify）</span>
+        </label>
+      </div>
+
       <div class="actions">
         <button class="btn btn-primary" :disabled="busy" @click="save">
           {{ formMode === 'rename' ? '保存标题' : '保存' }}
@@ -389,6 +404,7 @@ onMounted(() => {
           <td>
             <strong>{{ c.name }}</strong>
             <div class="muted">{{ c.description }}</div>
+            <div v-if="c.insecureSkipTLS" class="muted">TLS: 已跳过校验</div>
           </td>
           <td><span class="tag" :class="c.permType">{{ c.permType }}</span></td>
           <td class="muted">{{ c.server }}</td>
@@ -413,7 +429,7 @@ onMounted(() => {
         <div>
           <h2 class="form-title" style="margin:0">Hosts 管理</h2>
           <p class="page-desc">
-            按系统 hosts 原生格式：<code>IP hostname</code>（空格分隔）。
+            按系统 hosts 原生格式：<code>IP hostname</code>（示例 <code>10.10.10.10 igozhang.cn</code>，中间多个空格亦可）。
             持久化文件<template v-if="hostsPath">：<code>{{ hostsPath }}</code></template><template v-else>：etc 目录下的 <code>hosts</code></template>。
             可直接改该文件，也可在此增删改；约 2 秒内自动生效。
           </p>
@@ -423,12 +439,12 @@ onMounted(() => {
 
       <div class="panel host-form">
         <div class="form-row">
-          <label>hosts 行（IP 与 hostname 空格分隔）</label>
+          <label>hosts 行（IP 与 hostname 空格分隔，多个空格亦可）</label>
           <input
             v-model="hostForm.line"
             type="text"
             class="host-line-input"
-            placeholder="10.80.238.34 pre-harbor-xyl.sunwoda-evb.com"
+            placeholder="10.10.10.10 igozhang.cn"
             spellcheck="false"
             @keydown.enter.prevent="saveHost"
           />
@@ -441,19 +457,21 @@ onMounted(() => {
         </div>
       </div>
 
-      <table v-if="hosts.length" class="table">
+      <table v-if="hosts.length" class="table hosts-table">
         <thead>
           <tr>
             <th>hosts</th>
-            <th>操作</th>
+            <th class="hosts-ops-col">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="h in hosts" :key="h.id">
-            <td><code>{{ formatHostLine(h) }}</code></td>
-            <td class="actions">
-              <button class="btn btn-sm" @click="openHostEdit(h)">编辑</button>
-              <button class="btn btn-sm btn-danger" @click="removeHost(h)">删除</button>
+            <td class="hosts-line-cell"><code>{{ formatHostLine(h) }}</code></td>
+            <td class="hosts-ops-col">
+              <div class="hosts-ops">
+                <button class="btn btn-sm" @click="openHostEdit(h)">编辑</button>
+                <button class="btn btn-sm btn-danger" @click="removeHost(h)">删除</button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -473,6 +491,17 @@ onMounted(() => {
   color: var(--accent);
   font-size: 13px;
   margin: 0 0 12px;
+}
+.check-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--text);
+}
+.check-label input {
+  width: auto;
+  margin-top: 3px;
 }
 .upload-box {
   border: 1px dashed var(--line);
@@ -498,6 +527,26 @@ onMounted(() => {
 }
 .host-line-input {
   font-family: var(--mono);
+}
+.hosts-table th,
+.hosts-table td {
+  vertical-align: middle;
+}
+.hosts-line-cell code {
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.hosts-ops-col {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+.hosts-ops {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
 }
 code {
   font-family: var(--mono);
