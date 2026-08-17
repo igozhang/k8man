@@ -12,7 +12,7 @@ RUN npm run build
 
 FROM golang:1.22-alpine AS build
 WORKDIR /src
-# 先等 web 完成，避免与 npm 并行抢内存
+# 先等 web 完成，避免与 npm 并行抢内存；webdist 仅写入镜像构建层，不改宿主机 git 树
 COPY --from=web /web/dist/. ./cmd/server/webdist/
 RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum ./

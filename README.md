@@ -38,9 +38,7 @@ go run ./cmd/server
 ```bash
 cd web
 npm install
-npm run build
-# 将 dist 复制到 cmd/server/webdist 后重新启动后端
-# 或：npm run dev  （Vite 代理 /api -> :8080）
+npm run dev   # Vite 代理 /api -> :8080
 ```
 
 ### 容器 / 生产部署
@@ -49,7 +47,7 @@ npm run build
 - 构建机：`VM-4-11-ubuntu`（nerdctl，2C2G 限并行 + cache）
 - 运行：`zabbix68`，`k8man` namespace，域名 `k8man.sunwoda-evb.com`
 
-步骤见 [docs/deploy.md](docs/deploy.md)（单条 build/push 命令，无脚本）。
+步骤见 [docs/deploy.md](docs/deploy.md)（单条 build/push 命令）。
 
 ## 导入 kubeconfig
 
