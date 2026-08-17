@@ -35,7 +35,7 @@ spec:
       labels:
         app: k8man
     spec:
-      # Hosts 私有解析：编辑 /etc/k8man/hosts（PVC 持久化），或用页面 Hosts 管理。
+      # Hosts / conf：K8MAN_ETC_DIR=/data/etc（与 DB 同 PVC，重启不丢）
       # 若节点未配置腾讯云 CCR 拉取凭证，取消注释并创建同名 Secret：
       # imagePullSecrets:
       #   - name: tcr-igokorea
@@ -53,17 +53,15 @@ spec:
               value: /data
             - name: K8MAN_DB_PATH
               value: /data/k8man.db
+            # 与 DB 同 PVC：/data/etc/hosts、k8man.conf 重启不丢
             - name: K8MAN_ETC_DIR
-              value: /etc/k8man
+              value: /data/etc
             - name: TZ
               value: Asia/Shanghai
           volumeMounts:
             - name: data
               mountPath: /data
-            # etc（含 k8man.conf / hosts / banner）落到 PVC，跨重启保留
-            - name: data
-              mountPath: /etc/k8man
-              subPath: etc          readinessProbe:
+          readinessProbe:
             httpGet:
               path: /api/health
               port: http
