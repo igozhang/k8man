@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, nextTick } from 'vue'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory } from '../utils/quantity'
@@ -33,6 +33,12 @@ const cmEditor = ref({
   yaml: '',
   busy: false
 })
+/** 复制反馈：'yaml' | `v:${index}` | '' */
+const cmCopied = ref('')
+let cmCopiedTimer = 0
+const CM_VAL_MIN_PX = 120
+const CM_VAL_MAX_VH = 0.55
+const CM_VAL_MAX_PX = 560
 
 const specEditor = ref({
   open: false,
@@ -320,8 +326,66 @@ function entriesToData(entries) {
   return data
 }
 
+function cmValMaxPx() {
+  return Math.round(Math.min(window.innerHeight * CM_VAL_MAX_VH, CM_VAL_MAX_PX))
+}
+
+/** 按内容增高，夹在最小/最大高度之间 */
+function fitCmValue(el) {
+  if (!el) return
+  const max = cmValMaxPx()
+  el.style.height = '0px'
+  const content = el.scrollHeight
+  const next = Math.min(max, Math.max(CM_VAL_MIN_PX, content))
+  el.style.height = `${next}px`
+  el.style.overflowY = content > max ? 'auto' : 'hidden'
+}
+
+function fitAllCmValues() {
+  nextTick(() => {
+    document.querySelectorAll('.cm-kv-row textarea.kv-val').forEach(fitCmValue)
+  })
+}
+
+async function copyText(text, token) {
+  const t = String(text ?? '')
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(t)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = t
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    cmCopied.value = token
+    window.clearTimeout(cmCopiedTimer)
+    cmCopiedTimer = window.setTimeout(() => {
+      if (cmCopied.value === token) cmCopied.value = ''
+    }, 1500)
+  } catch {
+    alert('复制失败')
+  }
+}
+
+function copyCmValue(i) {
+  const e = cmEditor.value.entries[i]
+  if (!e) return
+  copyText(e.value ?? '', `v:${i}`)
+}
+
+function copyCmYaml() {
+  copyText(cmEditor.value.yaml || '', 'yaml')
+}
+
 async function openConfigMap(name) {
   error.value = ''
+  cmCopied.value = ''
   try {
     const detail = await readApi.getConfigMap(currentClusterId.value, ns.value, name)
     cmEditor.value = {
@@ -333,6 +397,7 @@ async function openConfigMap(name) {
       yaml: '',
       busy: false
     }
+    fitAllCmValues()
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -340,6 +405,7 @@ async function openConfigMap(name) {
 
 function addCmEntry() {
   cmEditor.value.entries.push({ key: '', value: '' })
+  fitAllCmValues()
 }
 
 function removeCmEntry(i) {
@@ -382,6 +448,7 @@ async function switchCmMode(mode) {
     cmEditor.value.entries = dataToEntries(detail?.data)
     cmEditor.value.binaryKeys = asArray(detail?.binaryKeys)
     cmEditor.value.mode = 'kv'
+    fitAllCmValues()
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -739,15 +806,18 @@ watch([ns, tab], () => {
     </div>
 
     <div v-if="yamlEditor.open" class="drawer-backdrop" @click="yamlEditor.open = false"></div>
-    <div v-if="yamlEditor.open" class="drawer">
+    <div v-if="yamlEditor.open" class="drawer drawer-wide">
       <div class="toolbar">
         <strong>YAML · {{ yamlEditor.kind }}/{{ yamlEditor.name }}</strong>
         <div class="actions">
+          <button class="btn btn-sm" @click="copyText(yamlEditor.yaml, 'res-yaml')">
+            {{ cmCopied === 'res-yaml' ? '已复制' : '复制' }}
+          </button>
           <button class="btn btn-primary btn-sm" @click="saveYAML">应用</button>
           <button class="btn btn-sm" @click="yamlEditor.open = false">关闭</button>
         </div>
       </div>
-      <textarea v-model="yamlEditor.yaml" style="min-height:70vh"></textarea>
+      <textarea v-model="yamlEditor.yaml" class="cm-yaml"></textarea>
     </div>
 
     <div v-if="scaleForm.open" class="drawer-backdrop" @click="scaleForm.open = false"></div>
@@ -779,6 +849,11 @@ watch([ns, tab], () => {
             :class="{ 'btn-primary': cmEditor.mode === 'yaml' }"
             @click="switchCmMode('yaml')"
           >YAML</button>
+          <button
+            v-if="cmEditor.mode === 'yaml'"
+            class="btn btn-sm"
+            @click="copyCmYaml"
+          >{{ cmCopied === 'yaml' ? '已复制' : '复制' }}</button>
           <button class="btn btn-primary btn-sm" :disabled="cmEditor.busy" @click="saveConfigMap">
             {{ cmEditor.busy ? '保存中…' : '保存' }}
           </button>
@@ -790,11 +865,22 @@ watch([ns, tab], () => {
         含二进制键（不可在键值表编辑）：{{ cmEditor.binaryKeys.join(', ') }}
       </p>
       <template v-if="cmEditor.mode === 'kv'">
-        <div class="kv-list">
-          <div v-for="(e, i) in cmEditor.entries" :key="i" class="kv-row">
+        <div class="kv-list cm-kv-list">
+          <div v-for="(e, i) in cmEditor.entries" :key="i" class="kv-row cm-kv-row">
             <input v-model="e.key" placeholder="key" class="kv-key" />
-            <textarea v-model="e.value" placeholder="value" class="kv-val" rows="2"></textarea>
-            <button class="btn btn-sm btn-danger" @click="removeCmEntry(i)">删</button>
+            <div class="cm-kv-actions">
+              <button class="btn btn-sm" @click="copyCmValue(i)">
+                {{ cmCopied === 'v:' + i ? '已复制' : '复制' }}
+              </button>
+              <button class="btn btn-sm btn-danger" @click="removeCmEntry(i)">删</button>
+            </div>
+            <textarea
+              v-model="e.value"
+              placeholder="value"
+              class="kv-val"
+              rows="4"
+              @input="fitCmValue($event.target)"
+            ></textarea>
           </div>
         </div>
         <button class="btn btn-sm" @click="addCmEntry">添加键</button>
@@ -802,7 +888,7 @@ watch([ns, tab], () => {
       <textarea
         v-else
         v-model="cmEditor.yaml"
-        style="min-height:65vh;width:100%"
+        class="cm-yaml"
       ></textarea>
     </div>
 

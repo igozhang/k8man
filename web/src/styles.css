@@ -381,7 +381,7 @@ td.actions {
   box-shadow: -8px 0 24px rgba(45, 59, 45, 0.12);
 }
 .drawer-wide {
-  width: min(720px, 100%);
+  width: min(880px, 100%);
 }
 .kv-list {
   display: flex;
@@ -405,6 +405,42 @@ td.actions {
   min-height: 44px;
   resize: vertical;
 }
+/* ConfigMap 键值：键与操作同一行，值按内容有限度自动增高 */
+.cm-kv-list {
+  gap: 14px;
+}
+.cm-kv-row {
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "key actions"
+    "val val";
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.cm-kv-row .kv-key { grid-area: key; }
+.cm-kv-actions {
+  grid-area: actions;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.cm-kv-row textarea.kv-val {
+  grid-area: val;
+  min-height: 120px;
+  height: 120px;
+  resize: vertical;
+  line-height: 1.45;
+  overflow-y: hidden;
+}
+.cm-yaml {
+  display: block;
+  width: 100%;
+  min-height: 70vh;
+  resize: vertical;
+}
 .resource-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -412,7 +448,7 @@ td.actions {
 }
 @media (max-width: 640px) {
   .resource-grid { grid-template-columns: 1fr; }
-  .kv-row { grid-template-columns: 1fr; }
+  .kv-row:not(.cm-kv-row) { grid-template-columns: 1fr; }
 }
 .pre {
   white-space: pre-wrap;
