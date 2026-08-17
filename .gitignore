@@ -3,6 +3,7 @@ cmd/server/webdist/**
 !cmd/server/webdist/.gitkeep
 
 data/
+etc/hosts
 web/node_modules/
 web/dist/
 *.exe

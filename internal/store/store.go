@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS docs (
   updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_docs_slug ON docs(slug) WHERE slug != '';
+CREATE TABLE IF NOT EXISTS host_aliases (
+  id TEXT PRIMARY KEY,
+  hostname TEXT NOT NULL UNIQUE,
+  ip TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `)
 	return err
 }
@@ -293,4 +301,86 @@ func IsUniqueErr(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "unique")
+}
+
+// ---- host aliases ----
+
+func (s *Store) ListHostAliases() ([]model.HostAlias, error) {
+	rows, err := s.db.Query(`SELECT id,hostname,ip,note,created_at,updated_at FROM host_aliases ORDER BY hostname`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []model.HostAlias
+	for rows.Next() {
+		h, err := scanHostAlias(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, h)
+	}
+	if list == nil {
+		list = []model.HostAlias{}
+	}
+	return list, rows.Err()
+}
+
+func (s *Store) GetHostAlias(id string) (*model.HostAlias, error) {
+	row := s.db.QueryRow(`SELECT id,hostname,ip,note,created_at,updated_at FROM host_aliases WHERE id=?`, id)
+	h, err := scanHostAlias(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+func (s *Store) CreateHostAlias(h *model.HostAlias) error {
+	_, err := s.db.Exec(`INSERT INTO host_aliases(id,hostname,ip,note,created_at,updated_at) VALUES(?,?,?,?,?,?)`,
+		h.ID, h.Hostname, h.IP, h.Note, fmtTime(h.CreatedAt), fmtTime(h.UpdatedAt))
+	return err
+}
+
+func (s *Store) UpdateHostAlias(h *model.HostAlias) error {
+	_, err := s.db.Exec(`UPDATE host_aliases SET hostname=?,ip=?,note=?,updated_at=? WHERE id=?`,
+		h.Hostname, h.IP, h.Note, fmtTime(h.UpdatedAt), h.ID)
+	return err
+}
+
+func (s *Store) DeleteHostAlias(id string) error {
+	res, err := s.db.Exec(`DELETE FROM host_aliases WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) HostAliasMap() (map[string]string, error) {
+	list, err := s.ListHostAliases()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(list))
+	for _, h := range list {
+		out[strings.ToLower(h.Hostname)] = h.IP
+	}
+	return out, nil
+}
+
+func scanHostAlias(r rowScanner) (model.HostAlias, error) {
+	var h model.HostAlias
+	var created, updated string
+	err := r.Scan(&h.ID, &h.Hostname, &h.IP, &h.Note, &created, &updated)
+	if err != nil {
+		return h, err
+	}
+	h.CreatedAt = parseTime(created)
+	h.UpdatedAt = parseTime(updated)
+	return h, nil
 }

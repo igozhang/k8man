@@ -12,5 +12,8 @@ export const writeApi = {
     http.put(`/write/clusters/${id}/namespaces/${ns}/resources/${kind}/${name}/yaml`, { yaml }),
   createDoc: (payload) => http.post('/write/docs', payload),
   updateDoc: (docId, payload) => http.put(`/write/docs/${docId}`, payload),
-  deleteDoc: (docId) => http.delete(`/write/docs/${docId}`)
+  deleteDoc: (docId) => http.delete(`/write/docs/${docId}`),
+  createHost: (payload) => http.post('/write/hosts', payload),
+  updateHost: (id, payload) => http.put(`/write/hosts/${encodeURIComponent(id)}`, payload),
+  deleteHost: (id) => http.delete(`/write/hosts/${encodeURIComponent(id)}`)
 }

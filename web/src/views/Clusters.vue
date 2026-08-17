@@ -10,12 +10,20 @@ const showForm = ref(false)
 /** create | edit | rename */
 const formMode = ref('create')
 const editingId = ref('')
-const form = ref({ name: '', description: '', kubeconfig: '' })
+const form = ref({ name: '', description: '', kubeconfig: '', serverOverride: '' })
 const busy = ref(false)
 /** paste | upload */
 const importMode = ref('paste')
 const uploadFileName = ref('')
 const fileInput = ref(null)
+const notice = ref('')
+
+const hosts = ref([])
+const hostsPath = ref('')
+const hostError = ref('')
+const hostBusy = ref(false)
+const hostEditingId = ref('')
+const hostForm = ref({ line: '', note: '' })
 
 function suggestNameFromKubeconfig(text) {
   if (!text) return ''
@@ -43,29 +51,122 @@ async function load() {
   }
 }
 
+async function loadHosts() {
+  hostError.value = ''
+  try {
+    const data = await readApi.listHosts()
+    if (Array.isArray(data)) {
+      hosts.value = data
+      hostsPath.value = ''
+    } else {
+      hosts.value = data?.items || []
+      hostsPath.value = data?.path || ''
+    }
+  } catch (e) {
+    hostError.value = e.message
+  }
+}
+
+function resetHostForm() {
+  hostEditingId.value = ''
+  hostForm.value = { line: '', note: '' }
+}
+
+function formatHostLine(h) {
+  return `${h.ip} ${h.hostname}`
+}
+
+/** 解析原生 hosts 行：IP hostname（空格分隔，hostname 可多别名取第一个） */
+function parseHostLine(line) {
+  const parts = String(line || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  if (parts.length < 2) return null
+  return { ip: parts[0], hostname: parts[1].toLowerCase() }
+}
+
+function openHostEdit(h) {
+  hostEditingId.value = h.id
+  hostForm.value = {
+    line: formatHostLine(h),
+    note: h.note || ''
+  }
+}
+
+async function saveHost() {
+  hostBusy.value = true
+  hostError.value = ''
+  try {
+    const parsed = parseHostLine(hostForm.value.line)
+    if (!parsed) {
+      hostError.value = '格式应为：IP hostname，例如 10.80.238.34 pre-harbor-xyl.sunwoda-evb.com'
+      return
+    }
+    const note = hostForm.value.note.trim()
+    const { hostname, ip } = parsed
+    if (hostEditingId.value) {
+      await writeApi.updateHost(hostEditingId.value, { hostname, ip, note })
+    } else {
+      await writeApi.createHost({ hostname, ip, note })
+    }
+    resetHostForm()
+    await loadHosts()
+    notice.value = 'Hosts 已更新（对后续「测试」与 API 请求立即生效）'
+  } catch (e) {
+    hostError.value = e.message
+  } finally {
+    hostBusy.value = false
+  }
+}
+
+async function removeHost(h) {
+  if (!confirm(`删除 hosts 记录「${h.hostname}」？`)) return
+  try {
+    await writeApi.deleteHost(h.id)
+    if (hostEditingId.value === h.id) resetHostForm()
+    await loadHosts()
+  } catch (e) {
+    hostError.value = e.message
+  }
+}
+
 function openCreate() {
   editingId.value = ''
   formMode.value = 'create'
-  form.value = { name: '', description: '', kubeconfig: '' }
+  form.value = { name: '', description: '', kubeconfig: '', serverOverride: '' }
   importMode.value = 'paste'
   uploadFileName.value = ''
+  notice.value = ''
   showForm.value = true
 }
 
 function openEdit(c) {
   editingId.value = c.id
   formMode.value = 'edit'
-  form.value = { name: c.name, description: c.description || '', kubeconfig: '' }
+  form.value = {
+    name: c.name,
+    description: c.description || '',
+    kubeconfig: '',
+    serverOverride: ''
+  }
   importMode.value = 'paste'
   uploadFileName.value = ''
+  notice.value = ''
   showForm.value = true
 }
 
 function openRename(c) {
   editingId.value = c.id
   formMode.value = 'rename'
-  form.value = { name: c.name, description: c.description || '', kubeconfig: '' }
+  form.value = {
+    name: c.name,
+    description: c.description || '',
+    kubeconfig: '',
+    serverOverride: ''
+  }
   uploadFileName.value = ''
+  notice.value = ''
   showForm.value = true
 }
 
@@ -100,11 +201,13 @@ function clearUpload() {
 async function save() {
   busy.value = true
   error.value = ''
+  notice.value = ''
   try {
     const kubeconfig = form.value.kubeconfig.trim()
     const name = form.value.name.trim() || (
       formMode.value === 'create' ? suggestNameFromKubeconfig(kubeconfig) : ''
     )
+    const serverOverride = form.value.serverOverride.trim()
     if (formMode.value === 'create' && !kubeconfig) {
       error.value = '请粘贴或上传 kubeconfig'
       return
@@ -115,24 +218,32 @@ async function save() {
         : '请填写标题'
       return
     }
+    let saved = null
     if (formMode.value === 'rename') {
-      await writeApi.updateCluster(editingId.value, { name })
+      saved = await writeApi.updateCluster(editingId.value, { name })
     } else if (formMode.value === 'edit') {
       const payload = {
         name,
         description: form.value.description
       }
       if (kubeconfig) payload.kubeconfig = kubeconfig
-      await writeApi.updateCluster(editingId.value, payload)
+      if (serverOverride) payload.serverOverride = serverOverride
+      saved = await writeApi.updateCluster(editingId.value, payload)
     } else {
-      await writeApi.createCluster({
+      saved = await writeApi.createCluster({
         name,
         description: form.value.description,
-        kubeconfig
+        kubeconfig,
+        serverOverride: serverOverride || undefined
       })
     }
     showForm.value = false
     await load()
+    if (saved?.status === 'error' && saved?.lastError) {
+      notice.value = `已保存，但连通性检测失败：${saved.lastError}`
+    } else if (formMode.value !== 'rename') {
+      notice.value = '已保存'
+    }
   } catch (e) {
     error.value = e.message
   } finally {
@@ -153,13 +264,23 @@ async function remove(c) {
 async function test(c) {
   try {
     const r = await readApi.testCluster(c.id)
-    alert(`状态: ${r.status}\n类型: ${r.permType}\nServer: ${r.server}\nNamespaces: ${(r.namespaces || []).length}\n${r.lastError || ''}`)
+    await load()
+    if (r.status === 'ok') {
+      notice.value = `测试通过：${r.permType} · ${r.server}`
+      error.value = ''
+    } else {
+      notice.value = ''
+      error.value = `测试失败：${r.lastError || r.status}`
+    }
   } catch (e) {
     error.value = e.message
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadHosts()
+})
 </script>
 
 <template>
@@ -171,7 +292,8 @@ onMounted(load)
       </div>
       <button class="btn btn-primary" @click="openCreate">导入 kubeconfig</button>
     </div>
-    <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="error" class="error" style="white-space: pre-wrap">{{ error }}</p>
+    <p v-if="notice" class="notice" style="white-space: pre-wrap">{{ notice }}</p>
 
     <div v-if="showForm" class="panel">
       <h2 class="form-title">
@@ -232,6 +354,18 @@ onMounted(load)
         </div>
       </div>
 
+      <div v-if="formMode !== 'rename'" class="form-row">
+        <label>
+          API Server 覆盖
+          <span class="muted">（可选；当前环境 DNS 解析失败时可填可连通地址，如 https://x.x.x.x/k8s/clusters/local）</span>
+        </label>
+        <input
+          v-model="form.serverOverride"
+          type="text"
+          placeholder="留空则使用 kubeconfig 内 server"
+        />
+      </div>
+
       <div class="actions">
         <button class="btn btn-primary" :disabled="busy" @click="save">
           {{ formMode === 'rename' ? '保存标题' : '保存' }}
@@ -260,7 +394,7 @@ onMounted(load)
           <td class="muted">{{ c.server }}</td>
           <td>
             {{ c.status }}
-            <div v-if="c.lastError" class="error">{{ c.lastError }}</div>
+            <div v-if="c.lastError" class="error" style="white-space: pre-wrap; max-width: 420px">{{ c.lastError }}</div>
           </td>
           <td class="actions">
             <button class="btn btn-sm" @click="setCurrentClusterId(c.id)">选用</button>
@@ -273,6 +407,59 @@ onMounted(load)
       </tbody>
     </table>
     <div v-else class="empty">暂无集群配置，请导入 kubeconfig。</div>
+
+    <section class="hosts-section">
+      <div class="toolbar">
+        <div>
+          <h2 class="form-title" style="margin:0">Hosts 管理</h2>
+          <p class="page-desc">
+            按系统 hosts 原生格式：<code>IP hostname</code>（空格分隔）。
+            持久化文件<template v-if="hostsPath">：<code>{{ hostsPath }}</code></template><template v-else>：etc 目录下的 <code>hosts</code></template>。
+            可直接改该文件，也可在此增删改；约 2 秒内自动生效。
+          </p>
+        </div>
+      </div>
+      <p v-if="hostError" class="error">{{ hostError }}</p>
+
+      <div class="panel host-form">
+        <div class="form-row">
+          <label>hosts 行（IP 与 hostname 空格分隔）</label>
+          <input
+            v-model="hostForm.line"
+            type="text"
+            class="host-line-input"
+            placeholder="10.80.238.34 pre-harbor-xyl.sunwoda-evb.com"
+            spellcheck="false"
+            @keydown.enter.prevent="saveHost"
+          />
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" :disabled="hostBusy" @click="saveHost">
+            {{ hostEditingId ? '保存修改' : '添加' }}
+          </button>
+          <button v-if="hostEditingId" class="btn" @click="resetHostForm">取消编辑</button>
+        </div>
+      </div>
+
+      <table v-if="hosts.length" class="table">
+        <thead>
+          <tr>
+            <th>hosts</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="h in hosts" :key="h.id">
+            <td><code>{{ formatHostLine(h) }}</code></td>
+            <td class="actions">
+              <button class="btn btn-sm" @click="openHostEdit(h)">编辑</button>
+              <button class="btn btn-sm btn-danger" @click="removeHost(h)">删除</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="empty">暂无 hosts 记录。DNS 无法解析时在此添加映射。</div>
+    </section>
   </div>
 </template>
 
@@ -281,6 +468,11 @@ onMounted(load)
   margin: 0 0 12px;
   font-size: 16px;
   font-weight: 650;
+}
+.notice {
+  color: var(--accent);
+  font-size: 13px;
+  margin: 0 0 12px;
 }
 .upload-box {
   border: 1px dashed var(--line);
@@ -298,5 +490,17 @@ onMounted(load)
 .upload-preview .pre {
   max-height: 240px;
   margin-top: 8px;
+}
+.hosts-section {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.host-line-input {
+  font-family: var(--mono);
+}
+code {
+  font-family: var(--mono);
+  font-size: 12px;
 }
 </style>

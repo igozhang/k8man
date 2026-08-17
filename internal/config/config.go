@@ -44,10 +44,15 @@ title=k8s多集群运维工具
 # | title     | （仅 conf）      | k8s多集群运维工具       | 头部居中标题 |
 # | tagline   | （仅 conf）      | （空）                  | 标题下方副标题，可选 |
 # | banner    | （仅 conf）      | （自动探测）            | etc 下图片文件名 |
+# | hosts     | （文件）         | <etc>/hosts             | 私有解析，格式：IP hostname |
 #
 # 头部 banner（可选，不使用外部站点图片）：
 #   将自有图片放到 etc 目录即可启用；无文件则默认浅青面板风格。
 #   探测顺序：banner= 指定名 → banner.jpg → .jpeg → .png → .webp → .gif
+#
+# 私有 hosts（etc/hosts）：
+#   10.80.238.34 pre-harbor-xyl.sunwoda-evb.com
+#   可直接编辑该文件，或在页面 Hosts 管理中修改。
 #
 # ----- 示例 -----
 # db_path=./data/k8man.db

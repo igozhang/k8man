@@ -35,6 +35,7 @@ spec:
       labels:
         app: k8man
     spec:
+      # Hosts 私有解析：编辑 /etc/k8man/hosts（PVC 持久化），或用页面 Hosts 管理。
       # 若节点未配置腾讯云 CCR 拉取凭证，取消注释并创建同名 Secret：
       # imagePullSecrets:
       #   - name: tcr-igokorea
@@ -59,10 +60,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-            # 可选：挂载自定义 etc（含 k8man.conf / banner.jpg）；不挂则用镜像内默认 conf
-            # - name: etc
-            #   mountPath: /etc/k8man
-          readinessProbe:
+            # etc（含 k8man.conf / hosts / banner）落到 PVC，跨重启保留
+            - name: data
+              mountPath: /etc/k8man
+              subPath: etc          readinessProbe:
             httpGet:
               path: /api/health
               port: http

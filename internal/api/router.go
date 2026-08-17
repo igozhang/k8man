@@ -12,6 +12,7 @@ import (
 	"gitee.com/k8man/internal/api/respond"
 	"gitee.com/k8man/internal/api/write"
 	"gitee.com/k8man/internal/config"
+	"gitee.com/k8man/internal/hostsfile"
 	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/store"
 )
@@ -23,6 +24,7 @@ type UIConfig struct {
 type Deps struct {
 	Store   *store.Store
 	Pool    *kube.Pool
+	Hosts   *hostsfile.File
 	WebFS   fs.FS // optional embedded web/dist
 	Version string
 	UI      UIConfig
@@ -32,8 +34,8 @@ func NewRouter(d Deps) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.Logger())
 
-	rh := &read.Handler{Store: d.Store, Pool: d.Pool}
-	wh := &write.Handler{Store: d.Store, Pool: d.Pool}
+	rh := &read.Handler{Store: d.Store, Pool: d.Pool, Hosts: d.Hosts}
+	wh := &write.Handler{Store: d.Store, Pool: d.Pool, Hosts: d.Hosts}
 
 	r.GET("/api/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "version": d.Version})
@@ -77,6 +79,7 @@ func NewRouter(d Deps) *gin.Engine {
 		readGroup.GET("/clusters/:id/metrics/pods", rh.PodMetrics)
 		readGroup.GET("/docs", rh.ListDocs)
 		readGroup.GET("/docs/:docId", rh.GetDoc)
+		readGroup.GET("/hosts", rh.ListHostAliases)
 	}
 
 	writeGroup := r.Group("/api/v1/write")
@@ -91,6 +94,9 @@ func NewRouter(d Deps) *gin.Engine {
 		writeGroup.POST("/docs", wh.CreateDoc)
 		writeGroup.PUT("/docs/:docId", wh.UpdateDoc)
 		writeGroup.DELETE("/docs/:docId", wh.DeleteDoc)
+		writeGroup.POST("/hosts", wh.CreateHostAlias)
+		writeGroup.PUT("/hosts/:hostId", wh.UpdateHostAlias)
+		writeGroup.DELETE("/hosts/:hostId", wh.DeleteHostAlias)
 	}
 
 	if d.WebFS != nil {

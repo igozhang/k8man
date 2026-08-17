@@ -3,7 +3,9 @@ package write
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"gitee.com/k8man/internal/api/respond"
+	"gitee.com/k8man/internal/hostsfile"
 	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/model"
 	"gitee.com/k8man/internal/store"
@@ -19,6 +22,7 @@ import (
 type Handler struct {
 	Store *store.Store
 	Pool  *kube.Pool
+	Hosts *hostsfile.File
 }
 
 func (h *Handler) clients(c *gin.Context) (*kube.Clients, bool) {
@@ -44,6 +48,13 @@ func (h *Handler) ctx(c *gin.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(c.Request.Context(), 30*time.Second)
 }
 
+func (h *Handler) syncHosts() {
+	if h.Hosts == nil {
+		return
+	}
+	_, _ = h.Hosts.SyncIfChanged()
+}
+
 func (h *Handler) CreateCluster(c *gin.Context) {
 	var in model.ClusterInput
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -63,9 +74,18 @@ func (h *Handler) CreateCluster(c *gin.Context) {
 		respond.BadRequest(c, "name required (or provide a kubeconfig with current-context)")
 		return
 	}
+	if ov := strings.TrimSpace(in.ServerOverride); ov != "" {
+		rewritten, err := kube.OverrideKubeconfigServer(in.Kubeconfig, ov)
+		if err != nil {
+			respond.BadRequest(c, err.Error())
+			return
+		}
+		in.Kubeconfig = rewritten
+	}
+	h.syncHosts()
 	ctx, cancel := h.ctx(c)
 	defer cancel()
-	probe := kube.Probe(ctx, in.Kubeconfig)
+	probe := kube.Probe(ctx, in.Kubeconfig, h.Pool.Hosts())
 	now := time.Now().UTC()
 	cl := &model.Cluster{
 		ID:          uuid.NewString(),
@@ -119,11 +139,28 @@ func (h *Handler) UpdateCluster(c *gin.Context) {
 	if in.Description != nil {
 		existing.Description = *in.Description
 	}
+	needProbe := false
 	if in.Kubeconfig != nil {
 		existing.Kubeconfig = strings.TrimSpace(*in.Kubeconfig)
+		needProbe = true
+	}
+	if in.ServerOverride != nil {
+		ov := strings.TrimSpace(*in.ServerOverride)
+		if ov != "" {
+			rewritten, err := kube.OverrideKubeconfigServer(existing.Kubeconfig, ov)
+			if err != nil {
+				respond.BadRequest(c, err.Error())
+				return
+			}
+			existing.Kubeconfig = rewritten
+			needProbe = true
+		}
+	}
+	if needProbe {
+		h.syncHosts()
 		ctx, cancel := h.ctx(c)
 		defer cancel()
-		probe := kube.Probe(ctx, existing.Kubeconfig)
+		probe := kube.Probe(ctx, existing.Kubeconfig, h.Pool.Hosts())
 		existing.PermType = probe.PermType
 		existing.Namespaces = probe.Namespaces
 		existing.Server = probe.Server
@@ -302,6 +339,87 @@ func (h *Handler) DeleteDoc(c *gin.Context) {
 	if err := h.Store.DeleteDoc(id); err != nil {
 		if err == sql.ErrNoRows {
 			respond.NotFound(c, "doc not found")
+			return
+		}
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, gin.H{"deleted": id})
+}
+
+func (h *Handler) CreateHostAlias(c *gin.Context) {
+	var in model.HostAliasInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	row, err := h.Hosts.Create(in.Hostname, in.IP)
+	if err != nil {
+		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "required") {
+			respond.BadRequest(c, err.Error())
+			return
+		}
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, row)
+}
+
+func (h *Handler) UpdateHostAlias(c *gin.Context) {
+	id := c.Param("hostId")
+	var in model.HostAliasUpdate
+	if err := c.ShouldBindJSON(&in); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	hostname := id
+	ip := ""
+	// Load current values if partial update
+	list, err := h.Hosts.List()
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	var cur *model.HostAlias
+	for i := range list {
+		if list[i].ID == strings.ToLower(id) || list[i].Hostname == strings.ToLower(id) {
+			cur = &list[i]
+			break
+		}
+	}
+	if cur == nil {
+		respond.NotFound(c, "host alias not found")
+		return
+	}
+	hostname = cur.Hostname
+	ip = cur.IP
+	if in.Hostname != nil {
+		hostname = *in.Hostname
+	}
+	if in.IP != nil {
+		ip = *in.IP
+	}
+	row, err := h.Hosts.Update(id, hostname, ip)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			respond.NotFound(c, "host alias not found")
+			return
+		}
+		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "required") {
+			respond.BadRequest(c, err.Error())
+			return
+		}
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, row)
+}
+
+func (h *Handler) DeleteHostAlias(c *gin.Context) {
+	id := c.Param("hostId")
+	if err := h.Hosts.Delete(id); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			respond.NotFound(c, "host alias not found")
 			return
 		}
 		respond.Internal(c, err.Error())

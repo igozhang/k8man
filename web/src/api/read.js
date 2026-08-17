@@ -19,5 +19,6 @@ export const readApi = {
   podMetrics: (id, namespace) =>
     http.get(`/read/clusters/${id}/metrics/pods`, { params: { namespace } }),
   listDocs: (params) => http.get('/read/docs', { params }),
-  getDoc: (docId) => http.get(`/read/docs/${docId}`)
+  getDoc: (docId) => http.get(`/read/docs/${docId}`),
+  listHosts: () => http.get('/read/hosts')
 }

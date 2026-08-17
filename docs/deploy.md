@@ -33,7 +33,8 @@ curl -sS http://k8man.sunwoda-evb.com/api/health
 
 ## 说明
 
-- PVC：`local-path` → `/data`；单副本 `Recreate`
+- PVC：`local-path` → `/data`；`/etc/k8man` 使用 PVC `subPath: etc`（含 `k8man.conf`、`hosts`、banner）
+- Hosts：文件 `{etc}/hosts`，格式 `IP hostname`；页面与直接改文件均可，进程内约 2 秒热加载
 - 环境变量：`K8MAN_ADDR` / `K8MAN_DATA_DIR` / `K8MAN_DB_PATH` / `K8MAN_ETC_DIR` / `TZ`
-- 配置与 banner：镜像内 `/etc/k8man/k8man.conf`；可将自定义目录挂到 `/etc/k8man`（含 `banner.jpg`）
+- 配置与 banner：`/etc/k8man/k8man.conf`；可将 `banner.jpg` 放同目录
 - 无登录鉴权；保留 PVC 升级

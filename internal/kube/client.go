@@ -40,16 +40,30 @@ type ProbeResult struct {
 type Pool struct {
 	mu      sync.RWMutex
 	clients map[string]*Clients
+	hosts   *HostsResolver
 }
 
-func NewPool() *Pool {
-	return &Pool{clients: make(map[string]*Clients)}
+func NewPool(hosts *HostsResolver) *Pool {
+	if hosts == nil {
+		hosts = NewHostsResolver()
+	}
+	return &Pool{clients: make(map[string]*Clients), hosts: hosts}
+}
+
+func (p *Pool) Hosts() *HostsResolver {
+	return p.hosts
 }
 
 func (p *Pool) Invalidate(id string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.clients, id)
+}
+
+func (p *Pool) InvalidateAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.clients = make(map[string]*Clients)
 }
 
 func (p *Pool) Get(id, kubeconfigYAML string) (*Clients, error) {
@@ -60,7 +74,7 @@ func (p *Pool) Get(id, kubeconfigYAML string) (*Clients, error) {
 	}
 	p.mu.RUnlock()
 
-	c, err := BuildClients(kubeconfigYAML)
+	c, err := BuildClients(kubeconfigYAML, p.hosts)
 	if err != nil {
 		return nil, err
 	}
@@ -92,12 +106,15 @@ func SuggestNameFromKubeconfig(kubeconfigYAML string) string {
 	return ""
 }
 
-func BuildClients(kubeconfigYAML string) (*Clients, error) {
+func BuildClients(kubeconfigYAML string, hosts *HostsResolver) (*Clients, error) {
 	cfg, err := clientcmd.RESTConfigFromKubeConfig([]byte(kubeconfigYAML))
 	if err != nil {
 		return nil, fmt.Errorf("parse kubeconfig: %w", err)
 	}
 	cfg.Timeout = 30 * time.Second
+	if hosts != nil {
+		hosts.ApplyDial(cfg)
+	}
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("clientset: %w", err)
@@ -114,11 +131,12 @@ func BuildClients(kubeconfigYAML string) (*Clients, error) {
 	return &Clients{Config: cfg, Clientset: cs, Dynamic: dyn, Metrics: mc, Server: server}, nil
 }
 
-func Probe(ctx context.Context, kubeconfigYAML string) ProbeResult {
+func Probe(ctx context.Context, kubeconfigYAML string, hosts *HostsResolver) ProbeResult {
 	res := ProbeResult{PermType: "unknown", Status: "error", Namespaces: []string{}}
-	c, err := BuildClients(kubeconfigYAML)
+	c, err := BuildClients(kubeconfigYAML, hosts)
 	if err != nil {
-		res.LastError = err.Error()
+		res.LastError = FriendlyConnectivityError(err)
+		res.Server = SuggestServerFromKubeconfig(kubeconfigYAML)
 		return res
 	}
 	res.Server = c.Server
@@ -128,7 +146,7 @@ func Probe(ctx context.Context, kubeconfigYAML string) ProbeResult {
 
 	nsList, err := c.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{Limit: 500})
 	if err != nil {
-		res.LastError = err.Error()
+		res.LastError = FriendlyConnectivityError(err)
 		return res
 	}
 	for _, n := range nsList.Items {
@@ -144,6 +162,78 @@ func Probe(ctx context.Context, kubeconfigYAML string) ProbeResult {
 	res.Status = "ok"
 	res.LastError = ""
 	return res
+}
+
+// SuggestServerFromKubeconfig returns the current-context cluster server URL.
+func SuggestServerFromKubeconfig(kubeconfigYAML string) string {
+	cfg, err := clientcmd.Load([]byte(kubeconfigYAML))
+	if err != nil {
+		return ""
+	}
+	ctxName := cfg.CurrentContext
+	if ctxName == "" {
+		for name := range cfg.Contexts {
+			ctxName = name
+			break
+		}
+	}
+	if ctxName == "" {
+		for _, cluster := range cfg.Clusters {
+			if cluster != nil {
+				return cluster.Server
+			}
+		}
+		return ""
+	}
+	ctx := cfg.Contexts[ctxName]
+	if ctx == nil {
+		return ""
+	}
+	cluster := cfg.Clusters[ctx.Cluster]
+	if cluster == nil {
+		return ""
+	}
+	return cluster.Server
+}
+
+// OverrideKubeconfigServer rewrites all cluster server URLs in the kubeconfig.
+func OverrideKubeconfigServer(kubeconfigYAML, server string) (string, error) {
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return kubeconfigYAML, nil
+	}
+	cfg, err := clientcmd.Load([]byte(kubeconfigYAML))
+	if err != nil {
+		return "", fmt.Errorf("parse kubeconfig: %w", err)
+	}
+	for _, cluster := range cfg.Clusters {
+		if cluster != nil {
+			cluster.Server = server
+		}
+	}
+	out, err := clientcmd.Write(*cfg)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// FriendlyConnectivityError turns common dial/DNS failures into actionable Chinese hints.
+func FriendlyConnectivityError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "no such host"):
+		return msg + "\n提示：域名无法解析。请在「KubeConfig 管理」页底部的 Hosts 中添加 hostname→IP，或填写 API Server 覆盖地址。"
+	case strings.Contains(msg, "i/o timeout"), strings.Contains(msg, "deadline exceeded"):
+		return msg + "\n提示：连接超时，请检查 k8man 所在网络能否访问该 API Server（防火墙/路由/安全组）。"
+	case strings.Contains(msg, "certificate"), strings.Contains(msg, "x509"):
+		return msg + "\n提示：证书校验失败。若使用 IP 覆盖域名，需保证证书匹配，或使用带正确 SAN 的入口地址。"
+	default:
+		return msg
+	}
 }
 
 func (c *Clients) ListNamespaces(ctx context.Context) ([]corev1.Namespace, error) {

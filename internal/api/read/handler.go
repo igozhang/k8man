@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gitee.com/k8man/internal/api/respond"
+	"gitee.com/k8man/internal/hostsfile"
 	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/store"
 )
@@ -16,6 +17,7 @@ import (
 type Handler struct {
 	Store *store.Store
 	Pool  *kube.Pool
+	Hosts *hostsfile.File
 }
 
 func (h *Handler) clients(c *gin.Context) (*kube.Clients, bool) {
@@ -75,7 +77,20 @@ func (h *Handler) TestCluster(c *gin.Context) {
 	}
 	ctx, cancel := h.ctx(c)
 	defer cancel()
-	probe := kube.Probe(ctx, cl.Kubeconfig)
+	if h.Hosts != nil {
+		_, _ = h.Hosts.SyncIfChanged()
+	}
+	probe := kube.Probe(ctx, cl.Kubeconfig, h.Pool.Hosts())
+	cl.Server = probe.Server
+	cl.PermType = probe.PermType
+	cl.Namespaces = probe.Namespaces
+	cl.Status = probe.Status
+	cl.LastError = probe.LastError
+	cl.UpdatedAt = time.Now().UTC()
+	if err := h.Store.UpdateCluster(cl); err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
 	respond.OK(c, gin.H{
 		"server":     probe.Server,
 		"permType":   probe.PermType,
@@ -383,6 +398,21 @@ func (h *Handler) GetDoc(c *gin.Context) {
 		return
 	}
 	respond.OK(c, d)
+}
+
+func (h *Handler) ListHostAliases(c *gin.Context) {
+	if h.Hosts != nil {
+		_, _ = h.Hosts.SyncIfChanged()
+	}
+	list, err := h.Hosts.List()
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, gin.H{
+		"path":  h.Hosts.Path(),
+		"items": list,
+	})
 }
 
 func formatAge(t time.Time) string {

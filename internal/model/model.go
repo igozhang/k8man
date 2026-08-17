@@ -17,15 +17,17 @@ type Cluster struct {
 }
 
 type ClusterInput struct {
-	Name        string `json:"name"` // optional; derived from kubeconfig when empty
-	Description string `json:"description"`
-	Kubeconfig  string `json:"kubeconfig" binding:"required"`
+	Name           string `json:"name"` // optional; derived from kubeconfig when empty
+	Description    string `json:"description"`
+	Kubeconfig     string `json:"kubeconfig" binding:"required"`
+	ServerOverride string `json:"serverOverride"` // optional; rewrite kubeconfig cluster.server
 }
 
 type ClusterUpdate struct {
-	Name        *string `json:"name"`
-	Description *string `json:"description"`
-	Kubeconfig  *string `json:"kubeconfig"`
+	Name           *string `json:"name"`
+	Description    *string `json:"description"`
+	Kubeconfig     *string `json:"kubeconfig"`
+	ServerOverride *string `json:"serverOverride"`
 }
 
 type Doc struct {
@@ -49,6 +51,27 @@ type DocInput struct {
 	Summary  string   `json:"summary"`
 	Content  string   `json:"content"`
 	Pinned   bool     `json:"pinned"`
+}
+
+type HostAlias struct {
+	ID        string    `json:"id"`
+	Hostname  string    `json:"hostname"`
+	IP        string    `json:"ip"`
+	Note      string    `json:"note"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type HostAliasInput struct {
+	Hostname string `json:"hostname" binding:"required"`
+	IP       string `json:"ip" binding:"required"`
+	Note     string `json:"note"`
+}
+
+type HostAliasUpdate struct {
+	Hostname *string `json:"hostname"`
+	IP       *string `json:"ip"`
+	Note     *string `json:"note"`
 }
 
 type ScaleRequest struct {
