@@ -6,6 +6,7 @@ import { asArray, createSeq, errMessage } from '../utils/safe'
 import { copyText } from '../utils/clipboard'
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
+import TextDrawer from '../components/TextDrawer.vue'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 
@@ -18,7 +19,6 @@ const skippedNodes = ref(false)
 const scanErrors = ref({})
 const scan = ref({})
 const copiedKey = ref('')
-const copiedExplainKey = ref('')
 let copiedTimer = 0
 const category = ref('')
 const nsFilter = ref('')
@@ -26,6 +26,7 @@ const severity = ref('')
 const loadSeq = createSeq()
 const logsDrawer = ref(null)
 const yamlDrawer = ref(null)
+const explainDrawer = ref(null)
 
 const isProject = computed(() => currentCluster.value?.permType === 'project')
 
@@ -73,7 +74,7 @@ function canYAML(row) {
 }
 
 function canLogs(row) {
-  if (kindKey(row) !== 'pod' || !row.namespace) return false
+  if (row.category !== 'pod' || kindKey(row) !== 'pod' || !row.namespace) return false
   return ![
     'Evicted',
     'Shutdown',
@@ -86,6 +87,20 @@ function canLogs(row) {
     'ErrImagePull',
     'InvalidImageName'
   ].includes(row.reason)
+}
+
+function explainBrief(row) {
+  const parts = []
+  if (row.message) parts.push(String(row.message).trim())
+  if (row.category === 'pod') {
+    if (row.node && row.nodeIP) parts.push(`${row.node} (${row.nodeIP})`)
+    else if (row.node) parts.push(row.node)
+    else if (row.nodeIP) parts.push(row.nodeIP)
+  } else if (row.category === 'node' && row.nodeIP) {
+    parts.push(row.nodeIP)
+  }
+  const text = parts.filter(Boolean).join(' · ')
+  return text || row.reason || '查看完整说明'
 }
 
 function evidenceList(row) {
@@ -155,7 +170,6 @@ async function copyIssue(row, idx) {
   try {
     await copyText(issueCopyText(row))
     copiedKey.value = rowKey(row, idx)
-    copiedExplainKey.value = ''
     window.clearTimeout(copiedTimer)
     copiedTimer = window.setTimeout(() => {
       if (copiedKey.value === rowKey(row, idx)) copiedKey.value = ''
@@ -165,18 +179,26 @@ async function copyIssue(row, idx) {
   }
 }
 
-async function copyExplain(row, idx) {
-  try {
-    await copyText(explainText(row))
-    copiedExplainKey.value = rowKey(row, idx)
-    copiedKey.value = ''
-    window.clearTimeout(copiedTimer)
-    copiedTimer = window.setTimeout(() => {
-      if (copiedExplainKey.value === rowKey(row, idx)) copiedExplainKey.value = ''
-    }, 1500)
-  } catch {
-    error.value = '复制失败'
-  }
+function showExplain(row) {
+  logsDrawer.value?.close()
+  yamlDrawer.value?.close()
+  const loc = row.namespace ? `${row.namespace}/${row.name}` : row.name
+  explainDrawer.value?.open(`说明 · ${row.kind} ${loc}`, explainText(row) || issueCopyText(row) || '（无说明）')
+}
+
+function showLogs(row) {
+  explainDrawer.value?.close()
+  yamlDrawer.value?.close()
+  logsDrawer.value?.open(row.name, row.namespace, {
+    container: row.container,
+    previous: String(row.logSource || '').startsWith('previous')
+  })
+}
+
+function openYAML(row) {
+  explainDrawer.value?.close()
+  logsDrawer.value?.close()
+  yamlDrawer.value?.open(kindKey(row), row.name, row.namespace)
 }
 
 const scanLine = computed(() => {
@@ -223,17 +245,6 @@ async function load() {
   }
 }
 
-function showLogs(row) {
-  logsDrawer.value?.open(row.name, row.namespace, {
-    container: row.container,
-    previous: String(row.logSource || '').startsWith('previous')
-  })
-}
-
-function openYAML(row) {
-  yamlDrawer.value?.open(kindKey(row), row.name, row.namespace)
-}
-
 function onChildError(msg) {
   error.value = msg
 }
@@ -243,9 +254,9 @@ watch(currentClusterId, () => {
   nsFilter.value = ''
   severity.value = ''
   copiedKey.value = ''
-  copiedExplainKey.value = ''
   logsDrawer.value?.close()
   yamlDrawer.value?.close()
+  explainDrawer.value?.close()
   load()
 })
 onMounted(load)
@@ -345,20 +356,14 @@ onUnmounted(() => {
             <td>{{ row.name }}</td>
             <td>{{ row.reason }}</td>
             <td class="msg">
-              <div class="field-copy-wrap log-terminal diag-explain">
-                <textarea
-                  class="log-view"
-                  readonly
-                  spellcheck="false"
-                  :value="explainText(row)"
-                ></textarea>
-                <button
-                  type="button"
-                  class="field-copy"
-                  :class="{ 'is-copied': copiedExplainKey === rowKey(row, idx) }"
-                  @click="copyExplain(row, idx)"
-                >{{ copiedExplainKey === rowKey(row, idx) ? '已复制' : '复制' }}</button>
-              </div>
+              <button
+                class="explain-brief"
+                type="button"
+                :title="'点击查看完整说明'"
+                @click="showExplain(row)"
+              >
+                <span class="explain-brief-text">{{ explainBrief(row) }}</span>
+              </button>
             </td>
             <td>
               {{ row.since || row.age || '—' }}
@@ -381,6 +386,7 @@ onUnmounted(() => {
 
     <PodLogsDrawer ref="logsDrawer" :cluster-id="currentClusterId" />
     <YamlDrawer ref="yamlDrawer" :cluster-id="currentClusterId" read-only @error="onChildError" />
+    <TextDrawer ref="explainDrawer" />
   </div>
 </template>
 
@@ -400,15 +406,41 @@ onUnmounted(() => {
   color: var(--warn);
 }
 .msg {
-  width: 36rem;
-  max-width: 42rem;
-  min-width: 18rem;
+  max-width: 28rem;
   vertical-align: middle;
 }
-.diag-explain .log-view {
-  height: 12em;
-  min-height: 12em;
-  white-space: pre-wrap;
+.explain-brief {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline;
+  max-width: 28rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--ctrl-font);
+  line-height: var(--ctrl-line);
+  text-align: left;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.explain-brief-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
   word-break: break-word;
+  color: inherit;
+  line-height: var(--ctrl-line);
+}
+.explain-brief:hover .explain-brief-text,
+.explain-brief:focus-visible .explain-brief-text {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.explain-brief:focus-visible {
+  outline: none;
 }
 </style>

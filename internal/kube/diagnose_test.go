@@ -64,6 +64,9 @@ func TestDiagnoseNode(t *testing.T) {
 	if got[0].Since != "12m" {
 		t.Fatalf("not ready since: %q", got[0].Since)
 	}
+	if got[0].NodeIP != "10.0.0.8" {
+		t.Fatalf("not ready nodeIP: %q", got[0].NodeIP)
+	}
 	if !hasEvidence(got[0].Evidence, "internalIP=10.0.0.8") || !hasEvidence(got[0].Evidence, "Ready=False") {
 		t.Fatalf("not ready evidence: %v", got[0].Evidence)
 	}

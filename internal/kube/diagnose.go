@@ -349,7 +349,7 @@ func diagnoseNode(n corev1.Node, usage nodeUsage, now time.Time) []Issue {
 		}
 		out = append(out, Issue{
 			Severity: "critical", Category: "node", Kind: "Node",
-			Name: n.Name, Reason: ready, Message: msg, Age: age,
+			Name: n.Name, NodeIP: ip, Reason: ready, Message: msg, Age: age,
 			Since: formatAgeAt(readySince, now), Evidence: clipEvidence(ev),
 		})
 	}
@@ -377,7 +377,7 @@ func diagnoseNode(n corev1.Node, usage nodeUsage, now time.Time) []Issue {
 			}
 			out = append(out, Issue{
 				Severity: "warning", Category: "node", Kind: "Node",
-				Name: n.Name, Reason: reason, Message: clipRunes(msg, diagnoseMsgMaxRunes),
+				Name: n.Name, NodeIP: ip, Reason: reason, Message: clipRunes(msg, diagnoseMsgMaxRunes),
 				Age: age, Since: formatAgeAt(cond.LastTransitionTime.Time, now),
 				Evidence: clipEvidence(ev),
 			})
@@ -391,7 +391,7 @@ func diagnoseNode(n corev1.Node, usage nodeUsage, now time.Time) []Issue {
 			pct := usage.cpu / cpuAlloc * 100
 			out = append(out, Issue{
 				Severity: "warning", Category: "node", Kind: "Node",
-				Name: n.Name, Reason: "CPUHigh",
+				Name: n.Name, NodeIP: ip, Reason: "CPUHigh",
 				Message:  fmt.Sprintf("CPU %s / %s（%.0f%%，阈值 %.0f%%）", fmtCores(usage.cpu), n.Status.Allocatable.Cpu().String(), pct, diagnoseUsageWarn*100),
 				Age:      age,
 				Evidence: clipEvidence(append(append([]string{}, base...), fmt.Sprintf("threshold=%.0f%%", diagnoseUsageWarn*100))),
@@ -401,7 +401,7 @@ func diagnoseNode(n corev1.Node, usage nodeUsage, now time.Time) []Issue {
 			pct := usage.mem / memAlloc * 100
 			out = append(out, Issue{
 				Severity: "warning", Category: "node", Kind: "Node",
-				Name: n.Name, Reason: "MemoryHigh",
+				Name: n.Name, NodeIP: ip, Reason: "MemoryHigh",
 				Message:  fmt.Sprintf("内存 %s / %s（%.0f%%，阈值 %.0f%%）", fmtBytes(usage.mem), n.Status.Allocatable.Memory().String(), pct, diagnoseUsageWarn*100),
 				Age:      age,
 				Evidence: clipEvidence(append(append([]string{}, base...), fmt.Sprintf("threshold=%.0f%%", diagnoseUsageWarn*100))),
