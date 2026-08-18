@@ -76,8 +76,12 @@ func main() {
 	if ui.BannerPath != "" {
 		bannerNote = ui.BannerPath
 	}
-	log.Printf("k8man %s listening on %s (db=%s etc=%s hosts=%s banner=%s)",
-		version, cfg.Addr, cfg.DBPath, cfg.EtcDir, hostsFile.Path(), bannerNote)
+	iconNote := "default"
+	if ui.IconPath != "" {
+		iconNote = ui.IconPath
+	}
+	log.Printf("k8man %s listening on %s (db=%s etc=%s hosts=%s banner=%s icon=%s)",
+		version, cfg.Addr, cfg.DBPath, cfg.EtcDir, hostsFile.Path(), bannerNote, iconNote)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,

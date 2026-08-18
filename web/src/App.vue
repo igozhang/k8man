@@ -13,32 +13,52 @@ const {
 
 const ui = ref({
   title: 'k8s多集群运维工具',
-  tagline: '',
+  tagline: 'practice makes perfect',
   hasBanner: false,
   bannerUrl: '/banner',
+  iconUrl: '/icon',
   version: '0.1.0'
 })
 
+const mediaStamp = ref(Date.now())
+
 const bannerStyle = computed(() => {
   if (!ui.value.hasBanner) return {}
-  const url = `${ui.value.bannerUrl}?t=${Date.now()}`
+  const url = `${ui.value.bannerUrl}?t=${mediaStamp.value}`
   return { '--site-head-banner': `url('${url}')` }
 })
 
+const iconSrc = computed(() => `${ui.value.iconUrl || '/icon'}?t=${mediaStamp.value}`)
+
+function setFavicon(href) {
+  let link = document.querySelector('link[rel="icon"]')
+  if (!link) {
+    link = document.createElement('link')
+    link.rel = 'icon'
+    document.head.appendChild(link)
+  }
+  link.removeAttribute('type')
+  link.href = href
+}
+
 onMounted(() => {
+  setFavicon(iconSrc.value)
   refreshClusters(() => readApi.listClusters()).catch(() => {})
   readApi
     .getUI()
     .then((data) => {
       if (data) {
+        mediaStamp.value = Date.now()
         ui.value = {
           title: data.title || ui.value.title,
-          tagline: data.tagline || '',
+          tagline: data.tagline || 'practice makes perfect',
           hasBanner: !!data.hasBanner,
           bannerUrl: data.bannerUrl || '/banner',
+          iconUrl: data.iconUrl || '/icon',
           version: data.version || '0.1.0'
         }
         if (data.title) document.title = data.title
+        setFavicon(`${ui.value.iconUrl}?t=${mediaStamp.value}`)
       }
     })
     .catch(() => {})
@@ -51,7 +71,13 @@ onMounted(() => {
       <div class="shell site-head-inner">
         <!-- 标题靠左，导航靠右，与正文同宽 -->
         <div class="head-mid">
-          <div class="brand">{{ ui.title }}</div>
+          <div class="brand-block">
+            <img class="brand-icon" :src="iconSrc" width="36" height="36" alt="" />
+            <div class="brand-copy">
+              <div class="brand">{{ ui.title }}</div>
+              <p v-if="ui.tagline" class="site-tagline">{{ ui.tagline }}</p>
+            </div>
+          </div>
           <nav class="nav">
             <RouterLink to="/">概览</RouterLink>
             <RouterLink to="/clusters">KubeConfig</RouterLink>
@@ -61,7 +87,6 @@ onMounted(() => {
             <RouterLink to="/docs">运维文档</RouterLink>
           </nav>
         </div>
-        <p v-if="ui.tagline" class="site-tagline">{{ ui.tagline }}</p>
       </div>
     </header>
 

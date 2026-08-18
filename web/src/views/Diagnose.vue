@@ -806,15 +806,13 @@ onUnmounted(() => {
 
     <div class="panel summary-panel">
       <div class="summary-head">
-        <strong>诊断总结</strong>
-        <div class="actions">
-          <button
-            v-if="summaryOverflow"
-            class="btn btn-sm"
-            type="button"
-            @click="showSummary"
-          >查看全部</button>
-        </div>
+        <span class="summary-title">诊断总结</span>
+        <button
+          v-if="summaryOverflow"
+          class="btn btn-sm summary-more"
+          type="button"
+          @click.stop="showSummary"
+        >查看全部</button>
       </div>
       <div
         ref="summaryBox"
@@ -942,15 +940,25 @@ button.stat.is-active {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: calc(var(--ctrl-pad-y) * 2 + var(--ctrl-font) * var(--ctrl-line));
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
-.summary-head strong {
+.summary-title {
   margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
   line-height: var(--ctrl-line);
 }
-.summary-head .actions {
+.summary-more {
   margin-top: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.summary-panel:hover .summary-more,
+.summary-panel:focus-within .summary-more {
+  opacity: 1;
+  pointer-events: auto;
 }
 .summary-preview-text {
   display: -webkit-box;

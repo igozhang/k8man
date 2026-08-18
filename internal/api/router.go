@@ -58,6 +58,8 @@ func NewRouter(d Deps) *gin.Engine {
 			"tagline":   ui.Tagline,
 			"hasBanner": ui.BannerPath != "",
 			"bannerUrl": "/banner",
+			"hasIcon":   ui.IconPath != "",
+			"iconUrl":   "/icon",
 			"version":   d.Version,
 		})
 	})
@@ -71,6 +73,18 @@ func NewRouter(d Deps) *gin.Engine {
 		c.Header("Cache-Control", "public, max-age=30")
 		c.File(ui.BannerPath)
 	})
+
+	serveIcon := func(c *gin.Context) {
+		ui := config.LoadUI(d.UI.EtcDir)
+		c.Header("Cache-Control", "public, max-age=30")
+		if ui.IconPath != "" {
+			c.File(ui.IconPath)
+			return
+		}
+		c.Data(http.StatusOK, "image/png", config.DefaultIconPNG())
+	}
+	r.GET("/icon", serveIcon)
+	r.GET("/favicon.ico", serveIcon)
 
 	readGroup := r.Group("/api/v1/read")
 	{

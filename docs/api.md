@@ -10,7 +10,8 @@
 
 ## UI
 
-- `GET /api/v1/read/ui` — 页眉品牌名（`title`）、副标题（`tagline`）、是否有 banner（读 `etc/k8man.conf`）
+- `GET /api/v1/read/ui` — 页眉品牌名（`title`）、slogan（`tagline`）、是否有自定义 icon / banner（读 `etc/k8man.conf`）
+- `GET /icon`、`GET /favicon.ico` — 站点图标（`etc` 下 `icon.jpg` / `icon.png` 优先，否则返回内置马里奥风格数字 8）
 - `GET /banner` — 头部 banner 图片（`etc` 下有图则返回，否则 404）
 
 ## 只读 `/api/v1/read`

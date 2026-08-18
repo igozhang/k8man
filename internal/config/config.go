@@ -17,6 +17,7 @@ type Config struct {
 	Title      string
 	Tagline    string
 	BannerName string
+	IconName   string
 }
 
 type UISettings struct {
@@ -24,12 +25,18 @@ type UISettings struct {
 	Tagline    string
 	BannerName string
 	BannerPath string
+	IconName   string
+	IconPath   string
 }
+
+const defaultTitle = "k8s多集群运维工具"
+const defaultTagline = "practice makes perfect"
 
 // defaultConfBody: 头部为生效配置，尾部为说明与示例。
 const defaultConfBody = `addr=:8080
 data_dir=./data
 title=k8s多集群运维工具
+tagline=practice makes perfect
 
 # =============================================================================
 # 说明（以下均为注释，修改请改上方生效区）
@@ -42,9 +49,15 @@ title=k8s多集群运维工具
 # | data_dir  | K8MAN_DATA_DIR   | ./data                  | 数据目录 |
 # | db_path   | K8MAN_DB_PATH    | <data_dir>/k8man.db     | SQLite 路径，可省略 |
 # | title     | （仅 conf）      | k8s多集群运维工具       | 页眉左侧品牌名；兼浏览器标签页标题 |
-# | tagline   | （仅 conf）      | （空）                  | 页眉副标题（品牌名下方），可选 |
+# | tagline   | （仅 conf）      | practice makes perfect  | 站名下方 slogan |
+# | icon      | （仅 conf）      | （自动探测）            | etc 下站点 icon 文件名 |
 # | banner    | （仅 conf）      | （自动探测）            | etc 下图片文件名 |
 # | hosts     | （文件）         | <etc>/hosts             | 私有解析，格式：IP hostname |
+#
+# 站点 icon（可选）：
+#   将 icon.jpg / icon.png 放到 etc 即作为 favicon 与页眉图标；
+#   无文件则使用内置马里奥风格（红白蓝）数字 8。
+#   探测顺序：icon= 指定名 → icon.jpg → .jpeg → .png
 #
 # 头部 banner（可选，不使用外部站点图片）：
 #   将自有图片放到 etc 目录即可启用；无文件则默认浅青面板风格。
@@ -56,7 +69,8 @@ title=k8s多集群运维工具
 #
 # ----- 示例 -----
 # db_path=./data/k8man.db
-# tagline=多集群运维
+# tagline=practice makes perfect
+# icon=icon.png
 # banner=banner.jpg
 #
 
@@ -94,6 +108,7 @@ func Load() Config {
 		Title:      ui.Title,
 		Tagline:    ui.Tagline,
 		BannerName: ui.BannerName,
+		IconName:   ui.IconName,
 	}
 }
 
@@ -120,26 +135,39 @@ func LoadUI(etcDir string) UISettings {
 	vals := readConfFile(filepath.Join(etcDir, "k8man.conf"))
 	ui := uiFromVals(vals)
 	ui.BannerPath = ResolveBanner(etcDir, ui.BannerName)
+	ui.IconPath = ResolveIcon(etcDir, ui.IconName)
 	return ui
 }
 
 func uiFromVals(fileVals map[string]string) UISettings {
 	return UISettings{
-		Title:      firstNonEmpty(fileVals["title"], "k8s多集群运维工具"),
-		Tagline:    fileVals["tagline"],
+		Title:      firstNonEmpty(fileVals["title"], defaultTitle),
+		Tagline:    firstNonEmpty(fileVals["tagline"], defaultTagline),
 		BannerName: fileVals["banner"],
+		IconName:   fileVals["icon"],
 	}
 }
 
 // ResolveBanner 仅使用 etc 目录下自有图片；无则返回空（前端用默认样式）。
 func ResolveBanner(etcDir, configured string) string {
+	return resolveEtcFile(etcDir, configured, []string{
+		"banner.jpg", "banner.jpeg", "banner.png", "banner.webp", "banner.gif",
+	})
+}
+
+// ResolveIcon 使用 etc 下 jpg/png；无则返回空（路由回退到内置马里奥 8）。
+func ResolveIcon(etcDir, configured string) string {
+	return resolveEtcFile(etcDir, configured, []string{
+		"icon.jpg", "icon.jpeg", "icon.png",
+	})
+}
+
+func resolveEtcFile(etcDir, configured string, fallbacks []string) string {
 	candidates := []string{}
 	if configured != "" {
 		candidates = append(candidates, configured)
 	}
-	candidates = append(candidates,
-		"banner.jpg", "banner.jpeg", "banner.png", "banner.webp", "banner.gif",
-	)
+	candidates = append(candidates, fallbacks...)
 	seen := map[string]bool{}
 	for _, name := range candidates {
 		name = strings.TrimSpace(name)

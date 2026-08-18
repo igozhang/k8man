@@ -29,9 +29,9 @@ go run ./cmd/server
 | `K8MAN_ADDR` | `:8080` | 监听地址 |
 | `K8MAN_DATA_DIR` | `./data` | 数据目录 |
 | `K8MAN_DB_PATH` | `$DATA_DIR/k8man.db` | SQLite 路径 |
-| `K8MAN_ETC_DIR` | `./etc` | 配置与可选自有 banner 目录（容器内 `/etc/k8man`） |
+| `K8MAN_ETC_DIR` | `./etc` | 配置与可选自有 icon / banner 目录（容器内 `/etc/k8man`） |
 
-`etc/k8man.conf`：头部为生效配置，尾部为说明与示例；缺失或无效时启动自动生成。`title` / `tagline` 分别为页眉左侧品牌名（兼浏览器标签页标题）与可选副标题。将自有 `banner.jpg`（或 png/webp/gif）放入 `etc` 即启用头部 banner；无文件则默认浅青面板风格（配色/布局参考同类站点，不使用外部 banner 图）。
+`etc/k8man.conf`：头部为生效配置，尾部为说明与示例；缺失或无效时启动自动生成。`title` / `tagline` 分别为页眉左侧品牌名（兼浏览器标签页标题）与站名下方 slogan（默认 `practice makes perfect`）。将自有 `icon.jpg` / `icon.png` 放入 `etc` 即作为 favicon 与页眉图标；无文件则使用内置马里奥风格（红白蓝）数字 8。将自有 `banner.jpg`（或 png/webp/gif）放入 `etc` 即启用头部 banner；无文件则默认浅青面板风格（配色/布局参考同类站点，不使用外部 banner 图）。
 
 ### 前端（开发）
 
@@ -64,7 +64,7 @@ npm run dev   # Vite 代理 /api -> :8080
 
 ```
 cmd/server/          入口与嵌入前端
-etc/                 k8man.conf 与可选 banner 图片
+etc/                 k8man.conf、可选 icon / banner 图片
 internal/api/read|write  读写 API 分包
 internal/kube        client-go 封装
 internal/store       SQLite
