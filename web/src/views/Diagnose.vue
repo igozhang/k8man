@@ -416,6 +416,60 @@ function issueSummaryLine(row) {
   return msg ? `${head} · ${msg}` : head
 }
 
+function scanHasError(cat) {
+  return !!(scanErrors.value && scanErrors.value[cat])
+}
+
+function healthyCheckLines() {
+  const s = scan.value || {}
+  const lines = []
+  const pods = s.pods ?? 0
+  const nodes = s.nodes ?? 0
+  const dep = s.deployments || 0
+  const sts = s.statefulSets || 0
+  const ds = s.daemonSets || 0
+  const wl = dep + sts + ds
+  const ev = s.events ?? 0
+
+  if (skippedNodes.value) {
+    lines.push('- 节点: 未检查（project 凭证）')
+  } else if (!scanHasError('nodes')) {
+    if (!nodes) {
+      lines.push('- 节点: 范围内无节点')
+    } else if (s.metricsSkipped) {
+      lines.push(`- 节点: ${nodes} 个均 Ready，无 Disk/Memory/PID/Network 压力；用量未采集（${s.metricsSkipped}）`)
+    } else {
+      lines.push(`- 节点: ${nodes} 个均 Ready，无 Disk/Memory/PID/Network 压力，CPU/内存用量未达 90%`)
+    }
+  }
+
+  if (!scanHasError('workloads')) {
+    if (!wl) {
+      lines.push('- 负载: 范围内无 Deployment / StatefulSet / DaemonSet')
+    } else {
+      const kinds = []
+      if (dep) kinds.push(`${dep} Deployment`)
+      if (sts) kinds.push(`${sts} StatefulSet`)
+      if (ds) kinds.push(`${ds} DaemonSet`)
+      lines.push(`- 负载: ${kinds.join(' / ')} 副本就绪，无 misscheduled`)
+    }
+  }
+
+  if (!scanHasError('pods')) {
+    if (!pods) {
+      lines.push('- Pod: 范围内无 Pod')
+    } else {
+      lines.push(`- Pod: ${pods} 个无 CrashLoop / 拉镜像失败 / CreateContainerError / OOM；无 Failed；无长时间 Pending；无近 2 小时频繁重启`)
+    }
+  }
+
+  if (!scanHasError('events')) {
+    lines.push(`- 事件: 已看 ${ev} 条 Warning，无近 2 小时独立成行的调度/挂载/绑定失败`)
+  }
+
+  return lines
+}
+
 const summaryFull = computed(() => {
   const lines = []
   const name = currentCluster.value?.name || ''
@@ -435,12 +489,17 @@ const summaryFull = computed(() => {
   const total = issues.value.length
   if (!total && !error.value) {
     lines.push('结论: 未发现当前异常。')
+    const checks = healthyCheckLines()
+    if (checks.length) {
+      lines.push('检查结果:')
+      lines.push(...checks)
+    }
   } else if (total) {
     lines.push(`结论: 发现 ${total} 条当前异常（严重 ${c.critical || 0} · 警告 ${c.warning || 0}）。`)
   }
   if (scanLine.value) lines.push(scanLine.value)
-  if (skippedNodes.value) lines.push('节点: project 凭证未扫描。')
-  if (scan.value?.metricsSkipped) lines.push(`节点指标未采集: ${scan.value.metricsSkipped}`)
+  if (skippedNodes.value && total) lines.push('节点: project 凭证未扫描。')
+  if (scan.value?.metricsSkipped && total) lines.push(`节点指标未采集: ${scan.value.metricsSkipped}`)
   if (truncated.value) lines.push('结果已截断，仅展示部分异常。')
   for (const e of errorEntries.value) {
     lines.push(`${categoryLabel(e.key)}扫描失败: ${e.message}`)
@@ -746,17 +805,17 @@ onUnmounted(() => {
         <li>滚动中（Progressing=True 且 ReplicaSetUpdated 等，或 Unavailable&gt;0 且 Progressing 持续不足 15 分钟）不算；超过 15 分钟仍对不上才报。</li>
         <li>Pod 正在 CrashLoop / 拉镜像失败 / CreateContainerError / OOMKilled → 严重。Failed（非 Evicted/Shutdown 等）→ 严重。Unknown、Running 未就绪 → 警告。</li>
         <li>Pending Unschedulable 超过 2 分钟，或其它 Pending 超过 15 分钟 → 警告。Succeeded、刚创建的 Pending 不算。</li>
-        <li>当前 Ready，但最近 15 分钟内重启过且累计 ≥ 3 次 → 警告。上次重启更早的生命周期计数不算。</li>
+        <li>当前 Ready，但最近 2 小时内重启过且累计 ≥ 3 次 → 警告。上次重启更早的生命周期计数不算。</li>
       </ul>
       <h3>算事件</h3>
       <ul>
         <li>Warning 优先挂到已有异常的说明（每条最多 5 条），不重复占行。</li>
-        <li>独立成行仅当：lastSeen 在 15 分钟内，且原因是 FailedScheduling / FailedMount / FailedAttachVolume / FailedCreate / FailedBinding，或 BackOff、含 OOM 的 Killing、对象仍不健康的 Evicted。</li>
+        <li>独立成行仅当：lastSeen 在 2 小时内，且原因是 FailedScheduling / FailedMount / FailedAttachVolume / FailedCreate / FailedBinding，或 BackOff、含 OOM 的 Killing、对象仍不健康的 Evicted。</li>
       </ul>
       <h3>明确不算</h3>
       <ul>
         <li>Unhealthy / ProbeWarning：kubelet 每次探针失败都记，Pod 仍 Ready 表示未达 failureThreshold。</li>
-        <li>对象当前 Ready 的任何 Warning；lastSeen 超过 15 分钟的历史事件。</li>
+        <li>对象当前 Ready 的任何 Warning；lastSeen 超过 2 小时的历史事件。</li>
         <li>Evicted / Shutdown 等已被 kubelet 清掉的 Failed 残留。</li>
       </ul>
     </details>

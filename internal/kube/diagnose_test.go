@@ -281,16 +281,29 @@ func TestDiagnosePod(t *testing.T) {
 		t.Fatalf("restarts <3 in window should ignore: %+v", got)
 	}
 
-	cooled := podAt("cool-rst", corev1.PodRunning, now.Add(-time.Hour))
+	mid := podAt("mid-rst", corev1.PodRunning, now.Add(-3*time.Hour))
+	mid.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app", Ready: true, RestartCount: 5,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-90 * time.Minute))}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, FinishedAt: metav1.NewTime(now.Add(-90 * time.Minute))},
+		},
+	}}
+	got = diagnosePod(mid, now)
+	if len(got) != 1 || got[0].Reason != "Restarts" {
+		t.Fatalf("last restart within 2h should flag: %+v", got)
+	}
+
+	cooled := podAt("cool-rst", corev1.PodRunning, now.Add(-4*time.Hour))
 	cooled.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name: "app", Ready: true, RestartCount: 8,
-		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-20 * time.Minute))}},
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-3 * time.Hour))}},
 		LastTerminationState: corev1.ContainerState{
-			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, FinishedAt: metav1.NewTime(now.Add(-20 * time.Minute))},
+			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, FinishedAt: metav1.NewTime(now.Add(-3 * time.Hour))},
 		},
 	}}
 	if got = diagnosePod(cooled, now); got != nil {
-		t.Fatalf("last restart >15m should ignore: %+v", got)
+		t.Fatalf("last restart >2h should ignore: %+v", got)
 	}
 
 	stale := podAt("old-rst", corev1.PodRunning, now.Add(-128*24*time.Hour))
@@ -487,9 +500,17 @@ func TestDiagnoseEventAndSort(t *testing.T) {
 		t.Fatalf("Unhealthy must not stand alone: attached=%d n=%d %+v", attached, len(merged), merged)
 	}
 
+	midSched := e
+	midSched.InvolvedObject.Name = "still"
+	midSched.LastTimestamp = metav1.NewTime(now.Add(-90 * time.Minute))
+	merged, attached = attachEvents(nil, []corev1.Event{midSched}, now, nil)
+	if attached != 0 || len(merged) != 1 || merged[0].Reason != "FailedScheduling" {
+		t.Fatalf("FailedScheduling within 2h should stand: attached=%d n=%d %+v", attached, len(merged), merged)
+	}
+
 	staleSched := e
 	staleSched.InvolvedObject.Name = "gone"
-	staleSched.LastTimestamp = metav1.NewTime(now.Add(-20 * time.Minute))
+	staleSched.LastTimestamp = metav1.NewTime(now.Add(-3 * time.Hour))
 	merged, attached = attachEvents(nil, []corev1.Event{staleSched}, now, nil)
 	if attached != 0 || len(merged) != 0 {
 		t.Fatalf("stale FailedScheduling should drop: attached=%d n=%d", attached, len(merged))

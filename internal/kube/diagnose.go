@@ -16,19 +16,21 @@ import (
 )
 
 const (
-	diagnoseListPage       = 500
-	diagnoseMaxScan        = 3000
-	diagnoseMaxNodes       = 500
-	diagnoseMaxIssues      = 200
-	diagnoseMaxEvents      = 80
-	diagnoseNSWorkers      = 4
-	diagnoseEventScan      = 500
-	diagnosePendingAge     = 2 * time.Minute
-	diagnosePendingOther   = 15 * time.Minute
-	diagnoseRestartWarn    = int32(3)
-	diagnoseRestartRecent  = 15 * time.Minute
+	diagnoseListPage     = 500
+	diagnoseMaxScan      = 3000
+	diagnoseMaxNodes     = 500
+	diagnoseMaxIssues    = 200
+	diagnoseMaxEvents    = 80
+	diagnoseNSWorkers    = 4
+	diagnoseEventScan    = 500
+	diagnosePendingAge   = 2 * time.Minute
+	diagnosePendingOther = 15 * time.Minute
+	diagnoseRestartWarn  = int32(3)
+	// 回看窗口：mixin 用 for:15m 防值班误叫；诊断页是复盘，2h 内重启/事件仍要看。
+	diagnoseRestartRecent = 2 * time.Hour
+	diagnoseEventFresh    = 2 * time.Hour
+	// 防误报等待：滚动缺口、普通 Pending 仍用 15m，拉长到 2h 会把卡住的发布瞒掉。
 	diagnoseRolloutGrace   = 15 * time.Minute
-	diagnoseEventFresh     = 15 * time.Minute
 	diagnoseUsageWarn      = 0.90
 	diagnoseMsgMaxRunes    = 400
 	diagnoseEvidenceMax    = 12
@@ -513,7 +515,7 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 	}
 	if restarts >= diagnoseRestartWarn {
 		since := lastRestartAt(p)
-		// restartCount 是生命周期累计；仅最近窗口内仍在重启才算现时异常。
+		// restartCount 是生命周期累计；仅回看窗口内仍在重启才算现时异常。
 		if since.IsZero() || now.Sub(since) > diagnoseRestartRecent {
 			return nil
 		}
