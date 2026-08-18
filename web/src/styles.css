@@ -111,17 +111,18 @@ a:hover { text-decoration: underline; }
   gap: 0.35rem;
 }
 
-/* 标题 + 导航：与正文同宽区域左对齐 */
+/* 标题靠左，导航靠右 */
 .head-mid {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: space-between;
   gap: 0.65rem 1.35rem;
   max-width: 100%;
 }
 .brand {
   margin: 0;
+  flex: 0 1 auto;
   font-size: 1.15rem;
   font-weight: 650;
   letter-spacing: 0.03em;
@@ -151,7 +152,8 @@ a:hover { text-decoration: underline; }
   flex-wrap: wrap;
   gap: 0.55rem 1rem;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 .nav a {
   color: var(--muted);
@@ -777,10 +779,10 @@ body.is-drawer-resizing {
 @media (max-width: 720px) {
   .head-mid {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
     gap: 0.45rem 0.75rem;
   }
   .brand { font-size: 1.05rem; white-space: normal; text-align: left; }
-  .nav { gap: 0.45rem 0.75rem; justify-content: flex-start; }
+  .nav { gap: 0.45rem 0.75rem; justify-content: flex-end; margin-left: 0; }
   .cluster-select { min-width: 140px; }
 }

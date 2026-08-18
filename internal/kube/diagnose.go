@@ -24,8 +24,11 @@ const (
 	diagnoseNSWorkers      = 4
 	diagnoseEventScan      = 500
 	diagnosePendingAge     = 2 * time.Minute
-	diagnoseRestartWarn    = int32(5)
-	diagnoseRestartRecent  = 24 * time.Hour
+	diagnosePendingOther   = 15 * time.Minute
+	diagnoseRestartWarn    = int32(3)
+	diagnoseRestartRecent  = 15 * time.Minute
+	diagnoseRolloutGrace   = 15 * time.Minute
+	diagnoseEventFresh     = 15 * time.Minute
 	diagnoseUsageWarn      = 0.90
 	diagnoseMsgMaxRunes    = 400
 	diagnoseEvidenceMax    = 12
@@ -166,6 +169,7 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 		eventsTrunc bool
 		locMu       sync.Mutex
 		podLocs     = map[string]resourceLoc{}
+		podOK       = map[string]bool{}
 		nodeIPs     = map[string]string{}
 	)
 
@@ -235,6 +239,7 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 				Node:   p.Spec.NodeName,
 				NodeIP: p.Status.HostIP,
 			}
+			podOK[issueKey("Pod", p.Namespace, p.Name)] = podCurrentlyOK(p)
 			locMu.Unlock()
 		}
 		var issues []Issue
@@ -272,7 +277,7 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 
 	wg.Wait()
 
-	merged, attached := attachEvents(rep.Issues, events, opt.Now)
+	merged, attached := attachEvents(rep.Issues, events, opt.Now, podOK)
 	rep.Issues = merged
 	enrichLocations(rep.Issues, podLocs, nodeIPs)
 	if eventsTrunc {
@@ -486,8 +491,15 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 		return issue("warning", "NotReady", fmt.Sprintf("ready %d/%d", ready, total), since)
 	}
 
-	if p.Status.Phase == corev1.PodPending && now.Sub(p.CreationTimestamp.Time) >= diagnosePendingAge {
+	if p.Status.Phase == corev1.PodPending {
 		reason, msg := pendingHint(p)
+		minAge := diagnosePendingOther
+		if reason == "Unschedulable" {
+			minAge = diagnosePendingAge
+		}
+		if now.Sub(p.CreationTimestamp.Time) < minAge {
+			return nil
+		}
 		since := conditionTime(p, corev1.PodScheduled)
 		if since.IsZero() {
 			since = p.CreationTimestamp.Time
@@ -501,7 +513,7 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 	}
 	if restarts >= diagnoseRestartWarn {
 		since := lastRestartAt(p)
-		// restartCount 是 Pod 生命周期累计；当前实例已稳定运行则不算现时异常。
+		// restartCount 是生命周期累计；仅最近窗口内仍在重启才算现时异常。
 		if since.IsZero() || now.Sub(since) > diagnoseRestartRecent {
 			return nil
 		}
@@ -521,6 +533,9 @@ func diagnoseDeployment(d appsv1.Deployment, now time.Time) []Issue {
 	}
 	since, extra := workloadFalseConditions(d.Status.Conditions)
 	ev = append(ev, extra...)
+	if desired > 0 && d.Status.ReadyReplicas < desired && deploymentRolloutRecent(d, now) {
+		return nil
+	}
 	return replicaIssues("Deployment", d.Namespace, d.Name, desired, d.Status.ReadyReplicas, 0, d.CreationTimestamp.Time, since, now, ev)
 }
 
@@ -533,6 +548,9 @@ func diagnoseStatefulSet(s appsv1.StatefulSet, now time.Time) []Issue {
 		fmt.Sprintf("replicas desired=%d ready=%d current=%d updated=%d",
 			desired, s.Status.ReadyReplicas, s.Status.CurrentReplicas, s.Status.UpdatedReplicas),
 	}
+	if desired > 0 && s.Status.ReadyReplicas < desired && statefulSetRolloutRecent(s, now) {
+		return nil
+	}
 	return replicaIssues("StatefulSet", s.Namespace, s.Name, desired, s.Status.ReadyReplicas, 0, s.CreationTimestamp.Time, time.Time{}, now, ev)
 }
 
@@ -543,6 +561,12 @@ func diagnoseDaemonSet(ds appsv1.DaemonSet, now time.Time) []Issue {
 	ev := []string{
 		fmt.Sprintf("desired=%d ready=%d available=%d misscheduled=%d updated=%d",
 			desired, ready, ds.Status.NumberAvailable, miss, ds.Status.UpdatedNumberScheduled),
+	}
+	if desired > 0 && ready < desired && daemonSetRolloutRecent(ds, now) {
+		if miss > 0 {
+			return replicaIssues("DaemonSet", ds.Namespace, ds.Name, desired, desired, miss, ds.CreationTimestamp.Time, time.Time{}, now, ev)
+		}
+		return nil
 	}
 	return replicaIssues("DaemonSet", ds.Namespace, ds.Name, desired, ready, miss, ds.CreationTimestamp.Time, time.Time{}, now, ev)
 }
@@ -577,6 +601,62 @@ func replicaIssues(kind, ns, name string, desired, ready, misscheduled int32, cr
 		}}
 	}
 	return nil
+}
+
+func deploymentRolloutRecent(d appsv1.Deployment, now time.Time) bool {
+	var p *appsv1.DeploymentCondition
+	for i := range d.Status.Conditions {
+		if d.Status.Conditions[i].Type == appsv1.DeploymentProgressing {
+			p = &d.Status.Conditions[i]
+			break
+		}
+	}
+	if p == nil || p.Status != corev1.ConditionTrue {
+		return false
+	}
+	t := p.LastUpdateTime.Time
+	if t.IsZero() {
+		t = p.LastTransitionTime.Time
+	}
+	if t.IsZero() || now.Sub(t) > diagnoseRolloutGrace {
+		return false
+	}
+	switch p.Reason {
+	case "ReplicaSetUpdated", "NewReplicaSetCreated", "FoundNewReplicaSet", "NewReplicaSetAvailable":
+		return true
+	}
+	return d.Status.UnavailableReplicas > 0
+}
+
+func statefulSetRolloutRecent(s appsv1.StatefulSet, now time.Time) bool {
+	if s.Status.UpdateRevision == "" || s.Status.CurrentRevision == "" || s.Status.UpdateRevision == s.Status.CurrentRevision {
+		return false
+	}
+	for _, c := range s.Status.Conditions {
+		if string(c.Type) != "Progressing" || c.Status != corev1.ConditionTrue {
+			continue
+		}
+		t := c.LastTransitionTime.Time
+		return !t.IsZero() && now.Sub(t) <= diagnoseRolloutGrace
+	}
+	return false
+}
+
+func daemonSetRolloutRecent(ds appsv1.DaemonSet, now time.Time) bool {
+	if ds.Status.DesiredNumberScheduled <= 0 {
+		return false
+	}
+	if ds.Status.UpdatedNumberScheduled >= ds.Status.DesiredNumberScheduled {
+		return false
+	}
+	for _, c := range ds.Status.Conditions {
+		if string(c.Type) != "Progressing" || c.Status != corev1.ConditionTrue {
+			continue
+		}
+		t := c.LastTransitionTime.Time
+		return !t.IsZero() && now.Sub(t) <= diagnoseRolloutGrace
+	}
+	return false
 }
 
 func diagnoseEvent(e corev1.Event, now time.Time) Issue {
@@ -647,7 +727,7 @@ func containerFromFieldPath(fp string) string {
 	return ""
 }
 
-func attachEvents(issues []Issue, events []corev1.Event, now time.Time) ([]Issue, int) {
+func attachEvents(issues []Issue, events []corev1.Event, now time.Time, podOK map[string]bool) ([]Issue, int) {
 	idx := map[string][]int{}
 	for i, it := range issues {
 		if it.Category == "event" {
@@ -675,7 +755,13 @@ func attachEvents(issues []Issue, events []corev1.Event, now time.Time) ([]Issue
 			}
 		}
 		if len(ids) == 0 {
+			if !allowOrphanEvent(e, now, podOK) {
+				continue
+			}
 			orphans = append(orphans, e)
+			continue
+		}
+		if skipAttachEvent(e, now, podOK) {
 			continue
 		}
 		line := eventEvidenceLine(e, now)
@@ -692,6 +778,66 @@ func attachEvents(issues []Issue, events []corev1.Event, now time.Time) ([]Issue
 		out = append(out, diagnoseEvent(e, now))
 	}
 	return out, attached
+}
+
+func podCurrentlyOK(p corev1.Pod) bool {
+	return p.Status.Phase == corev1.PodRunning && podContainersReady(p)
+}
+
+func allowOrphanEvent(e corev1.Event, now time.Time, podOK map[string]bool) bool {
+	switch e.Reason {
+	case "Unhealthy", "ProbeWarning":
+		return false
+	}
+	when := eventTime(e)
+	if when.IsZero() || now.Sub(when) > diagnoseEventFresh {
+		return false
+	}
+	ns := firstNonEmpty(e.InvolvedObject.Namespace, e.Namespace)
+	kind := e.InvolvedObject.Kind
+	key := issueKey(kind, ns, e.InvolvedObject.Name)
+	podSeenOK := false
+	if strings.EqualFold(kind, "Pod") {
+		if ok, seen := podOK[key]; seen && ok {
+			podSeenOK = true
+		}
+		if podSeenOK {
+			return false
+		}
+	}
+	switch e.Reason {
+	case "FailedScheduling", "FailedMount", "FailedAttachVolume", "FailedCreate", "FailedBinding":
+		return true
+	case "BackOff", "Killing":
+		if e.Reason == "Killing" && !strings.Contains(strings.ToLower(e.Message), "oom") {
+			return false
+		}
+		return true
+	case "Evicted":
+		if !strings.EqualFold(kind, "Pod") {
+			return true
+		}
+		ok, seen := podOK[key]
+		return seen && !ok
+	default:
+		return false
+	}
+}
+
+func skipAttachEvent(e corev1.Event, now time.Time, podOK map[string]bool) bool {
+	switch e.Reason {
+	case "Unhealthy", "ProbeWarning":
+	default:
+		return false
+	}
+	ns := firstNonEmpty(e.InvolvedObject.Namespace, e.Namespace)
+	if strings.EqualFold(e.InvolvedObject.Kind, "Pod") {
+		if ok, seen := podOK[issueKey("Pod", ns, e.InvolvedObject.Name)]; seen && ok {
+			return true
+		}
+	}
+	when := eventTime(e)
+	return when.IsZero() || now.Sub(when) > diagnoseEventFresh
 }
 
 func ignoreSettledPod(reason string) bool {

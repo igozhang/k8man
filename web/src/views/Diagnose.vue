@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
+import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { readApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { asArray, createSeq, errMessage } from '../utils/safe'
@@ -29,6 +29,9 @@ const EXPLAIN_LOG_TAIL = 40
 const logsDrawer = ref(null)
 const yamlDrawer = ref(null)
 const explainDrawer = ref(null)
+const RULES_KEY = 'k8man.diagnoseRulesOpen'
+const rulesOpen = ref(true)
+const rulesEl = ref(null)
 
 const isProject = computed(() => currentCluster.value?.permType === 'project')
 
@@ -88,8 +91,22 @@ function canLogs(row) {
     'Pending',
     'ImagePullBackOff',
     'ErrImagePull',
-    'InvalidImageName'
+    'InvalidImageName',
+    'FailedScheduling',
+    'FailedMount',
+    'FailedAttachVolume',
+    'FailedCreate',
+    'FailedBinding'
   ].includes(row.reason)
+}
+
+function typeLabel(row) {
+  const cat = categoryLabel(row.category)
+  const kind = String(row?.kind || '').trim()
+  if (!kind) return cat
+  if (row.category === 'pod' && kind.toLowerCase() === 'pod') return 'Pod'
+  if (row.category === 'node' && kind.toLowerCase() === 'node') return '节点'
+  return `${cat} · ${kind}`
 }
 
 function locationLine(row) {
@@ -240,8 +257,12 @@ function explainText(row, logsInfo) {
   if (row.container) lines.push(`容器: ${row.container}`)
   if (row.count && Number(row.count) > 1) lines.push(`次数: ${row.count}`)
   if (row.reason) lines.push(`原因: ${row.reason}`)
-  if (row.since) lines.push(`持续: ${row.since}`)
-  if (row.age && row.age !== row.since) lines.push(`创建: ${row.age}`)
+  if (row.category === 'event') {
+    if (row.since || row.age) lines.push(`上次: ${row.since || row.age}`)
+  } else {
+    if (row.since) lines.push(`持续: ${row.since}`)
+    if (row.age && row.age !== row.since) lines.push(`创建: ${row.age}`)
+  }
   if (row.message) {
     lines.push('')
     lines.push('内容:')
@@ -372,7 +393,7 @@ const scanLine = computed(() => {
   if (!skippedNodes.value) parts.push(`${s.nodes ?? 0} 节点`)
   parts.push(`${s.pods ?? 0} Pod`)
   parts.push(`${wl} 负载`)
-  parts.push(`${s.events ?? 0} 事件`)
+  parts.push(`${s.events ?? 0} 条 Warning`)
   if (s.eventsAttached) parts.push(`${s.eventsAttached} 条已挂到异常`)
   if (s.logsFetched) parts.push(`${s.logsFetched} 份日志摘录`)
   if (s.metricsSkipped) parts.push('指标未采集')
@@ -381,6 +402,83 @@ const scanLine = computed(() => {
   else if (s.nodes || s.pods) parts.push('未走缓存')
   return parts.length ? `已扫描 ${parts.join(' · ')}` : ''
 })
+
+function clipSummaryMsg(s, n = 200) {
+  const t = String(s || '').replace(/\s+/g, ' ').trim()
+  if (t.length <= n) return t
+  return `${t.slice(0, n)}…`
+}
+
+function issueSummaryLine(row) {
+  const loc = row.namespace ? `${row.namespace}/${row.name}` : row.name
+  const head = `${severityLabel(row.severity)} · ${categoryLabel(row.category)} ${row.kind} ${loc} · ${row.reason}`
+  const msg = clipSummaryMsg(row.message)
+  return msg ? `${head} · ${msg}` : head
+}
+
+const summaryFull = computed(() => {
+  const lines = []
+  const name = currentCluster.value?.name || ''
+  const perm = currentCluster.value?.permType || ''
+  if (!currentClusterId.value) {
+    return '结论: 尚未选择集群。'
+  }
+  lines.push(`集群: ${name || '未命名'}${perm ? ` (${perm})` : ''}`)
+  if (loading.value) {
+    lines.push('正在扫描…')
+    return lines.join('\n')
+  }
+  if (error.value) {
+    lines.push(`扫描失败: ${error.value}`)
+  }
+  const c = counts.value
+  const total = issues.value.length
+  if (!total && !error.value) {
+    lines.push('结论: 未发现当前异常。')
+  } else if (total) {
+    lines.push(`结论: 发现 ${total} 条当前异常（严重 ${c.critical || 0} · 警告 ${c.warning || 0}）。`)
+  }
+  if (scanLine.value) lines.push(scanLine.value)
+  if (skippedNodes.value) lines.push('节点: project 凭证未扫描。')
+  if (scan.value?.metricsSkipped) lines.push(`节点指标未采集: ${scan.value.metricsSkipped}`)
+  if (truncated.value) lines.push('结果已截断，仅展示部分异常。')
+  for (const e of errorEntries.value) {
+    lines.push(`${categoryLabel(e.key)}扫描失败: ${e.message}`)
+  }
+  const crit = issues.value.filter((it) => it.severity === 'critical')
+  const warn = issues.value.filter((it) => it.severity !== 'critical')
+  if (crit.length) {
+    lines.push('')
+    lines.push(`严重 (${crit.length}):`)
+    for (const it of crit) lines.push(`- ${issueSummaryLine(it)}`)
+  }
+  if (warn.length) {
+    lines.push('')
+    lines.push(`警告 (${warn.length}):`)
+    for (const it of warn) lines.push(`- ${issueSummaryLine(it)}`)
+  }
+  return lines.join('\n')
+})
+
+const summaryBox = ref(null)
+const summaryOverflow = ref(false)
+
+function measureSummary() {
+  const el = summaryBox.value
+  if (!el) {
+    summaryOverflow.value = false
+    return
+  }
+  summaryOverflow.value = el.scrollHeight > el.clientHeight + 1
+}
+
+function showSummary() {
+  if (!summaryOverflow.value) return
+  logsDrawer.value?.close()
+  yamlDrawer.value?.close()
+  explainSeq.bump()
+  explainDrawer.value?.open('诊断总结', summaryFull.value)
+}
 
 async function load() {
   const seq = loadSeq.next()
@@ -418,6 +516,19 @@ function onChildError(msg) {
   error.value = msg
 }
 
+function onRulesToggle(e) {
+  const open = !!e.target.open
+  rulesOpen.value = open
+  try {
+    localStorage.setItem(RULES_KEY, open ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+}
+
+watch(summaryFull, () => {
+  nextTick(measureSummary)
+})
 watch(currentClusterId, () => {
   category.value = ''
   nsFilter.value = ''
@@ -429,8 +540,21 @@ watch(currentClusterId, () => {
   explainDrawer.value?.close()
   load()
 })
-onMounted(load)
+onMounted(() => {
+  try {
+    const v = localStorage.getItem(RULES_KEY)
+    if (v === '0') rulesOpen.value = false
+    if (v === '1') rulesOpen.value = true
+  } catch {
+    /* ignore */
+  }
+  if (rulesEl.value) rulesEl.value.open = rulesOpen.value
+  window.addEventListener('resize', measureSummary)
+  load()
+  nextTick(measureSummary)
+})
 onUnmounted(() => {
+  window.removeEventListener('resize', measureSummary)
   window.clearTimeout(copiedTimer)
 })
 </script>
@@ -438,7 +562,7 @@ onUnmounted(() => {
 <template>
   <div>
     <h1>诊断</h1>
-    <p class="page-desc">扫描当前集群的节点、控制器、Pod 与近期 Warning 事件，只列出异常。</p>
+    <p class="page-desc">只列出当前不健康的对象。历史累计重启、滚动发布中的副本缺口、探针未达阈值的 Warning 不计入。判定规则见页底。</p>
     <div v-if="!currentClusterId" class="empty">请先在「KubeConfig」导入集群，并在上方选择集群。</div>
     <template v-else>
       <div class="grid">
@@ -539,7 +663,7 @@ onUnmounted(() => {
             <th>名称</th>
             <th>原因</th>
             <th>说明</th>
-            <th>持续</th>
+            <th>时间</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -550,7 +674,7 @@ onUnmounted(() => {
                 {{ severityLabel(row.severity) }}
               </span>
             </td>
-            <td>{{ categoryLabel(row.category) }} · {{ row.kind }}</td>
+            <td>{{ typeLabel(row) }}</td>
             <td>{{ row.namespace || '—' }}</td>
             <td>{{ row.name }}</td>
             <td>{{ row.reason }}</td>
@@ -565,8 +689,13 @@ onUnmounted(() => {
               </button>
             </td>
             <td>
-              {{ row.since || row.age || '—' }}
-              <span v-if="row.since && row.age && row.since !== row.age" class="muted"> / {{ row.age }}</span>
+              <template v-if="row.category === 'event'">
+                上次 {{ row.since || row.age || '—' }}
+              </template>
+              <template v-else>
+                {{ row.since || row.age || '—' }}
+                <span v-if="row.since && row.age && row.since !== row.age" class="muted"> / {{ row.age }}</span>
+              </template>
             </td>
             <td class="actions">
               <button v-if="canLogs(row)" class="btn btn-sm" type="button" @click="showLogs(row)">日志</button>
@@ -582,6 +711,55 @@ onUnmounted(() => {
         {{ issues.length ? '当前筛选下没有匹配项。' : '未发现异常。' }}
       </div>
     </template>
+
+    <div class="panel summary-panel">
+      <div class="summary-head">
+        <strong>诊断总结</strong>
+        <div class="actions">
+          <button
+            v-if="summaryOverflow"
+            class="btn btn-sm"
+            type="button"
+            @click="showSummary"
+          >查看全部</button>
+        </div>
+      </div>
+      <div
+        ref="summaryBox"
+        class="summary-preview-text"
+        :class="{ 'is-clickable': summaryOverflow }"
+        :role="summaryOverflow ? 'button' : undefined"
+        :tabindex="summaryOverflow ? 0 : undefined"
+        :title="summaryOverflow ? '点击在右侧查看全部' : undefined"
+        @click="showSummary"
+        @keydown.enter.prevent="showSummary"
+      >{{ summaryFull }}</div>
+    </div>
+
+    <details ref="rulesEl" class="panel rules-panel" open @toggle="onRulesToggle">
+      <summary>判定规则</summary>
+      <p class="rules-lead">异常看对象当前状态；事件是过程记录，默认只挂到说明里。对齐 kubernetes-mixin / kube-prometheus 的「当前不健康才告警」，诊断页当场显示，不等值班窗口。</p>
+      <h3>算异常</h3>
+      <ul>
+        <li>节点 Ready≠True → 严重；Disk/Memory/PID/Network 压力为 True → 警告；CPU/内存用量 ≥ 90% → 警告。project 凭证不扫节点。</li>
+        <li>负载 ready &lt; desired 且不是滚动中 → 副本为 0 严重，否则警告。DaemonSet misscheduled &gt; 0 → 警告。缩到 0 不算。</li>
+        <li>滚动中（Progressing=True 且 ReplicaSetUpdated 等，或 Unavailable&gt;0 且 Progressing 持续不足 15 分钟）不算；超过 15 分钟仍对不上才报。</li>
+        <li>Pod 正在 CrashLoop / 拉镜像失败 / CreateContainerError / OOMKilled → 严重。Failed（非 Evicted/Shutdown 等）→ 严重。Unknown、Running 未就绪 → 警告。</li>
+        <li>Pending Unschedulable 超过 2 分钟，或其它 Pending 超过 15 分钟 → 警告。Succeeded、刚创建的 Pending 不算。</li>
+        <li>当前 Ready，但最近 15 分钟内重启过且累计 ≥ 3 次 → 警告。上次重启更早的生命周期计数不算。</li>
+      </ul>
+      <h3>算事件</h3>
+      <ul>
+        <li>Warning 优先挂到已有异常的说明（每条最多 5 条），不重复占行。</li>
+        <li>独立成行仅当：lastSeen 在 15 分钟内，且原因是 FailedScheduling / FailedMount / FailedAttachVolume / FailedCreate / FailedBinding，或 BackOff、含 OOM 的 Killing、对象仍不健康的 Evicted。</li>
+      </ul>
+      <h3>明确不算</h3>
+      <ul>
+        <li>Unhealthy / ProbeWarning：kubelet 每次探针失败都记，Pod 仍 Ready 表示未达 failureThreshold。</li>
+        <li>对象当前 Ready 的任何 Warning；lastSeen 超过 15 分钟的历史事件。</li>
+        <li>Evicted / Shutdown 等已被 kubelet 清掉的 Failed 残留。</li>
+      </ul>
+    </details>
 
     <PodLogsDrawer ref="logsDrawer" :cluster-id="currentClusterId" />
     <YamlDrawer ref="yamlDrawer" :cluster-id="currentClusterId" read-only @error="onChildError" />
@@ -661,5 +839,93 @@ button.stat.is-active {
 }
 .explain-brief:focus-visible {
   outline: none;
+}
+.summary-panel {
+  margin-top: 20px;
+  margin-bottom: 0;
+  padding: 12px 16px;
+}
+.summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: calc(var(--ctrl-pad-y) * 2 + var(--ctrl-font) * var(--ctrl-line));
+  margin-bottom: 8px;
+}
+.summary-head strong {
+  margin: 0;
+  line-height: var(--ctrl-line);
+}
+.summary-head .actions {
+  margin-top: 0;
+}
+.summary-preview-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+.summary-preview-text.is-clickable {
+  cursor: pointer;
+}
+.summary-preview-text.is-clickable:hover,
+.summary-preview-text.is-clickable:focus-visible {
+  color: var(--accent);
+}
+.summary-preview-text.is-clickable:focus-visible {
+  outline: none;
+}
+.rules-panel {
+  margin-top: 12px;
+  margin-bottom: 0;
+  padding: 12px 16px;
+}
+.rules-panel > summary {
+  display: flex;
+  align-items: center;
+  min-height: calc(var(--ctrl-pad-y) * 2 + var(--ctrl-font) * var(--ctrl-line));
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+.rules-panel > summary::-webkit-details-marker {
+  display: none;
+}
+.rules-panel > summary::before {
+  content: '▸';
+  margin-right: 8px;
+  color: var(--muted);
+  line-height: 1;
+}
+.rules-panel[open] > summary::before {
+  content: '▾';
+}
+.rules-lead {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.rules-panel h3 {
+  margin: 12px 0 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.rules-panel ul {
+  margin: 0;
+  padding-left: 1.2em;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.rules-panel li + li {
+  margin-top: 4px;
 }
 </style>

@@ -49,7 +49,7 @@ onMounted(() => {
   <div class="layout">
     <header class="site-head" :class="{ 'has-banner': ui.hasBanner }" :style="bannerStyle">
       <div class="shell site-head-inner">
-        <!-- 标题 + 导航：与正文同宽区域左对齐 -->
+        <!-- 标题靠左，导航靠右，与正文同宽 -->
         <div class="head-mid">
           <div class="brand">{{ ui.title }}</div>
           <nav class="nav">

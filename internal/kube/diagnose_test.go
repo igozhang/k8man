@@ -221,6 +221,29 @@ func TestDiagnosePod(t *testing.T) {
 		t.Fatalf("young pending: %+v", got)
 	}
 
+	pulling := podAt("pulling", corev1.PodPending, now.Add(-10*time.Minute))
+	pulling.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app",
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
+		},
+	}}
+	if got = diagnosePod(pulling, now); got != nil {
+		t.Fatalf("pending create <15m should wait: %+v", got)
+	}
+
+	stuckCreate := podAt("stuck-create", corev1.PodPending, now.Add(-16*time.Minute))
+	stuckCreate.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app",
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
+		},
+	}}
+	got = diagnosePod(stuckCreate, now)
+	if len(got) != 1 || got[0].Reason != "ContainerCreating" {
+		t.Fatalf("pending create >15m: %+v", got)
+	}
+
 	oldPending := podAt("stuck", corev1.PodPending, now.Add(-3*time.Minute))
 	oldPending.Status.Conditions = []corev1.PodCondition{{
 		Type:    corev1.PodScheduled,
@@ -244,6 +267,30 @@ func TestDiagnosePod(t *testing.T) {
 	got = diagnosePod(restarts, now)
 	if len(got) != 1 || got[0].Reason != "Restarts" || got[0].Severity != "warning" {
 		t.Fatalf("restarts: %+v", got)
+	}
+
+	few := podAt("few-rst", corev1.PodRunning, now.Add(-time.Hour))
+	few.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app", Ready: true, RestartCount: 2,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-5 * time.Minute))}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, FinishedAt: metav1.NewTime(now.Add(-5 * time.Minute))},
+		},
+	}}
+	if got = diagnosePod(few, now); got != nil {
+		t.Fatalf("restarts <3 in window should ignore: %+v", got)
+	}
+
+	cooled := podAt("cool-rst", corev1.PodRunning, now.Add(-time.Hour))
+	cooled.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app", Ready: true, RestartCount: 8,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-20 * time.Minute))}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, FinishedAt: metav1.NewTime(now.Add(-20 * time.Minute))},
+		},
+	}}
+	if got = diagnosePod(cooled, now); got != nil {
+		t.Fatalf("last restart >15m should ignore: %+v", got)
 	}
 
 	stale := podAt("old-rst", corev1.PodRunning, now.Add(-128*24*time.Hour))
@@ -302,6 +349,28 @@ func TestDiagnoseWorkloads(t *testing.T) {
 	got = diagnoseDeployment(partial, now)
 	if len(got) != 1 || got[0].Severity != "warning" {
 		t.Fatalf("partial: %+v", got)
+	}
+
+	rolling := partial
+	rolling.Name = "rolling"
+	rolling.Status.UnavailableReplicas = 1
+	rolling.Status.UpdatedReplicas = 2
+	rolling.Status.Conditions = []appsv1.DeploymentCondition{{
+		Type:           appsv1.DeploymentProgressing,
+		Status:         corev1.ConditionTrue,
+		Reason:         "ReplicaSetUpdated",
+		LastUpdateTime: metav1.NewTime(now.Add(-2 * time.Minute)),
+	}}
+	if got = diagnoseDeployment(rolling, now); got != nil {
+		t.Fatalf("rolling deploy <15m should ignore: %+v", got)
+	}
+
+	stuckRoll := rolling
+	stuckRoll.Name = "stuck-roll"
+	stuckRoll.Status.Conditions[0].LastUpdateTime = metav1.NewTime(now.Add(-20 * time.Minute))
+	got = diagnoseDeployment(stuckRoll, now)
+	if len(got) != 1 || got[0].Reason != "NotReady" {
+		t.Fatalf("rollout >15m should flag: %+v", got)
 	}
 
 	scaled := ok
@@ -383,7 +452,7 @@ func TestDiagnoseEventAndSort(t *testing.T) {
 	}
 
 	podIssue := Issue{Severity: "critical", Category: "pod", Kind: "Pod", Namespace: "default", Name: "web", Reason: "CrashLoopBackOff"}
-	merged, attached := attachEvents([]Issue{podIssue}, []corev1.Event{e}, now)
+	merged, attached := attachEvents([]Issue{podIssue}, []corev1.Event{e}, now, nil)
 	if attached != 1 {
 		t.Fatalf("attached=%d", attached)
 	}
@@ -396,9 +465,46 @@ func TestDiagnoseEventAndSort(t *testing.T) {
 
 	orphan := e
 	orphan.InvolvedObject.Name = "other"
-	merged, attached = attachEvents([]Issue{podIssue}, []corev1.Event{orphan}, now)
+	merged, attached = attachEvents([]Issue{podIssue}, []corev1.Event{orphan}, now, nil)
 	if attached != 0 || len(merged) != 2 || merged[1].Category != "event" {
 		t.Fatalf("orphan: attached=%d n=%d cat=%s", attached, len(merged), merged[len(merged)-1].Category)
+	}
+
+	probeEvt := corev1.Event{
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Namespace: "monitoring", Name: "grafana"},
+		Reason:         "Unhealthy",
+		Message:        "Readiness probe failed: timeout",
+		Type:           corev1.EventTypeWarning,
+		Count:          138,
+	}
+	readyKey := issueKey("Pod", "monitoring", "grafana")
+	merged, attached = attachEvents(nil, []corev1.Event{probeEvt}, now, map[string]bool{readyKey: true})
+	if attached != 0 || len(merged) != 0 {
+		t.Fatalf("ready pod Unhealthy should be ignored: attached=%d n=%d", attached, len(merged))
+	}
+	merged, attached = attachEvents(nil, []corev1.Event{probeEvt}, now, map[string]bool{readyKey: false})
+	if attached != 0 || len(merged) != 0 {
+		t.Fatalf("Unhealthy must not stand alone: attached=%d n=%d %+v", attached, len(merged), merged)
+	}
+
+	staleSched := e
+	staleSched.InvolvedObject.Name = "gone"
+	staleSched.LastTimestamp = metav1.NewTime(now.Add(-20 * time.Minute))
+	merged, attached = attachEvents(nil, []corev1.Event{staleSched}, now, nil)
+	if attached != 0 || len(merged) != 0 {
+		t.Fatalf("stale FailedScheduling should drop: attached=%d n=%d", attached, len(merged))
+	}
+
+	rst := Issue{Severity: "warning", Category: "pod", Kind: "Pod", Namespace: "monitoring", Name: "grafana", Reason: "Restarts"}
+	probeEvt.LastTimestamp = metav1.NewTime(now.Add(-time.Minute))
+	merged, attached = attachEvents([]Issue{rst}, []corev1.Event{probeEvt}, now, map[string]bool{readyKey: true})
+	if attached != 0 || hasEvidence(merged[0].Evidence, "Unhealthy") {
+		t.Fatalf("ready Restarts should not hang Unhealthy: attached=%d ev=%v", attached, merged[0].Evidence)
+	}
+	crash := Issue{Severity: "critical", Category: "pod", Kind: "Pod", Namespace: "monitoring", Name: "grafana", Reason: "CrashLoopBackOff"}
+	merged, attached = attachEvents([]Issue{crash}, []corev1.Event{probeEvt}, now, map[string]bool{readyKey: false})
+	if attached != 1 || !hasEvidence(merged[0].Evidence, "Unhealthy") {
+		t.Fatalf("CrashLoop should hang recent Unhealthy: attached=%d ev=%v", attached, merged[0].Evidence)
 	}
 
 	items := []Issue{
