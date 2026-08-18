@@ -332,7 +332,7 @@ h1 {
   color: var(--muted);
   margin-bottom: 4px;
 }
-input[type="text"], input[type="number"], select, textarea {
+input[type="text"], input[type="number"], textarea {
   width: 100%;
   padding: var(--ctrl-pad-y) var(--ctrl-pad-x);
   border: 1px solid var(--line);
@@ -343,6 +343,26 @@ input[type="text"], input[type="number"], select, textarea {
   background: var(--input);
   color: var(--text);
   box-sizing: border-box;
+}
+select {
+  width: auto;
+  max-width: min(16rem, 100%);
+  min-width: 9rem;
+  padding: var(--ctrl-pad-y) var(--ctrl-pad-x);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: var(--ctrl-font);
+  line-height: var(--ctrl-line);
+  background: var(--input);
+  color: var(--text);
+  box-sizing: border-box;
+}
+.form-row select,
+.kv-row select {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
 }
 textarea {
   font-family: var(--mono);
@@ -718,6 +738,17 @@ body.is-drawer-resizing {
 /* 筛选条等：控件靠左成组，不要被 space-between 拉散 */
 .toolbar.toolbar-start {
   justify-content: flex-start;
+}
+.toolbar select {
+  flex: 0 0 auto;
+}
+.toolbar input[type="text"],
+.toolbar input[type="search"],
+.toolbar input[type="number"] {
+  width: auto;
+  flex: 0 1 16rem;
+  max-width: min(18rem, 100%);
+  min-width: 10rem;
 }
 .toolbar > strong,
 .toolbar > h3 {

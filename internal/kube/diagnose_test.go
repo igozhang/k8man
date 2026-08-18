@@ -234,10 +234,28 @@ func TestDiagnosePod(t *testing.T) {
 	}
 
 	restarts := podAt("rst", corev1.PodRunning, now.Add(-time.Hour))
-	restarts.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", Ready: true, RestartCount: 5}}
+	restarts.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app", Ready: true, RestartCount: 5,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-10 * time.Minute))}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, FinishedAt: metav1.NewTime(now.Add(-10 * time.Minute))},
+		},
+	}}
 	got = diagnosePod(restarts, now)
 	if len(got) != 1 || got[0].Reason != "Restarts" || got[0].Severity != "warning" {
 		t.Fatalf("restarts: %+v", got)
+	}
+
+	stale := podAt("old-rst", corev1.PodRunning, now.Add(-128*24*time.Hour))
+	stale.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app", Ready: true, RestartCount: 67,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-28 * 24 * time.Hour))}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, FinishedAt: metav1.NewTime(now.Add(-28 * 24 * time.Hour))},
+		},
+	}}
+	if got = diagnosePod(stale, now); got != nil {
+		t.Fatalf("stale lifetime restarts should be ignored: %+v", got)
 	}
 }
 
@@ -354,7 +372,7 @@ func TestDiagnoseEventAndSort(t *testing.T) {
 	if got.Node != "n1" || got.Container != "jenkins" || got.Reporter != "kubelet" || got.Namespace != "ci" {
 		t.Fatalf("probe loc: node=%q container=%q reporter=%q ns=%q", got.Node, got.Container, got.Reporter, got.Namespace)
 	}
-	if !hasEvidence(got.Evidence, "出处: Kubernetes Warning 事件") || !hasEvidence(got.Evidence, "Event.source.host") {
+	if !hasEvidence(got.Evidence, "Warning Unhealthy") || !hasEvidence(got.Evidence, "Readiness probe failed") {
 		t.Fatalf("probe evidence: %v", got.Evidence)
 	}
 

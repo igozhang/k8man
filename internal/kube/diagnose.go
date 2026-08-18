@@ -25,6 +25,7 @@ const (
 	diagnoseEventScan      = 500
 	diagnosePendingAge     = 2 * time.Minute
 	diagnoseRestartWarn    = int32(5)
+	diagnoseRestartRecent  = 24 * time.Hour
 	diagnoseUsageWarn      = 0.90
 	diagnoseMsgMaxRunes    = 400
 	diagnoseEvidenceMax    = 12
@@ -499,7 +500,12 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 		restarts += cs.RestartCount
 	}
 	if restarts >= diagnoseRestartWarn {
-		return issue("warning", "Restarts", fmt.Sprintf("重启 %d 次", restarts), lastContainerChange(p))
+		since := lastRestartAt(p)
+		// restartCount 是 Pod 生命周期累计；当前实例已稳定运行则不算现时异常。
+		if since.IsZero() || now.Sub(since) > diagnoseRestartRecent {
+			return nil
+		}
+		return issue("warning", "Restarts", fmt.Sprintf("重启 %d 次", restarts), since)
 	}
 	return nil
 }
@@ -591,23 +597,7 @@ func diagnoseEvent(e corev1.Event, now time.Time) Issue {
 	if e.Count > 1 {
 		msg = fmt.Sprintf("x%d · %s", e.Count, e.Message)
 	}
-	ev := []string{
-		"出处: Kubernetes Warning 事件",
-		fmt.Sprintf("对象: %s %s/%s（Event.involvedObject）", kind, ns, e.InvolvedObject.Name),
-	}
-	if reporter != "" {
-		ev = append(ev, "上报组件: "+reporter+"（Event.source / reportingController）")
-	}
-	if node != "" {
-		ev = append(ev, "上报节点: "+node+"（Event.source.host）")
-	}
-	if cname != "" {
-		ev = append(ev, "容器: "+cname+"（Event.involvedObject.fieldPath）")
-	}
-	if e.Count > 1 {
-		ev = append(ev, fmt.Sprintf("次数: %d（Event.count）", e.Count))
-	}
-	ev = append(ev, eventEvidenceLine(e, now))
+	ev := []string{eventEvidenceLine(e, now)}
 	return Issue{
 		Severity:  "warning",
 		Category:  "event",
@@ -1150,6 +1140,24 @@ func containerFact(cs corev1.ContainerStatus, init bool, now time.Time) string {
 		return fmt.Sprintf("%s ready=true restarts=%d", name, cs.RestartCount)
 	}
 	return ""
+}
+
+func lastRestartAt(p corev1.Pod) time.Time {
+	latest := lastContainerChange(p)
+	if !latest.IsZero() {
+		return latest
+	}
+	for _, group := range [][]corev1.ContainerStatus{p.Status.InitContainerStatuses, p.Status.ContainerStatuses} {
+		for _, cs := range group {
+			if cs.RestartCount <= 0 {
+				continue
+			}
+			if r := cs.State.Running; r != nil && !r.StartedAt.IsZero() && r.StartedAt.After(latest) {
+				latest = r.StartedAt.Time
+			}
+		}
+	}
+	return latest
 }
 
 func lastContainerChange(p corev1.Pod) time.Time {

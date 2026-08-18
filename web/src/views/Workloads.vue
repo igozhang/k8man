@@ -460,7 +460,7 @@ watch([ns, tab], () => {
     <div v-if="!currentClusterId" class="empty">请先选择集群。</div>
     <template v-else>
       <div class="toolbar">
-        <select v-model="ns" style="max-width:240px">
+        <select v-model="ns">
           <option value="">请选择命名空间</option>
           <option v-for="n in namespaces" :key="n.name" :value="n.name">{{ n.name }}</option>
         </select>

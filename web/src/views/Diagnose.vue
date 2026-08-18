@@ -101,14 +101,14 @@ function sourceTitle(row) {
   switch (row.category) {
     case 'event':
       return row.reporter
-        ? `Kubernetes Warning 事件（上报: ${row.reporter}）`
+        ? `Kubernetes Warning 事件 · 上报 ${row.reporter}`
         : 'Kubernetes Warning 事件'
     case 'node':
-      return '节点条件 / 用量（Node.status / metrics-server）'
+      return '节点条件 / 用量'
     case 'workload':
-      return '控制器副本状态（Deployment/StatefulSet/DaemonSet.status）'
+      return '控制器副本状态'
     case 'pod':
-      return 'Pod 状态（Pod.status）'
+      return 'Pod 状态'
     default:
       return row.category || '诊断扫描'
   }
@@ -128,64 +128,155 @@ function evidenceList(row) {
   return Array.isArray(row?.evidence) ? row.evidence.filter((s) => String(s || '').trim()) : []
 }
 
-function explainText(row) {
+function messageBody(row) {
+  return String(row?.message || '').replace(/^x\d+\s*·\s*/, '').trim()
+}
+
+function isDuplicateEvidence(row, line) {
+  const s = String(line || '').trim()
+  if (!s) return true
+  if (/^(出处|对象|上报组件|上报节点|容器|次数):/.test(s)) return true
+  if (row.node && /^node=/.test(s)) return true
+  if (row.category === 'event' && s.startsWith('Warning ')) {
+    const body = messageBody(row)
+    if (row.reason && s.includes(row.reason) && body && s.includes(body.slice(0, 80))) return true
+    if (row.message && s.includes(String(row.message).trim())) return true
+  }
+  return false
+}
+
+function extraEvidence(row) {
+  return evidenceList(row).filter((e) => !isDuplicateEvidence(row, e))
+}
+
+function shArg(s) {
+  const t = String(s || '')
+  if (!t) return "''"
+  if (/^[A-Za-z0-9._:/-]+$/.test(t)) return t
+  return `'${t.replace(/'/g, `'\\''`)}'`
+}
+
+function kubectlKind(kind) {
+  const k = String(kind || '').toLowerCase()
+  return (
+    {
+      pod: 'pod',
+      deployment: 'deployment',
+      statefulset: 'statefulset',
+      daemonset: 'daemonset',
+      node: 'node',
+      replicaset: 'replicaset',
+      job: 'job',
+      cronjob: 'cronjob',
+      service: 'service'
+    }[k] || k
+  )
+}
+
+function kubectlCommands(row, logsInfo) {
+  const cmds = []
+  const kind = kubectlKind(row.kind)
+  const apiKind = row.kind || ''
+  const name = shArg(row.name)
+  const nsFlag = row.namespace ? ` -n ${shArg(row.namespace)}` : ''
+  const container = row.container ? ` -c ${shArg(row.container)}` : ''
+  const eventSel = [
+    apiKind && apiKind !== 'Event' ? `involvedObject.kind=${apiKind}` : '',
+    row.name ? `involvedObject.name=${row.name}` : '',
+    'type=Warning'
+  ]
+    .filter(Boolean)
+    .join(',')
+  const eventsCmd = row.namespace
+    ? `kubectl get events${nsFlag} --field-selector ${eventSel}`
+    : `kubectl get events -A --field-selector ${eventSel}`
+
+  if (row.category === 'event') {
+    cmds.push({ comment: 'Warning 事件', cmd: eventsCmd })
+    if (kind === 'pod' && row.namespace) {
+      cmds.push({ comment: 'Pod 所在节点与 IP', cmd: `kubectl get pod ${name}${nsFlag} -o wide` })
+    } else if (kind === 'node') {
+      cmds.push({ comment: '节点地址与状态', cmd: `kubectl get node ${name} -o wide` })
+      cmds.push({ comment: '节点条件', cmd: `kubectl describe node ${name}` })
+    } else if (row.namespace && kind && kind !== 'event') {
+      cmds.push({ comment: '对象状态', cmd: `kubectl get ${kind} ${name}${nsFlag} -o wide` })
+    }
+  } else if (row.category === 'node') {
+    cmds.push({ comment: '节点地址与用量列', cmd: `kubectl get node ${name} -o wide` })
+    cmds.push({ comment: '节点条件', cmd: `kubectl describe node ${name}` })
+    if (row.reason === 'CPUHigh' || row.reason === 'MemoryHigh') {
+      cmds.push({ comment: '节点实时用量', cmd: `kubectl top node ${name}` })
+    }
+  } else if (row.category === 'workload') {
+    cmds.push({ comment: '副本状态', cmd: `kubectl get ${kind} ${name}${nsFlag}` })
+    cmds.push({ comment: '条件与近期事件', cmd: `kubectl describe ${kind} ${name}${nsFlag}` })
+  } else if (row.category === 'pod') {
+    cmds.push({ comment: 'Pod 所在节点与 IP', cmd: `kubectl get pod ${name}${nsFlag} -o wide` })
+    cmds.push({ comment: '容器状态与探针', cmd: `kubectl describe pod ${name}${nsFlag}` })
+    cmds.push({ comment: 'Warning 事件', cmd: eventsCmd })
+  }
+
+  if (canLogs(row)) {
+    const prev = !!(logsInfo && logsInfo.previous)
+    cmds.push({
+      comment: prev ? '上一实例容器日志' : '容器日志',
+      cmd: `kubectl logs ${name}${nsFlag}${container} --tail=${EXPLAIN_LOG_TAIL}${prev ? ' --previous' : ''}`
+    })
+  }
+  return cmds.filter((c) => c.cmd)
+}
+
+function explainText(row, logsInfo) {
   const lines = []
-  lines.push(`出处: ${sourceTitle(row)}`)
+  lines.push(`来源: ${sourceTitle(row)}`)
   const obj = [row.kind, row.namespace ? `${row.namespace}/${row.name}` : row.name].filter(Boolean).join(' ')
   if (obj) lines.push(`对象: ${obj}`)
   const loc = locationLine(row)
   if (loc) {
-    const from = row.category === 'event' ? 'Event.source.host / Pod.status.hostIP' : 'Pod.spec.nodeName / Pod.status.hostIP'
-    lines.push(`节点: ${loc}    出处: ${row.category === 'node' ? 'Node.status.addresses' : from}`)
+    lines.push(`节点: ${loc}`)
   } else if (row.category === 'event' || row.category === 'pod') {
-    lines.push('节点: （当前扫描未拿到节点名/IP，事件可能早于 Pod 删除或尚未调度）')
+    lines.push('节点: （未拿到节点名/IP，对象可能已删除或尚未调度）')
   }
-  if (row.container) {
-    const from = row.category === 'event' ? 'Event.involvedObject.fieldPath' : 'Pod.status.containerStatuses'
-    lines.push(`容器: ${row.container}    出处: ${from}`)
-  }
-  if (row.count && Number(row.count) > 1) {
-    lines.push(`次数: ${row.count}    出处: Event.count`)
-  }
+  if (row.container) lines.push(`容器: ${row.container}`)
+  if (row.count && Number(row.count) > 1) lines.push(`次数: ${row.count}`)
   if (row.reason) lines.push(`原因: ${row.reason}`)
   if (row.since) lines.push(`持续: ${row.since}`)
-  if (row.age) lines.push(`创建: ${row.age}`)
+  if (row.age && row.age !== row.since) lines.push(`创建: ${row.age}`)
   if (row.message) {
     lines.push('')
     lines.push('内容:')
     lines.push(row.message)
   }
-  const ev = evidenceList(row)
-  const evLines = []
-  for (const e of ev) {
-    if (row.node && /^node=/.test(e)) continue
-    evLines.push(e)
-  }
+  const evLines = extraEvidence(row)
   if (evLines.length) {
     lines.push('')
-    lines.push('证据:')
+    lines.push('补充:')
     for (const e of evLines) lines.push(`- ${e}`)
   }
+  const cmds = kubectlCommands(row, logsInfo)
+  if (cmds.length) {
+    lines.push('')
+    lines.push('核对命令:')
+    for (const c of cmds) {
+      if (c.comment) lines.push(`# ${c.comment}`)
+      lines.push(c.cmd)
+    }
+  }
+  if (logsInfo?.error) {
+    lines.push('')
+    lines.push(`容器日志不可用: ${logsInfo.error}`)
+  } else if (logsInfo?.loading) {
+    lines.push('')
+    lines.push('容器日志加载中…')
+  } else if (logsInfo && Object.prototype.hasOwnProperty.call(logsInfo, 'logs')) {
+    const src = logsInfo.previous ? '上一实例' : '当前'
+    const c = row.container ? ` · ${row.container}` : ''
+    lines.push('')
+    lines.push(`容器日志（${src}${c} · 最近 ${EXPLAIN_LOG_TAIL} 行）:`)
+    lines.push('')
+    lines.push(String(logsInfo.logs || '').replace(/\r\n/g, '\n').trim() || '(empty log tail)')
+  }
   return lines.join('\n')
-}
-
-function formatExplainLogs(row, logs, source) {
-  const lines = [
-    '出处: kube-apiserver Pod 日志接口（kubectl logs 同类）'
-  ]
-  if (row.logPath) lines.push(`节点日志文件: ${row.logPath}    出处: kubelet /var/log/pods`)
-  if (source) lines.push(`拉取参数: ${source}`)
-  lines.push('')
-  const body = String(logs || '').replace(/\r\n/g, '\n').trim()
-  lines.push(body || '(empty log tail)')
-  return lines.join('\n')
-}
-
-function explainLogSource(row, previous) {
-  const parts = [previous ? 'previous' : 'current']
-  if (row.container) parts.push(`container=${row.container}`)
-  parts.push(`tail=${EXPLAIN_LOG_TAIL}`)
-  return parts.join(' ')
 }
 
 async function fetchExplainLogs(row) {
@@ -213,22 +304,20 @@ function showExplain(row) {
   yamlDrawer.value?.close()
   const seq = explainSeq.next()
   const loc = row.namespace ? `${row.namespace}/${row.name}` : row.name
-  const base = explainText(row) || issueCopyText(row) || '（无说明）'
   const title = `说明 · ${row.kind} ${loc}`
   if (!canLogs(row) || !currentClusterId.value) {
-    explainDrawer.value?.open(title, base)
+    explainDrawer.value?.open(title, explainText(row))
     return
   }
-  explainDrawer.value?.open(title, `${base}\n\n日志加载中…`)
+  explainDrawer.value?.open(title, explainText(row, { loading: true }))
   fetchExplainLogs(row)
     .then((got) => {
       if (!explainSeq.is(seq)) return
-      const src = explainLogSource(row, got.previous)
-      explainDrawer.value?.update(`${base}\n\n${formatExplainLogs(row, got.logs, src)}`)
+      explainDrawer.value?.update(explainText(row, { logs: got.logs, previous: got.previous }))
     })
     .catch((e) => {
       if (!explainSeq.is(seq)) return
-      explainDrawer.value?.update(`${base}\n\n日志不可用: ${errMessage(e)}`)
+      explainDrawer.value?.update(explainText(row, { error: errMessage(e) }))
     })
 }
 
@@ -245,21 +334,7 @@ function rowKey(row, idx) {
 }
 
 function issueCopyText(row) {
-  const loc = row.namespace ? `${row.namespace}/${row.name}` : row.name
-  const lines = [`[${severityLabel(row.severity)}] ${row.kind} ${loc} ${row.reason}`]
-  if (row.message) lines.push(row.message)
-  if (row.node) lines.push(`node=${row.node}`)
-  if (row.nodeIP) lines.push(`nodeIP=${row.nodeIP}`)
-  if (row.container) lines.push(`container=${row.container}`)
-  if (row.reporter) lines.push(`reporter=${row.reporter}`)
-  if (row.count) lines.push(`count=${row.count}`)
-  if (row.since) lines.push(`since=${row.since}`)
-  if (row.age) lines.push(`age=${row.age}`)
-  if (row.logPath) lines.push(`logPath=${row.logPath}`)
-  if (row.logSource) lines.push(`logSource=${row.logSource}`)
-  for (const e of row.evidence || []) lines.push(`- ${e}`)
-  for (const e of row.logExcerpt || []) lines.push(`| ${e}`)
-  return lines.join('\n')
+  return explainText(row) || '（无说明）'
 }
 
 async function copyIssue(row, idx) {

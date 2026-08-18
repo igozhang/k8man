@@ -49,8 +49,8 @@ onMounted(load)
       <RouterLink class="btn btn-primary" to="/docs/edit">新建文档</RouterLink>
     </div>
     <div class="toolbar toolbar-start">
-      <input v-model="q" type="text" placeholder="搜索标题/摘要" style="max-width:260px" @keyup.enter="load" />
-      <select v-model="category" style="max-width:160px" @change="load">
+      <input v-model="q" type="text" placeholder="搜索标题/摘要" @keyup.enter="load" />
+      <select v-model="category" @change="load">
         <option value="">全部分类</option>
         <option value="k8s">k8s</option>
         <option value="devops">devops</option>
