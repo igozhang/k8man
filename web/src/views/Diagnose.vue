@@ -18,6 +18,7 @@ const skippedNodes = ref(false)
 const scanErrors = ref({})
 const scan = ref({})
 const copiedKey = ref('')
+const copiedLogKey = ref('')
 let copiedTimer = 0
 const category = ref('')
 const nsFilter = ref('')
@@ -72,7 +73,51 @@ function canYAML(row) {
 }
 
 function canLogs(row) {
-  return kindKey(row) === 'pod' && !!row.namespace
+  if (kindKey(row) !== 'pod' || !row.namespace) return false
+  return ![
+    'Evicted',
+    'Shutdown',
+    'NodeShutdown',
+    'Preempting',
+    'Terminated',
+    'Unschedulable',
+    'Pending',
+    'ImagePullBackOff',
+    'ErrImagePull',
+    'InvalidImageName'
+  ].includes(row.reason)
+}
+
+function evidenceList(row) {
+  return row?.evidence || []
+}
+
+function factLine(row) {
+  const parts = []
+  const node = nodeFact(row)
+  if (node) parts.push(node)
+  if (row.container) parts.push(row.container)
+  const first = evidenceList(row)[0]
+  if (first) parts.push(first)
+  return parts.join(' · ')
+}
+
+function nodeFact(row) {
+  if (row.category !== 'pod' && kindKey(row) !== 'pod') return ''
+  if (row.node && row.nodeIP) return `${row.node} (${row.nodeIP})`
+  return row.node || row.nodeIP || ''
+}
+
+function hasLogBox(row) {
+  return !!(row.logPath || (row.logExcerpt && row.logExcerpt.length))
+}
+
+function logBoxText(row) {
+  const lines = []
+  if (row.logPath) lines.push(row.logPath)
+  if (row.logSource) lines.push(row.logSource)
+  for (const e of row.logExcerpt || []) lines.push(e)
+  return lines.join('\n')
 }
 
 function severityLabel(s) {
@@ -87,19 +132,12 @@ function rowKey(row, idx) {
   return [row.category, row.kind, row.namespace, row.name, row.reason, idx].join('/')
 }
 
-function evidenceHead(row) {
-  return (row?.evidence || []).slice(0, 2)
-}
-
-function evidenceTail(row) {
-  return (row?.evidence || []).slice(2)
-}
-
 function issueCopyText(row) {
   const loc = row.namespace ? `${row.namespace}/${row.name}` : row.name
   const lines = [`[${severityLabel(row.severity)}] ${row.kind} ${loc} ${row.reason}`]
   if (row.message) lines.push(row.message)
   if (row.node) lines.push(`node=${row.node}`)
+  if (row.nodeIP) lines.push(`nodeIP=${row.nodeIP}`)
   if (row.container) lines.push(`container=${row.container}`)
   if (row.since) lines.push(`since=${row.since}`)
   if (row.age) lines.push(`age=${row.age}`)
@@ -114,9 +152,24 @@ async function copyIssue(row, idx) {
   try {
     await copyText(issueCopyText(row))
     copiedKey.value = rowKey(row, idx)
+    copiedLogKey.value = ''
     window.clearTimeout(copiedTimer)
     copiedTimer = window.setTimeout(() => {
       if (copiedKey.value === rowKey(row, idx)) copiedKey.value = ''
+    }, 1500)
+  } catch {
+    error.value = '复制失败'
+  }
+}
+
+async function copyLog(row, idx) {
+  try {
+    await copyText(logBoxText(row))
+    copiedLogKey.value = rowKey(row, idx)
+    copiedKey.value = ''
+    window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => {
+      if (copiedLogKey.value === rowKey(row, idx)) copiedLogKey.value = ''
     }, 1500)
   } catch {
     error.value = '复制失败'
@@ -187,6 +240,7 @@ watch(currentClusterId, () => {
   nsFilter.value = ''
   severity.value = ''
   copiedKey.value = ''
+  copiedLogKey.value = ''
   logsDrawer.value?.close()
   yamlDrawer.value?.close()
   load()
@@ -288,20 +342,27 @@ onUnmounted(() => {
             <td>{{ row.name }}</td>
             <td>{{ row.reason }}</td>
             <td class="msg">
-              <div>{{ row.message }}</div>
-              <ul v-if="evidenceHead(row).length" class="evidence-preview">
-                <li v-for="(ev, ei) in evidenceHead(row)" :key="'h' + ei">{{ ev }}</li>
-              </ul>
-              <details v-if="evidenceTail(row).length" class="evidence">
-                <summary>其余 {{ evidenceTail(row).length }} 条证据</summary>
+              <div class="msg-text">{{ row.message }}</div>
+              <div v-if="factLine(row)" class="msg-facts">{{ factLine(row) }}</div>
+              <details v-if="evidenceList(row).length > 1" class="evidence">
+                <summary>证据 {{ evidenceList(row).length }} 条</summary>
                 <ul>
-                  <li v-for="(ev, ei) in evidenceTail(row)" :key="'t' + ei">{{ ev }}</li>
+                  <li v-for="(ev, ei) in evidenceList(row)" :key="'e' + ei">{{ ev }}</li>
                 </ul>
               </details>
-              <div v-if="row.logPath || (row.logExcerpt && row.logExcerpt.length)" class="log-evidence">
-                <div v-if="row.logPath" class="log-path">{{ row.logPath }}</div>
-                <div v-if="row.logSource" class="muted">{{ row.logSource }}</div>
-                <pre v-if="row.logExcerpt && row.logExcerpt.length" class="log-excerpt">{{ row.logExcerpt.join('\n') }}</pre>
+              <div v-if="hasLogBox(row)" class="field-copy-wrap log-terminal">
+                <textarea
+                  class="log-view"
+                  readonly
+                  spellcheck="false"
+                  :value="logBoxText(row)"
+                ></textarea>
+                <button
+                  type="button"
+                  class="field-copy"
+                  :class="{ 'is-copied': copiedLogKey === rowKey(row, idx) }"
+                  @click="copyLog(row, idx)"
+                >{{ copiedLogKey === rowKey(row, idx) ? '已复制' : '复制' }}</button>
               </div>
             </td>
             <td>
@@ -344,16 +405,30 @@ onUnmounted(() => {
   color: var(--warn);
 }
 .msg {
-  max-width: 22rem;
-  word-break: break-word;
+  width: 36rem;
+  max-width: 42rem;
+  min-width: 18rem;
   color: var(--muted);
 }
-.evidence-preview,
+.msg-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  color: var(--text);
+  line-height: 1.45;
+}
+.msg-facts {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
 .evidence ul {
   margin: 6px 0 0;
   padding-left: 1.1em;
 }
-.evidence-preview li,
 .evidence li {
   font-size: 12px;
   line-height: 1.45;
@@ -368,28 +443,7 @@ onUnmounted(() => {
   font-size: 12px;
   line-height: 1.4;
 }
-.log-evidence {
+.msg .log-terminal {
   margin-top: 8px;
-}
-.log-path {
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.4;
-  word-break: break-all;
-  color: var(--text);
-}
-.log-excerpt {
-  margin: 6px 0 0;
-  padding: 8px 10px;
-  max-height: 9.5em;
-  overflow: auto;
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.4;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
 }
 </style>

@@ -127,6 +127,7 @@ func TestDiagnosePod(t *testing.T) {
 		},
 	}}
 	crash.Spec.NodeName = "n1"
+	crash.Status.HostIP = "10.0.0.8"
 	crash.UID = "uid-1"
 	crash.Status.ContainerStatuses[0].LastTerminationState.Terminated = &corev1.ContainerStateTerminated{
 		Reason: "OOMKilled", ExitCode: 137, FinishedAt: metav1.NewTime(now.Add(-time.Minute)),
@@ -135,8 +136,11 @@ func TestDiagnosePod(t *testing.T) {
 	if len(got) != 1 || got[0].Severity != "critical" || got[0].Reason != "CrashLoopBackOff" {
 		t.Fatalf("crashloop: %+v", got)
 	}
-	if got[0].Node != "n1" {
-		t.Fatalf("crash node: %q", got[0].Node)
+	if got[0].Node != "n1" || got[0].NodeIP != "10.0.0.8" {
+		t.Fatalf("crash node: name=%q ip=%q", got[0].Node, got[0].NodeIP)
+	}
+	if !hasEvidence(got[0].Evidence, "node=n1 ip=10.0.0.8") {
+		t.Fatalf("crash node evidence: %v", got[0].Evidence)
 	}
 	if got[0].Container != "app" || got[0].LogPath != "/var/log/pods/default_crash_uid-1/app/11.log" {
 		t.Fatalf("log path: container=%q path=%q", got[0].Container, got[0].LogPath)
@@ -175,6 +179,19 @@ func TestDiagnosePod(t *testing.T) {
 	got = diagnosePod(failed, now)
 	if len(got) != 1 || got[0].Severity != "critical" || got[0].Reason != "Failed" {
 		t.Fatalf("failed: %+v", got)
+	}
+
+	evicted := podAt("evict", corev1.PodFailed, now.Add(-time.Hour))
+	evicted.Status.Reason = "Evicted"
+	evicted.Status.Message = "The node was low on resource: memory."
+	evicted.Spec.NodeName = "n1"
+	evicted.UID = "uid-e"
+	evicted.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "rancher", RestartCount: 30, Ready: false,
+	}}
+	got = diagnosePod(evicted, now)
+	if got != nil {
+		t.Fatalf("evicted leftover should be ignored: %+v", got)
 	}
 
 	unknown := podAt("unk", corev1.PodUnknown, now.Add(-time.Hour))
@@ -387,7 +404,7 @@ func hasEvidence(ev []string, sub string) bool {
 }
 
 func TestShouldFetchAndPickLogs(t *testing.T) {
-	for _, reason := range []string{"ImagePullBackOff", "ErrImagePull", "InvalidImageName"} {
+	for _, reason := range []string{"ImagePullBackOff", "ErrImagePull", "InvalidImageName", "Evicted"} {
 		if shouldFetchPodLogs(Issue{Category: "pod", Severity: "critical", Namespace: "ns", Name: "p", Reason: reason}) {
 			t.Fatalf("%s has no container logs", reason)
 		}

@@ -49,10 +49,11 @@
       "age": "12m",
       "since": "1m",
       "node": "n1",
+      "nodeIP": "10.0.0.8",
       "container": "app",
       "evidence": [
         "phase=Running ready=0/1 restarts=12",
-        "node=n1",
+        "node=n1 ip=10.0.0.8",
         "app waiting CrashLoopBackOff restarts=12: back-off | lastExit OOMKilled exit=137 1m ago"
       ],
       "logPath": "/var/log/pods/default_web-0_<uid>/app/11.log",
@@ -71,12 +72,13 @@
 }
 ```
 
-- `severity`：`critical` / `warning`
+- `severity`：`critical` / `warning`。`Evicted` / `Shutdown` 等已被 kubelet 清掉的 Failed 残留不列入结果（节点恢复后无需处理）
 - `category`：`node` / `workload` / `pod` / `event`
+- `node` / `nodeIP`：Pod 所在节点名与节点 IP（`status.hostIP`）
 - `since`：异常条件持续时长（如 Ready=False 的 LastTransitionTime）；`age` 仍为对象创建时长
 - `logPath`：节点上 kubelet 日志文件路径（`/var/log/pods/<ns>_<pod>_<uid>/<container>/<n>.log`）
 - `logSource`：`previous`/`current`、容器名、tail 行数；CrashLoop/OOM 优先上一份日志
-- `logExcerpt`：关键行 ±1 行有限上下文（最多 8 行）；排序后优先 CrashLoop/OOM，最多 8 个严重 Pod；ImagePull 等无容器日志的不拉
+- `logExcerpt`：关键行 ±1 行有限上下文（最多 8 行）；排序后优先 CrashLoop/OOM，最多 8 个严重 Pod；ImagePull / Evicted 等无容器日志的不拉，接口失败也不把错误写进摘录
 - `scan`：本轮实际列出的对象数、耗时；`logsFetched` 为实际拉到的日志摘录份数；`fromCache=true` 表示 List 首页走 watch cache；`metricsSkipped` 表示节点指标未采集（用量异常无法判断）
 - Warning 事件先最多取 500 条再按时间留 80 条，并优先挂到已发现异常的 `evidence`
 - `skippedNodes`：`project` kubeconfig 为 `true`

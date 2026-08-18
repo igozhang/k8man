@@ -480,7 +480,8 @@ body.is-drawer-resizing {
   background: #1e2a1e;
   border-color: #2a3a2a;
 }
-.drawer-logs .log-view {
+.drawer-logs .log-view,
+.log-terminal .log-view {
   flex: 1;
   min-height: 0;
   height: auto;
@@ -495,6 +496,15 @@ body.is-drawer-resizing {
   padding: 12px;
   padding-right: calc(4.25rem + var(--field-copy-scrollbar));
   box-sizing: border-box;
+}
+.log-terminal {
+  background: #1e2a1e;
+  border-color: #2a3a2a;
+}
+.log-terminal .log-view {
+  flex: none;
+  height: 8.5em;
+  min-height: 8.5em;
 }
 .kv-list {
   display: flex;

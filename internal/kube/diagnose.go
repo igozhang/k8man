@@ -61,6 +61,7 @@ type Issue struct {
 	Age        string   `json:"age"`
 	Since      string   `json:"since,omitempty"`
 	Node       string   `json:"node,omitempty"`
+	NodeIP     string   `json:"nodeIP,omitempty"`
 	Container  string   `json:"container,omitempty"`
 	Evidence   []string `json:"evidence,omitempty"`
 	LogPath    string   `json:"logPath,omitempty"`
@@ -419,7 +420,7 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 	issue := func(sev, reason, msg string, since time.Time) []Issue {
 		it := Issue{
 			Severity: sev, Category: "pod", Kind: "Pod",
-			Namespace: p.Namespace, Name: p.Name, Node: p.Spec.NodeName,
+			Namespace: p.Namespace, Name: p.Name, Node: p.Spec.NodeName, NodeIP: p.Status.HostIP,
 			Reason: reason, Message: clipRunes(msg, diagnoseMsgMaxRunes),
 			Age: age, Since: formatAgeAt(since, now), Evidence: clipEvidence(facts),
 		}
@@ -435,6 +436,9 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 		reason := p.Status.Reason
 		if reason == "" {
 			reason = "Failed"
+		}
+		if ignoreSettledPod(reason) {
+			return nil
 		}
 		msg := p.Status.Message
 		if msg == "" {
@@ -623,12 +627,48 @@ func attachEvents(issues []Issue, events []corev1.Event, now time.Time) ([]Issue
 	return out, attached
 }
 
+func ignoreSettledPod(reason string) bool {
+	switch reason {
+	case "Evicted", "Shutdown", "NodeShutdown", "Preempting", "Terminated":
+		return true
+	default:
+		return false
+	}
+}
+
+func skipPodLogFiles(reason string) bool {
+	if ignoreSettledPod(reason) {
+		return true
+	}
+	switch reason {
+	case "Unschedulable", "Pending", "Unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func podGoneNoLogs(reason string) bool {
+	if skipPodLogFiles(reason) {
+		return true
+	}
+	switch reason {
+	case "ImagePullBackOff", "ErrImagePull", "InvalidImageName":
+		return true
+	default:
+		return false
+	}
+}
+
 func applyPodLogHint(it *Issue, p corev1.Pod) {
 	cname, restarts := problemContainer(p)
 	if cname == "" {
 		return
 	}
 	it.Container = cname
+	if skipPodLogFiles(it.Reason) {
+		return
+	}
 	prev := wantPreviousLogs(it.Reason, restarts)
 	file := restarts
 	src := "current"
@@ -705,12 +745,10 @@ func shouldFetchPodLogs(it Issue) bool {
 	if it.Namespace == "" || it.Name == "" {
 		return false
 	}
-	switch it.Reason {
-	case "Unschedulable", "Pending", "Unknown", "ImagePullBackOff", "ErrImagePull", "InvalidImageName":
+	if podGoneNoLogs(it.Reason) {
 		return false
-	default:
-		return true
 	}
+	return true
 }
 
 func logFetchPriority(reason string) int {
@@ -773,7 +811,6 @@ func (c *Clients) attachCriticalPodLogs(ctx context.Context, issues []Issue) int
 				issues[i].LogSource = src
 			}
 			if err != nil {
-				issues[i].LogExcerpt = []string{"logs unavailable: " + clipRunes(err.Error(), 160)}
 				return
 			}
 			excerpt := excerptLogs(raw)
@@ -959,8 +996,15 @@ func podFacts(p corev1.Pod, now time.Time) []string {
 	ev := []string{
 		fmt.Sprintf("phase=%s ready=%d/%d restarts=%d", p.Status.Phase, ready, total, restarts),
 	}
-	if p.Spec.NodeName != "" {
-		ev = append(ev, "node="+p.Spec.NodeName)
+	if p.Spec.NodeName != "" || p.Status.HostIP != "" {
+		line := "node=" + p.Spec.NodeName
+		if p.Status.HostIP != "" {
+			if p.Spec.NodeName != "" {
+				line += " "
+			}
+			line += "ip=" + p.Status.HostIP
+		}
+		ev = append(ev, line)
 	}
 	if p.Status.PodIP != "" {
 		ev = append(ev, "podIP="+p.Status.PodIP)
