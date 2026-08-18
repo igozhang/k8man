@@ -18,7 +18,7 @@ const skippedNodes = ref(false)
 const scanErrors = ref({})
 const scan = ref({})
 const copiedKey = ref('')
-const copiedLogKey = ref('')
+const copiedExplainKey = ref('')
 let copiedTimer = 0
 const category = ref('')
 const nsFilter = ref('')
@@ -89,34 +89,37 @@ function canLogs(row) {
 }
 
 function evidenceList(row) {
-  return row?.evidence || []
+  return Array.isArray(row?.evidence) ? row.evidence.filter((s) => String(s || '').trim()) : []
 }
 
-function factLine(row) {
-  const parts = []
-  const node = nodeFact(row)
-  if (node) parts.push(node)
-  if (row.container) parts.push(row.container)
-  const first = evidenceList(row)[0]
-  if (first) parts.push(first)
-  return parts.join(' · ')
-}
-
-function nodeFact(row) {
-  if (row.category !== 'pod' && kindKey(row) !== 'pod') return ''
-  if (row.node && row.nodeIP) return `${row.node} (${row.nodeIP})`
-  return row.node || row.nodeIP || ''
-}
-
-function hasLogBox(row) {
-  return !!(row.logPath || (row.logExcerpt && row.logExcerpt.length))
-}
-
-function logBoxText(row) {
+function explainText(row) {
   const lines = []
-  if (row.logPath) lines.push(row.logPath)
-  if (row.logSource) lines.push(row.logSource)
-  for (const e of row.logExcerpt || []) lines.push(e)
+  if (row.message) lines.push(row.message)
+  const meta = []
+  if (row.node && row.nodeIP) meta.push(`node=${row.node} (${row.nodeIP})`)
+  else if (row.node) meta.push(`node=${row.node}`)
+  else if (row.nodeIP) meta.push(`nodeIP=${row.nodeIP}`)
+  if (row.container) meta.push(`container=${row.container}`)
+  if (meta.length) {
+    if (lines.length) lines.push('')
+    lines.push(...meta)
+  }
+  const ev = evidenceList(row)
+  const evLines = []
+  for (const e of ev) {
+    if (row.node && /^node=/.test(e)) continue
+    evLines.push(e)
+  }
+  if (evLines.length) {
+    if (lines.length) lines.push('')
+    lines.push(...evLines)
+  }
+  if (row.logPath || row.logSource || (row.logExcerpt && row.logExcerpt.length)) {
+    if (lines.length) lines.push('')
+    if (row.logPath) lines.push(row.logPath)
+    if (row.logSource) lines.push(row.logSource)
+    for (const e of row.logExcerpt || []) lines.push(e)
+  }
   return lines.join('\n')
 }
 
@@ -152,7 +155,7 @@ async function copyIssue(row, idx) {
   try {
     await copyText(issueCopyText(row))
     copiedKey.value = rowKey(row, idx)
-    copiedLogKey.value = ''
+    copiedExplainKey.value = ''
     window.clearTimeout(copiedTimer)
     copiedTimer = window.setTimeout(() => {
       if (copiedKey.value === rowKey(row, idx)) copiedKey.value = ''
@@ -162,14 +165,14 @@ async function copyIssue(row, idx) {
   }
 }
 
-async function copyLog(row, idx) {
+async function copyExplain(row, idx) {
   try {
-    await copyText(logBoxText(row))
-    copiedLogKey.value = rowKey(row, idx)
+    await copyText(explainText(row))
+    copiedExplainKey.value = rowKey(row, idx)
     copiedKey.value = ''
     window.clearTimeout(copiedTimer)
     copiedTimer = window.setTimeout(() => {
-      if (copiedLogKey.value === rowKey(row, idx)) copiedLogKey.value = ''
+      if (copiedExplainKey.value === rowKey(row, idx)) copiedExplainKey.value = ''
     }, 1500)
   } catch {
     error.value = '复制失败'
@@ -240,7 +243,7 @@ watch(currentClusterId, () => {
   nsFilter.value = ''
   severity.value = ''
   copiedKey.value = ''
-  copiedLogKey.value = ''
+  copiedExplainKey.value = ''
   logsDrawer.value?.close()
   yamlDrawer.value?.close()
   load()
@@ -342,27 +345,19 @@ onUnmounted(() => {
             <td>{{ row.name }}</td>
             <td>{{ row.reason }}</td>
             <td class="msg">
-              <div class="msg-text">{{ row.message }}</div>
-              <div v-if="factLine(row)" class="msg-facts">{{ factLine(row) }}</div>
-              <details v-if="evidenceList(row).length > 1" class="evidence">
-                <summary>证据 {{ evidenceList(row).length }} 条</summary>
-                <ul>
-                  <li v-for="(ev, ei) in evidenceList(row)" :key="'e' + ei">{{ ev }}</li>
-                </ul>
-              </details>
-              <div v-if="hasLogBox(row)" class="field-copy-wrap log-terminal">
+              <div class="field-copy-wrap log-terminal diag-explain">
                 <textarea
                   class="log-view"
                   readonly
                   spellcheck="false"
-                  :value="logBoxText(row)"
+                  :value="explainText(row)"
                 ></textarea>
                 <button
                   type="button"
                   class="field-copy"
-                  :class="{ 'is-copied': copiedLogKey === rowKey(row, idx) }"
-                  @click="copyLog(row, idx)"
-                >{{ copiedLogKey === rowKey(row, idx) ? '已复制' : '复制' }}</button>
+                  :class="{ 'is-copied': copiedExplainKey === rowKey(row, idx) }"
+                  @click="copyExplain(row, idx)"
+                >{{ copiedExplainKey === rowKey(row, idx) ? '已复制' : '复制' }}</button>
               </div>
             </td>
             <td>
@@ -408,42 +403,12 @@ onUnmounted(() => {
   width: 36rem;
   max-width: 42rem;
   min-width: 18rem;
-  color: var(--muted);
+  vertical-align: middle;
 }
-.msg-text {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+.diag-explain .log-view {
+  height: 12em;
+  min-height: 12em;
+  white-space: pre-wrap;
   word-break: break-word;
-  color: var(--text);
-  line-height: 1.45;
-}
-.msg-facts {
-  margin-top: 4px;
-  font-size: 12px;
-  line-height: 1.45;
-  word-break: break-word;
-}
-.evidence ul {
-  margin: 6px 0 0;
-  padding-left: 1.1em;
-}
-.evidence li {
-  font-size: 12px;
-  line-height: 1.45;
-  word-break: break-word;
-}
-.evidence {
-  margin-top: 6px;
-}
-.evidence summary {
-  cursor: pointer;
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.4;
-}
-.msg .log-terminal {
-  margin-top: 8px;
 }
 </style>
