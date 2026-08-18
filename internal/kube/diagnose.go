@@ -63,6 +63,8 @@ type Issue struct {
 	Node       string   `json:"node,omitempty"`
 	NodeIP     string   `json:"nodeIP,omitempty"`
 	Container  string   `json:"container,omitempty"`
+	Reporter   string   `json:"reporter,omitempty"`
+	Count      int32    `json:"count,omitempty"`
 	Evidence   []string `json:"evidence,omitempty"`
 	LogPath    string   `json:"logPath,omitempty"`
 	LogSource  string   `json:"logSource,omitempty"`
@@ -161,6 +163,9 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 	var (
 		events      []corev1.Event
 		eventsTrunc bool
+		locMu       sync.Mutex
+		podLocs     = map[string]resourceLoc{}
+		nodeIPs     = map[string]string{}
 	)
 
 	var wg sync.WaitGroup
@@ -185,6 +190,13 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 				return
 			}
 			addScan(func(s *DiagnoseScan) { s.Nodes = len(nodes) })
+			for _, n := range nodes {
+				if ip := nodeInternalIP(n); ip != "" {
+					locMu.Lock()
+					nodeIPs[n.Name] = ip
+					locMu.Unlock()
+				}
+			}
 			usage := map[string]nodeUsage{}
 			mctx, cancel := context.WithTimeout(ctx, diagnoseMetricsTimeout)
 			mets, _, mErr := c.listNodeMetricsPaged(mctx, diagnoseMaxNodes)
@@ -216,6 +228,14 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 			return
 		}
 		addScan(func(s *DiagnoseScan) { s.Pods = len(pods) })
+		for _, p := range pods {
+			locMu.Lock()
+			podLocs[issueKey("Pod", p.Namespace, p.Name)] = resourceLoc{
+				Node:   p.Spec.NodeName,
+				NodeIP: p.Status.HostIP,
+			}
+			locMu.Unlock()
+		}
 		var issues []Issue
 		for _, p := range pods {
 			issues = append(issues, diagnosePod(p, opt.Now)...)
@@ -253,6 +273,7 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 
 	merged, attached := attachEvents(rep.Issues, events, opt.Now)
 	rep.Issues = merged
+	enrichLocations(rep.Issues, podLocs, nodeIPs)
 	if eventsTrunc {
 		rep.Truncated = true
 	}
@@ -554,10 +575,7 @@ func replicaIssues(kind, ns, name string, desired, ready, misscheduled int32, cr
 
 func diagnoseEvent(e corev1.Event, now time.Time) Issue {
 	when := eventTime(e)
-	msg := e.Message
-	if e.Count > 1 {
-		msg = fmt.Sprintf("x%d · %s", e.Count, e.Message)
-	}
+	ns := firstNonEmpty(e.InvolvedObject.Namespace, e.Namespace)
 	kind := e.InvolvedObject.Kind
 	if kind == "" {
 		kind = "Event"
@@ -566,18 +584,77 @@ func diagnoseEvent(e corev1.Event, now time.Time) Issue {
 	if reason == "" {
 		reason = "Warning"
 	}
+	node := firstNonEmpty(strings.TrimSpace(e.Source.Host), strings.TrimSpace(e.ReportingInstance))
+	cname := containerFromFieldPath(e.InvolvedObject.FieldPath)
+	reporter := firstNonEmpty(e.ReportingController, e.Source.Component)
+	msg := e.Message
+	if e.Count > 1 {
+		msg = fmt.Sprintf("x%d · %s", e.Count, e.Message)
+	}
+	ev := []string{
+		"出处: Kubernetes Warning 事件",
+		fmt.Sprintf("对象: %s %s/%s（Event.involvedObject）", kind, ns, e.InvolvedObject.Name),
+	}
+	if reporter != "" {
+		ev = append(ev, "上报组件: "+reporter+"（Event.source / reportingController）")
+	}
+	if node != "" {
+		ev = append(ev, "上报节点: "+node+"（Event.source.host）")
+	}
+	if cname != "" {
+		ev = append(ev, "容器: "+cname+"（Event.involvedObject.fieldPath）")
+	}
+	if e.Count > 1 {
+		ev = append(ev, fmt.Sprintf("次数: %d（Event.count）", e.Count))
+	}
+	ev = append(ev, eventEvidenceLine(e, now))
 	return Issue{
 		Severity:  "warning",
 		Category:  "event",
 		Kind:      kind,
-		Namespace: firstNonEmpty(e.InvolvedObject.Namespace, e.Namespace),
+		Namespace: ns,
 		Name:      e.InvolvedObject.Name,
 		Reason:    reason,
 		Message:   clipRunes(msg, diagnoseMsgMaxRunes),
 		Age:       formatAgeAt(when, now),
 		Since:     formatAgeAt(when, now),
-		Evidence:  clipEvidence([]string{eventEvidenceLine(e, now)}),
+		Node:      node,
+		Container: cname,
+		Reporter:  reporter,
+		Count:     e.Count,
+		Evidence:  clipEvidence(ev),
 	}
+}
+
+type resourceLoc struct {
+	Node, NodeIP string
+}
+
+func enrichLocations(issues []Issue, podLocs map[string]resourceLoc, nodeIPs map[string]string) {
+	for i := range issues {
+		it := &issues[i]
+		if loc, ok := podLocs[issueKey(it.Kind, it.Namespace, it.Name)]; ok {
+			if it.Node == "" {
+				it.Node = loc.Node
+			}
+			if it.NodeIP == "" {
+				it.NodeIP = loc.NodeIP
+			}
+		}
+		if it.NodeIP == "" && it.Node != "" && nodeIPs != nil {
+			it.NodeIP = nodeIPs[it.Node]
+		}
+	}
+}
+
+func containerFromFieldPath(fp string) string {
+	fp = strings.TrimSpace(fp)
+	i := strings.Index(fp, "{")
+	j := strings.LastIndex(fp, "}")
+	if i >= 0 && j > i {
+		return strings.TrimSpace(fp[i+1 : j])
+	}
+	return ""
 }
 
 func attachEvents(issues []Issue, events []corev1.Event, now time.Time) ([]Issue, int) {

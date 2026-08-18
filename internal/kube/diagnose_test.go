@@ -343,6 +343,27 @@ func TestDiagnoseEventAndSort(t *testing.T) {
 		t.Fatalf("count prefix: %s", got.Message)
 	}
 
+	probe := e
+	probe.Reason = "Unhealthy"
+	probe.Message = "Readiness probe failed: Get http://10.0.0.8:8080/ready"
+	probe.Source = corev1.EventSource{Component: "kubelet", Host: "n1"}
+	probe.InvolvedObject.FieldPath = "spec.containers{jenkins}"
+	probe.InvolvedObject.Namespace = "ci"
+	probe.InvolvedObject.Name = "jenkins-0"
+	got = diagnoseEvent(probe, now)
+	if got.Node != "n1" || got.Container != "jenkins" || got.Reporter != "kubelet" || got.Namespace != "ci" {
+		t.Fatalf("probe loc: node=%q container=%q reporter=%q ns=%q", got.Node, got.Container, got.Reporter, got.Namespace)
+	}
+	if !hasEvidence(got.Evidence, "出处: Kubernetes Warning 事件") || !hasEvidence(got.Evidence, "Event.source.host") {
+		t.Fatalf("probe evidence: %v", got.Evidence)
+	}
+
+	enriched := []Issue{got}
+	enrichLocations(enriched, map[string]resourceLoc{"pod|ci|jenkins-0": {Node: "n1", NodeIP: "10.0.0.8"}}, map[string]string{"n1": "10.0.0.8"})
+	if enriched[0].NodeIP != "10.0.0.8" {
+		t.Fatalf("enriched ip: %q", enriched[0].NodeIP)
+	}
+
 	podIssue := Issue{Severity: "critical", Category: "pod", Kind: "Pod", Namespace: "default", Name: "web", Reason: "CrashLoopBackOff"}
 	merged, attached := attachEvents([]Issue{podIssue}, []corev1.Event{e}, now)
 	if attached != 1 {

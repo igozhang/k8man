@@ -24,6 +24,8 @@ const category = ref('')
 const nsFilter = ref('')
 const severity = ref('')
 const loadSeq = createSeq()
+const explainSeq = createSeq()
+const EXPLAIN_LOG_TAIL = 40
 const logsDrawer = ref(null)
 const yamlDrawer = ref(null)
 const explainDrawer = ref(null)
@@ -74,7 +76,8 @@ function canYAML(row) {
 }
 
 function canLogs(row) {
-  if (row.category !== 'pod' || kindKey(row) !== 'pod' || !row.namespace) return false
+  const isPodObj = kindKey(row) === 'pod' && !!row.namespace
+  if (!isPodObj || (row.category !== 'pod' && row.category !== 'event')) return false
   return ![
     'Evicted',
     'Shutdown',
@@ -89,16 +92,34 @@ function canLogs(row) {
   ].includes(row.reason)
 }
 
+function locationLine(row) {
+  if (row.node && row.nodeIP) return `${row.node} (${row.nodeIP})`
+  return row.node || row.nodeIP || ''
+}
+
+function sourceTitle(row) {
+  switch (row.category) {
+    case 'event':
+      return row.reporter
+        ? `Kubernetes Warning 事件（上报: ${row.reporter}）`
+        : 'Kubernetes Warning 事件'
+    case 'node':
+      return '节点条件 / 用量（Node.status / metrics-server）'
+    case 'workload':
+      return '控制器副本状态（Deployment/StatefulSet/DaemonSet.status）'
+    case 'pod':
+      return 'Pod 状态（Pod.status）'
+    default:
+      return row.category || '诊断扫描'
+  }
+}
+
 function explainBrief(row) {
   const parts = []
   if (row.message) parts.push(String(row.message).trim())
-  if (row.category === 'pod') {
-    if (row.node && row.nodeIP) parts.push(`${row.node} (${row.nodeIP})`)
-    else if (row.node) parts.push(row.node)
-    else if (row.nodeIP) parts.push(row.nodeIP)
-  } else if (row.category === 'node' && row.nodeIP) {
-    parts.push(row.nodeIP)
-  }
+  const loc = locationLine(row)
+  if (loc && row.category !== 'node') parts.push(loc)
+  else if (row.category === 'node' && row.nodeIP) parts.push(row.nodeIP)
   const text = parts.filter(Boolean).join(' · ')
   return text || row.reason || '查看完整说明'
 }
@@ -109,15 +130,30 @@ function evidenceList(row) {
 
 function explainText(row) {
   const lines = []
-  if (row.message) lines.push(row.message)
-  const meta = []
-  if (row.node && row.nodeIP) meta.push(`node=${row.node} (${row.nodeIP})`)
-  else if (row.node) meta.push(`node=${row.node}`)
-  else if (row.nodeIP) meta.push(`nodeIP=${row.nodeIP}`)
-  if (row.container) meta.push(`container=${row.container}`)
-  if (meta.length) {
-    if (lines.length) lines.push('')
-    lines.push(...meta)
+  lines.push(`出处: ${sourceTitle(row)}`)
+  const obj = [row.kind, row.namespace ? `${row.namespace}/${row.name}` : row.name].filter(Boolean).join(' ')
+  if (obj) lines.push(`对象: ${obj}`)
+  const loc = locationLine(row)
+  if (loc) {
+    const from = row.category === 'event' ? 'Event.source.host / Pod.status.hostIP' : 'Pod.spec.nodeName / Pod.status.hostIP'
+    lines.push(`节点: ${loc}    出处: ${row.category === 'node' ? 'Node.status.addresses' : from}`)
+  } else if (row.category === 'event' || row.category === 'pod') {
+    lines.push('节点: （当前扫描未拿到节点名/IP，事件可能早于 Pod 删除或尚未调度）')
+  }
+  if (row.container) {
+    const from = row.category === 'event' ? 'Event.involvedObject.fieldPath' : 'Pod.status.containerStatuses'
+    lines.push(`容器: ${row.container}    出处: ${from}`)
+  }
+  if (row.count && Number(row.count) > 1) {
+    lines.push(`次数: ${row.count}    出处: Event.count`)
+  }
+  if (row.reason) lines.push(`原因: ${row.reason}`)
+  if (row.since) lines.push(`持续: ${row.since}`)
+  if (row.age) lines.push(`创建: ${row.age}`)
+  if (row.message) {
+    lines.push('')
+    lines.push('内容:')
+    lines.push(row.message)
   }
   const ev = evidenceList(row)
   const evLines = []
@@ -126,16 +162,74 @@ function explainText(row) {
     evLines.push(e)
   }
   if (evLines.length) {
-    if (lines.length) lines.push('')
-    lines.push(...evLines)
-  }
-  if (row.logPath || row.logSource || (row.logExcerpt && row.logExcerpt.length)) {
-    if (lines.length) lines.push('')
-    if (row.logPath) lines.push(row.logPath)
-    if (row.logSource) lines.push(row.logSource)
-    for (const e of row.logExcerpt || []) lines.push(e)
+    lines.push('')
+    lines.push('证据:')
+    for (const e of evLines) lines.push(`- ${e}`)
   }
   return lines.join('\n')
+}
+
+function formatExplainLogs(row, logs, source) {
+  const lines = [
+    '出处: kube-apiserver Pod 日志接口（kubectl logs 同类）'
+  ]
+  if (row.logPath) lines.push(`节点日志文件: ${row.logPath}    出处: kubelet /var/log/pods`)
+  if (source) lines.push(`拉取参数: ${source}`)
+  lines.push('')
+  const body = String(logs || '').replace(/\r\n/g, '\n').trim()
+  lines.push(body || '(empty log tail)')
+  return lines.join('\n')
+}
+
+function explainLogSource(row, previous) {
+  const parts = [previous ? 'previous' : 'current']
+  if (row.container) parts.push(`container=${row.container}`)
+  parts.push(`tail=${EXPLAIN_LOG_TAIL}`)
+  return parts.join(' ')
+}
+
+async function fetchExplainLogs(row) {
+  const ns = row.namespace
+  const id = currentClusterId.value
+  if (!id || !ns || !row.name) return { logs: '', previous: false }
+  const wantPrev = String(row.logSource || '').startsWith('previous')
+  const q = {
+    tail: EXPLAIN_LOG_TAIL,
+    container: row.container || undefined,
+    previous: wantPrev
+  }
+  try {
+    const r = await readApi.podLogs(id, ns, row.name, q)
+    return { logs: r?.logs || '', previous: wantPrev }
+  } catch (e) {
+    if (!wantPrev) throw e
+    const r = await readApi.podLogs(id, ns, row.name, { ...q, previous: false })
+    return { logs: r?.logs || '', previous: false }
+  }
+}
+
+function showExplain(row) {
+  logsDrawer.value?.close()
+  yamlDrawer.value?.close()
+  const seq = explainSeq.next()
+  const loc = row.namespace ? `${row.namespace}/${row.name}` : row.name
+  const base = explainText(row) || issueCopyText(row) || '（无说明）'
+  const title = `说明 · ${row.kind} ${loc}`
+  if (!canLogs(row) || !currentClusterId.value) {
+    explainDrawer.value?.open(title, base)
+    return
+  }
+  explainDrawer.value?.open(title, `${base}\n\n日志加载中…`)
+  fetchExplainLogs(row)
+    .then((got) => {
+      if (!explainSeq.is(seq)) return
+      const src = explainLogSource(row, got.previous)
+      explainDrawer.value?.update(`${base}\n\n${formatExplainLogs(row, got.logs, src)}`)
+    })
+    .catch((e) => {
+      if (!explainSeq.is(seq)) return
+      explainDrawer.value?.update(`${base}\n\n日志不可用: ${errMessage(e)}`)
+    })
 }
 
 function severityLabel(s) {
@@ -157,6 +251,8 @@ function issueCopyText(row) {
   if (row.node) lines.push(`node=${row.node}`)
   if (row.nodeIP) lines.push(`nodeIP=${row.nodeIP}`)
   if (row.container) lines.push(`container=${row.container}`)
+  if (row.reporter) lines.push(`reporter=${row.reporter}`)
+  if (row.count) lines.push(`count=${row.count}`)
   if (row.since) lines.push(`since=${row.since}`)
   if (row.age) lines.push(`age=${row.age}`)
   if (row.logPath) lines.push(`logPath=${row.logPath}`)
@@ -177,13 +273,6 @@ async function copyIssue(row, idx) {
   } catch {
     error.value = '复制失败'
   }
-}
-
-function showExplain(row) {
-  logsDrawer.value?.close()
-  yamlDrawer.value?.close()
-  const loc = row.namespace ? `${row.namespace}/${row.name}` : row.name
-  explainDrawer.value?.open(`说明 · ${row.kind} ${loc}`, explainText(row) || issueCopyText(row) || '（无说明）')
 }
 
 function showLogs(row) {
@@ -245,6 +334,11 @@ async function load() {
   }
 }
 
+function toggleCategory(cat) {
+  if (cat === 'node' && isProject.value) return
+  category.value = category.value === cat ? '' : cat
+}
+
 function onChildError(msg) {
   error.value = msg
 }
@@ -254,6 +348,7 @@ watch(currentClusterId, () => {
   nsFilter.value = ''
   severity.value = ''
   copiedKey.value = ''
+  explainSeq.bump()
   logsDrawer.value?.close()
   yamlDrawer.value?.close()
   explainDrawer.value?.close()
@@ -272,30 +367,59 @@ onUnmounted(() => {
     <div v-if="!currentClusterId" class="empty">请先在「KubeConfig」导入集群，并在上方选择集群。</div>
     <template v-else>
       <div class="grid">
-        <div class="panel stat">
+        <button
+          v-if="!isProject"
+          type="button"
+          class="panel stat"
+          :class="{ 'is-active': category === 'node' }"
+          :disabled="loading"
+          @click="toggleCategory('node')"
+        >
           <div class="label">节点异常</div>
-          <div class="value" :class="{ 'is-critical': !loading && !skippedNodes && counts.nodes > 0 }">
-            {{ skippedNodes ? '—' : (loading ? '…' : counts.nodes) }}
+          <div class="value" :class="{ 'is-critical': !loading && counts.nodes > 0 }">
+            {{ loading ? '…' : counts.nodes }}
           </div>
+        </button>
+        <div v-else class="panel stat">
+          <div class="label">节点异常</div>
+          <div class="value">—</div>
         </div>
-        <div class="panel stat">
+        <button
+          type="button"
+          class="panel stat"
+          :class="{ 'is-active': category === 'workload' }"
+          :disabled="loading"
+          @click="toggleCategory('workload')"
+        >
           <div class="label">负载异常</div>
           <div class="value" :class="{ 'is-critical': !loading && counts.workloads > 0 }">
             {{ loading ? '…' : counts.workloads }}
           </div>
-        </div>
-        <div class="panel stat">
+        </button>
+        <button
+          type="button"
+          class="panel stat"
+          :class="{ 'is-active': category === 'pod' }"
+          :disabled="loading"
+          @click="toggleCategory('pod')"
+        >
           <div class="label">Pod 异常</div>
           <div class="value" :class="{ 'is-critical': !loading && counts.pods > 0 }">
             {{ loading ? '…' : counts.pods }}
           </div>
-        </div>
-        <div class="panel stat">
+        </button>
+        <button
+          type="button"
+          class="panel stat"
+          :class="{ 'is-active': category === 'event' }"
+          :disabled="loading"
+          @click="toggleCategory('event')"
+        >
           <div class="label">Warning 事件</div>
           <div class="value" :class="{ 'is-critical': !loading && counts.events > 0 }">
             {{ loading ? '…' : counts.events }}
           </div>
-        </div>
+        </button>
       </div>
 
       <div class="toolbar toolbar-start">
@@ -393,6 +517,26 @@ onUnmounted(() => {
 <style scoped>
 .grid {
   margin-bottom: 16px;
+}
+.grid > .stat {
+  margin-bottom: 0;
+}
+button.stat {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  margin-bottom: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+button.stat:disabled {
+  cursor: default;
+}
+button.stat.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 .stat .value.is-critical {
   color: var(--danger);

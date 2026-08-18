@@ -76,6 +76,12 @@ function openText(heading, body) {
   open.value = true
 }
 
+function updateContent(body) {
+  if (!open.value) return
+  const text = String(body || '').trim()
+  content.value = text || '（无说明）'
+}
+
 async function onCopy() {
   try {
     await copyText(content.value)
@@ -103,7 +109,7 @@ onUnmounted(() => {
   window.clearTimeout(copiedTimer)
 })
 
-defineExpose({ open: openText, close })
+defineExpose({ open: openText, close, update: updateContent })
 </script>
 
 <template>

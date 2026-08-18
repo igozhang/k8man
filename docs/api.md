@@ -74,7 +74,8 @@
 
 - `severity`：`critical` / `warning`。`Evicted` / `Shutdown` 等已被 kubelet 清掉的 Failed 残留不列入结果（节点恢复后无需处理）
 - `category`：`node` / `workload` / `pod` / `event`
-- `node` / `nodeIP`：Pod 所在节点名与节点 IP（`status.hostIP`）
+- `node` / `nodeIP`：所在节点名与节点 IP。Pod 来自 `spec.nodeName` / `status.hostIP`；Warning 事件优先取 `Event.source.host`，再用已扫描 Pod/Node 补 IP
+- `reporter` / `count`：事件上报组件（kubelet 等）与发生次数
 - `since`：异常条件持续时长（如 Ready=False 的 LastTransitionTime）；`age` 仍为对象创建时长
 - `logPath`：节点上 kubelet 日志文件路径（`/var/log/pods/<ns>_<pod>_<uid>/<container>/<n>.log`）
 - `logSource`：`previous`/`current`、容器名、tail 行数；CrashLoop/OOM 优先上一份日志
