@@ -168,11 +168,11 @@ onMounted(load)
           ，保存后再刷新本页。列表里显示「暂无 hosts」时，概览一定会失败。
         </p>
       </div>
-      <div class="grid">
-        <div class="panel stat"><div class="label">Namespaces</div><div class="value">{{ loading ? '…' : stats.namespaces }}</div></div>
-        <div class="panel stat"><div class="label">Nodes</div><div class="value">{{ currentCluster?.permType === 'project' ? '—' : (loading ? '…' : stats.nodes) }}</div></div>
-        <div class="panel stat"><div class="label">Pods（抽样）</div><div class="value">{{ loading ? '…' : stats.pods }}</div></div>
-        <div class="panel stat"><div class="label">异常 Pod（抽样）</div><div class="value">{{ loading ? '…' : stats.badPods }}</div></div>
+      <div class="panel stats-strip">
+        <div class="stat"><div class="label">Namespaces</div><div class="value">{{ loading ? '…' : stats.namespaces }}</div></div>
+        <div class="stat"><div class="label">Nodes</div><div class="value">{{ currentCluster?.permType === 'project' ? '—' : (loading ? '…' : stats.nodes) }}</div></div>
+        <div class="stat"><div class="label">Pods（抽样）</div><div class="value">{{ loading ? '…' : stats.pods }}</div></div>
+        <div class="stat"><div class="label">异常 Pod（抽样）</div><div class="value">{{ loading ? '…' : stats.badPods }}</div></div>
       </div>
       <p v-if="refreshing" class="muted">更新中…</p>
     </template>

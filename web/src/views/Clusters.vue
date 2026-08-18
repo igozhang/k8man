@@ -481,8 +481,8 @@ onMounted(() => {
 <style scoped>
 .form-title {
   margin: 0 0 12px;
-  font-size: 16px;
-  font-weight: 650;
+  font-size: 15px;
+  font-weight: 600;
 }
 .notice {
   color: var(--accent);

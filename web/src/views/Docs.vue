@@ -61,14 +61,16 @@ onMounted(load)
     </div>
     <p v-if="error" class="error">{{ error }}</p>
     <div v-if="!list.length" class="empty">暂无文档。</div>
-    <div v-for="d in list" :key="d.id" class="doc-item">
-      <div class="doc-meta">
-        <span class="tag">{{ d.category }}</span>
-        <span v-if="d.pinned"> · 置顶</span>
-        · {{ fmtTime(d.updatedAt) }}
+    <div v-for="d in list" :key="d.id" class="doc-capsule">
+      <div class="doc-capsule-head">
+        <h2 class="doc-capsule-title"><RouterLink :to="`/docs/${d.id}`">{{ d.title }}</RouterLink></h2>
+        <span class="doc-capsule-head-meta">
+          <span class="tag">{{ d.category }}</span>
+          <span v-if="d.pinned">置顶</span>
+          <span>{{ fmtTime(d.updatedAt) }}</span>
+        </span>
       </div>
-      <h2><RouterLink :to="`/docs/${d.id}`">{{ d.title }}</RouterLink></h2>
-      <div class="doc-summary">{{ d.summary || '（无摘要）' }}</div>
+      <p class="doc-capsule-excerpt">{{ d.summary || '（无摘要）' }}</p>
       <div class="actions">
         <RouterLink class="btn btn-sm" :to="`/docs/edit/${d.id}`">编辑</RouterLink>
         <button class="btn btn-sm btn-danger" @click="remove(d)">删除</button>

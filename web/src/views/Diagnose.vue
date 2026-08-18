@@ -656,11 +656,11 @@ onUnmounted(() => {
     <p class="page-desc">只列出当前不健康的对象。历史累计重启、滚动发布中的副本缺口、探针未达阈值的 Warning 不计入。同一会话内 90 秒内再次打开沿用上次扫描；需要最新结果时点「刷新」。判定规则见页底。</p>
     <div v-if="!currentClusterId" class="empty">请先在「KubeConfig」导入集群，并在上方选择集群。</div>
     <template v-else>
-      <div class="grid">
+      <div class="panel stats-strip">
         <button
           v-if="!isProject"
           type="button"
-          class="panel stat"
+          class="stat"
           :class="{ 'is-active': category === 'node' }"
           :disabled="loading"
           @click="toggleCategory('node')"
@@ -670,13 +670,13 @@ onUnmounted(() => {
             {{ loading ? '…' : counts.nodes }}
           </div>
         </button>
-        <div v-else class="panel stat">
+        <div v-else class="stat">
           <div class="label">节点异常</div>
           <div class="value">—</div>
         </div>
         <button
           type="button"
-          class="panel stat"
+          class="stat"
           :class="{ 'is-active': category === 'workload' }"
           :disabled="loading"
           @click="toggleCategory('workload')"
@@ -688,7 +688,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="panel stat"
+          class="stat"
           :class="{ 'is-active': category === 'pod' }"
           :disabled="loading"
           @click="toggleCategory('pod')"
@@ -700,7 +700,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="panel stat"
+          class="stat"
           :class="{ 'is-active': category === 'event' }"
           :disabled="loading"
           @click="toggleCategory('event')"
@@ -858,38 +858,15 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.grid {
-  margin-bottom: 16px;
-}
-.grid > .stat {
-  margin-bottom: 0;
-}
-button.stat {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 100%;
-  margin-bottom: 0;
-  text-align: left;
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-}
-button.stat:disabled {
-  cursor: default;
-}
-button.stat.is-active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
 .stat .value.is-critical {
   color: var(--danger);
 }
 .tag.sev-critical {
-  background: #fef2f2;
-  color: #b91c1c;
+  background: rgba(180, 35, 24, 0.1);
+  color: var(--danger);
 }
 .tag.sev-warning {
-  background: #fffbeb;
+  background: rgba(154, 103, 0, 0.12);
   color: var(--warn);
 }
 .msg {
@@ -926,9 +903,6 @@ button.stat.is-active {
 .explain-brief:focus-visible .explain-brief-text {
   color: var(--accent);
   text-decoration: underline;
-}
-.explain-brief:focus-visible {
-  outline: none;
 }
 .summary-panel {
   margin-top: 20px;
@@ -979,9 +953,6 @@ button.stat.is-active {
 .summary-preview-text.is-clickable:hover,
 .summary-preview-text.is-clickable:focus-visible {
   color: var(--accent);
-}
-.summary-preview-text.is-clickable:focus-visible {
-  outline: none;
 }
 .rules-panel {
   margin-top: 12px;
