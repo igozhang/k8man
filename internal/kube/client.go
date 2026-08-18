@@ -309,7 +309,9 @@ func (c *Clients) DeletePod(ctx context.Context, ns, name string) error {
 }
 
 func (c *Clients) PodLogs(ctx context.Context, ns, name string, tail int64) (string, error) {
-	opts := &corev1.PodLogOptions{TailLines: &tail}
+	tail = ClampPodLogTail(tail)
+	limit := DefaultPodLogBytes
+	opts := &corev1.PodLogOptions{TailLines: &tail, LimitBytes: &limit}
 	req := c.Clientset.CoreV1().Pods(ns).GetLogs(name, opts)
 	raw, err := req.Do(ctx).Raw()
 	if err != nil {

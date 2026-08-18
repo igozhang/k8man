@@ -259,20 +259,24 @@ func (h *Handler) PodLogs(c *gin.Context) {
 	if !ok {
 		return
 	}
-	tail := int64(500)
+	tail := kube.DefaultPodLogTail
 	if t := c.Query("tail"); t != "" {
-		if v, err := strconv.ParseInt(t, 10, 64); err == nil && v > 0 {
-			tail = v
+		if v, err := strconv.ParseInt(t, 10, 64); err == nil {
+			tail = kube.ClampPodLogTail(v)
 		}
 	}
-	ctx, cancel := h.ctx(c)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
 	defer cancel()
 	logs, err := clients.PodLogs(ctx, c.Param("ns"), c.Param("name"), tail)
 	if err != nil {
 		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
 		return
 	}
-	respond.OK(c, gin.H{"logs": logs})
+	respond.OK(c, gin.H{
+		"logs":      logs,
+		"truncated": int64(len(logs)) >= kube.DefaultPodLogBytes,
+		"tail":      tail,
+	})
 }
 
 func (h *Handler) ListDeployments(c *gin.Context) {

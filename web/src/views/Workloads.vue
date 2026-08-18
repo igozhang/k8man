@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted, nextTick } from 'vue'
+import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory } from '../utils/quantity'
@@ -16,10 +16,196 @@ const podMetrics = ref([])
 const metricsTip = ref('')
 const loading = ref(false)
 const error = ref('')
-const drawer = ref(null) // { title, content }
 const metricsSeq = createSeq()
 const rowsSeq = createSeq()
 const nsSeq = createSeq()
+const logsSeq = createSeq()
+
+const LOG_TAIL = 200
+const LOG_INTERVAL_MS = 5000
+const LOG_W_MIN = 420
+const LOG_W_KEY = 'k8man.logDrawerPx'
+
+const logPanel = ref({
+  open: false,
+  podName: '',
+  content: '',
+  auto: true,
+  loading: false,
+  error: '',
+  truncated: false,
+  updatedAt: ''
+})
+const logWidth = ref(720)
+const logStickBottom = ref(true)
+const logViewRef = ref(null)
+let logTimer = 0
+let logAbort = null
+
+function initLogWidth() {
+  try {
+    const n = Number(localStorage.getItem(LOG_W_KEY))
+    if (Number.isFinite(n) && n >= LOG_W_MIN) {
+      logWidth.value = clampLogWidth(n)
+      return
+    }
+  } catch {
+    /* ignore */
+  }
+  logWidth.value = clampLogWidth(720)
+}
+
+function logMinWidth() {
+  return Math.min(LOG_W_MIN, window.innerWidth)
+}
+
+function clampLogWidth(n) {
+  return Math.min(window.innerWidth, Math.max(logMinWidth(), n))
+}
+
+function stopLogResize() {
+  document.body.classList.remove('is-drawer-resizing')
+}
+
+function startResizeLogs(e) {
+  const startX = e.clientX
+  const startW = logWidth.value
+  const handle = e.currentTarget
+  handle.setPointerCapture?.(e.pointerId)
+  const onMove = (ev) => {
+    logWidth.value = clampLogWidth(startW + (startX - ev.clientX))
+  }
+  const onUp = () => {
+    handle.releasePointerCapture?.(e.pointerId)
+    handle.removeEventListener('pointermove', onMove)
+    handle.removeEventListener('pointerup', onUp)
+    handle.removeEventListener('pointercancel', onUp)
+    stopLogResize()
+    try {
+      localStorage.setItem(LOG_W_KEY, String(Math.round(logWidth.value)))
+    } catch {
+      /* ignore */
+    }
+  }
+  document.body.classList.add('is-drawer-resizing')
+  handle.addEventListener('pointermove', onMove)
+  handle.addEventListener('pointerup', onUp)
+  handle.addEventListener('pointercancel', onUp)
+}
+
+function stopLogTimer() {
+  if (logTimer) {
+    window.clearTimeout(logTimer)
+    logTimer = 0
+  }
+}
+
+function closeLogs() {
+  stopLogTimer()
+  logsSeq.bump()
+  if (logAbort) {
+    logAbort.abort()
+    logAbort = null
+  }
+  logPanel.value = {
+    open: false,
+    podName: '',
+    content: '',
+    auto: true,
+    loading: false,
+    error: '',
+    truncated: false,
+    updatedAt: ''
+  }
+}
+
+function scheduleLogTick() {
+  stopLogTimer()
+  if (!logPanel.value.open || !logPanel.value.auto || document.hidden) return
+  logTimer = window.setTimeout(async () => {
+    logTimer = 0
+    if (!logPanel.value.open || !logPanel.value.auto || document.hidden) return
+    await pullLogs()
+    scheduleLogTick()
+  }, LOG_INTERVAL_MS)
+}
+
+async function pullLogs() {
+  if (!logPanel.value.open || !currentClusterId.value || !ns.value || !logPanel.value.podName) return
+  if (logPanel.value.loading) return
+  const seq = logsSeq.next()
+  logPanel.value.loading = true
+  logPanel.value.error = ''
+  const ac = new AbortController()
+  logAbort = ac
+  try {
+    const r = await readApi.podLogs(currentClusterId.value, ns.value, logPanel.value.podName, {
+      tail: LOG_TAIL,
+      signal: ac.signal
+    })
+    if (!logsSeq.is(seq)) return
+    logPanel.value.content = r?.logs || '(empty)'
+    logPanel.value.truncated = !!r?.truncated
+    logPanel.value.updatedAt = new Date().toLocaleTimeString()
+    await nextTick()
+    if (logStickBottom.value && logViewRef.value) {
+      logViewRef.value.scrollTop = logViewRef.value.scrollHeight
+    }
+  } catch (e) {
+    if (!logsSeq.is(seq)) return
+    if (e?.code === 'canceled') return
+    logPanel.value.error = errMessage(e)
+  } finally {
+    if (logsSeq.is(seq)) logPanel.value.loading = false
+    if (logAbort === ac) logAbort = null
+  }
+}
+
+async function showLogs(pod) {
+  stopLogTimer()
+  logsSeq.bump()
+  if (logAbort) {
+    logAbort.abort()
+    logAbort = null
+  }
+  logStickBottom.value = true
+  logPanel.value = {
+    open: true,
+    podName: pod.name,
+    content: '',
+    auto: true,
+    loading: false,
+    error: '',
+    truncated: false,
+    updatedAt: ''
+  }
+  await pullLogs()
+  scheduleLogTick()
+}
+
+function toggleLogAuto() {
+  logPanel.value.auto = !logPanel.value.auto
+  if (logPanel.value.auto) {
+    pullLogs().then(() => scheduleLogTick())
+  } else {
+    stopLogTimer()
+  }
+}
+
+function onLogScroll(e) {
+  const el = e.target
+  logStickBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+}
+
+function onLogVisibility() {
+  if (document.hidden) {
+    stopLogTimer()
+    return
+  }
+  if (logPanel.value.open && logPanel.value.auto) {
+    pullLogs().then(() => scheduleLogTick())
+  }
+}
 
 const yamlEditor = ref({ open: false, kind: '', name: '', yaml: '' })
 const scaleForm = ref({ open: false, kind: 'deployment', name: '', replicas: 1 })
@@ -220,15 +406,6 @@ async function loadRows() {
     rows.value = []
   } finally {
     if (rowsSeq.is(seq)) loading.value = false
-  }
-}
-
-async function showLogs(pod) {
-  try {
-    const r = await readApi.podLogs(currentClusterId.value, ns.value, pod.name)
-    drawer.value = { title: `日志 · ${pod.name}`, content: r?.logs || '(empty)' }
-  } catch (e) {
-    error.value = errMessage(e)
   }
 }
 
@@ -618,12 +795,21 @@ async function saveSpecEdit() {
 }
 
 watch([currentClusterId], async () => {
+  closeLogs()
   await loadNamespaces()
 })
 onMounted(async () => {
+  initLogWidth()
+  document.addEventListener('visibilitychange', onLogVisibility)
   await loadNamespaces()
 })
+onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onLogVisibility)
+  stopLogResize()
+  closeLogs()
+})
 watch([ns, tab], () => {
+  closeLogs()
   if (!ns.value) {
     rowsSeq.bump()
     metricsSeq.bump()
@@ -798,15 +984,50 @@ watch([ns, tab], () => {
       </template>
     </template>
 
-    <div v-if="drawer" class="drawer-backdrop" @click="drawer = null"></div>
-    <div v-if="drawer" class="drawer">
+    <div v-if="logPanel.open" class="drawer-backdrop" @click="closeLogs"></div>
+    <div
+      v-if="logPanel.open"
+      class="drawer drawer-logs"
+      :style="{ width: logWidth + 'px' }"
+    >
+      <div
+        class="drawer-resize"
+        title="拖拽调整宽度"
+        @pointerdown.prevent="startResizeLogs"
+      ></div>
       <div class="toolbar">
-        <strong>{{ drawer.title }}</strong>
+        <strong>日志 · {{ logPanel.podName }}</strong>
         <div class="actions">
-          <button class="btn btn-sm" @click="drawer = null">关闭</button>
+          <button class="btn btn-sm" type="button" @click="toggleLogAuto">
+            {{ logPanel.auto ? '暂停' : '继续' }}
+          </button>
+          <button class="btn btn-sm" type="button" :disabled="logPanel.loading" @click="pullLogs">刷新</button>
+          <button class="btn btn-sm" type="button" @click="closeLogs">关闭</button>
         </div>
       </div>
-      <pre class="pre">{{ drawer.content }}</pre>
+      <p class="muted log-hint">
+        尾部 {{ LOG_TAIL }} 行 · 每 {{ LOG_INTERVAL_MS / 1000 }}s 刷新
+        <template v-if="logPanel.updatedAt"> · {{ logPanel.updatedAt }}</template>
+        <template v-if="logPanel.loading"> · 加载中…</template>
+        <template v-if="logPanel.truncated"> · 已截断（≤256KB）</template>
+      </p>
+      <p v-if="logPanel.error" class="error">{{ logPanel.error }}</p>
+      <div class="field-copy-wrap log-copy-wrap">
+        <textarea
+          ref="logViewRef"
+          class="log-view"
+          readonly
+          spellcheck="false"
+          :value="logPanel.content"
+          @scroll="onLogScroll"
+        ></textarea>
+        <button
+          type="button"
+          class="field-copy"
+          :class="{ 'is-copied': cmCopied === 'logs' }"
+          @click="copyText(logPanel.content, 'logs')"
+        >{{ cmCopied === 'logs' ? '已复制' : '复制' }}</button>
+      </div>
     </div>
 
     <div v-if="yamlEditor.open" class="drawer-backdrop" @click="yamlEditor.open = false"></div>

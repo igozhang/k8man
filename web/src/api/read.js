@@ -9,8 +9,8 @@ export const readApi = {
   listNodes: (id) => http.get(`/read/clusters/${id}/nodes`),
   listPods: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/pods`),
   getPod: (id, ns, name) => http.get(`/read/clusters/${id}/namespaces/${ns}/pods/${name}`),
-  podLogs: (id, ns, name, tail = 500) =>
-    http.get(`/read/clusters/${id}/namespaces/${ns}/pods/${name}/logs`, { params: { tail } }),
+  podLogs: (id, ns, name, { tail = 200, signal } = {}) =>
+    http.get(`/read/clusters/${id}/namespaces/${ns}/pods/${name}/logs`, { params: { tail }, signal }),
   listDeployments: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/deployments`),
   listStatefulSets: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/statefulsets`),
   listDaemonSets: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/daemonsets`),

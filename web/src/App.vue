@@ -7,12 +7,9 @@ import { useClusterStore } from './stores/cluster'
 const {
   clusters,
   currentClusterId,
-  currentCluster,
   setCurrentClusterId,
   refreshClusters
 } = useClusterStore()
-
-const isProject = computed(() => currentCluster.value?.permType === 'project')
 
 const ui = ref({
   title: 'k8s多集群运维工具',
@@ -59,7 +56,6 @@ onMounted(() => {
             <RouterLink to="/">概览</RouterLink>
             <RouterLink to="/clusters">KubeConfig</RouterLink>
             <RouterLink to="/workloads">工作负载</RouterLink>
-            <RouterLink v-if="!isProject" to="/nodes">节点</RouterLink>
             <RouterLink to="/monitor">监控</RouterLink>
             <RouterLink to="/docs">运维文档</RouterLink>
           </nav>

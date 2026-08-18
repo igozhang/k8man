@@ -31,7 +31,7 @@
 |------|------|------|
 | GET | `/clusters/:id/namespaces/:ns/pods` | Pod 列表 |
 | GET | `/clusters/:id/namespaces/:ns/pods/:name` | Pod 详情 |
-| GET | `/clusters/:id/namespaces/:ns/pods/:name/logs?tail=500` | Pod 日志 |
+| GET | `/clusters/:id/namespaces/:ns/pods/:name/logs?tail=200` | Pod 日志（默认尾部 200 行、上限 500；服务端 LimitBytes 256KiB） |
 | GET | `/clusters/:id/namespaces/:ns/deployments` | Deployment 列表 |
 | GET | `/clusters/:id/namespaces/:ns/statefulsets` | StatefulSet 列表 |
 | GET | `/clusters/:id/namespaces/:ns/daemonsets` | DaemonSet 列表 |

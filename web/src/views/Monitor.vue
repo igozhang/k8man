@@ -181,7 +181,7 @@ onMounted(enterPage)
   <div>
     <h1>监控</h1>
     <p class="page-desc">
-      基于目标集群 metrics-server 的 CPU / 内存用量。进入页面默认加载节点指标；Pod 指标需手动选择命名空间。未安装或权限不足时降级提示。
+      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）；进入页面默认加载。Pod 指标需手动选择命名空间。未安装或权限不足时降级提示。
     </p>
     <div v-if="!currentClusterId" class="empty">请先选择集群。</div>
     <template v-else>
@@ -209,7 +209,10 @@ onMounted(enterPage)
         <table v-else-if="nodeRows.length" class="table">
           <thead>
             <tr>
-              <th>节点</th>
+              <th>名称</th>
+              <th>状态</th>
+              <th>IP</th>
+              <th>版本</th>
               <th>CPU（可分配 / 已使用）</th>
               <th>内存（可分配 / 已使用）</th>
               <th>时间</th>
@@ -218,6 +221,9 @@ onMounted(enterPage)
           <tbody>
             <tr v-for="n in nodeRows" :key="n.name">
               <td>{{ n.name }}</td>
+              <td>{{ n.status }}</td>
+              <td>{{ n.internalIP }}</td>
+              <td>{{ n.version }}</td>
               <td class="res-cell">
                 <span>{{ fmtCPU(n.allocatableCPU) }}</span>
                 <span class="muted"> / </span>
