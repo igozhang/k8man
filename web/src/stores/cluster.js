@@ -1,9 +1,16 @@
 import { ref, watch, computed } from 'vue'
 import { asArray } from '../utils/safe'
+import { TTL, cacheGet, cacheKey, cacheSet, cacheFresh } from '../utils/resourceCache'
 
 const STORAGE_KEY = 'k8man.currentClusterId'
+const CLUSTERS_KEY = cacheKey('clusters', 'local')
 
-const clusters = ref([])
+function initialClusters() {
+  const hit = cacheGet(CLUSTERS_KEY)
+  return Array.isArray(hit?.data) ? hit.data : []
+}
+
+const clusters = ref(initialClusters())
 const currentClusterId = ref(localStorage.getItem(STORAGE_KEY) || '')
 const loadingClusters = ref(false)
 
@@ -18,11 +25,15 @@ export function useClusterStore() {
     else localStorage.removeItem(STORAGE_KEY)
   }
 
-  async function refreshClusters(fetcher) {
-    loadingClusters.value = true
+  async function refreshClusters(fetcher, { force = false } = {}) {
+    if (!force && clusters.value.length && cacheFresh(CLUSTERS_KEY, TTL.clusters)) {
+      return
+    }
+    loadingClusters.value = !clusters.value.length
     try {
       const list = asArray(await fetcher())
       clusters.value = list
+      cacheSet(CLUSTERS_KEY, list)
       if (currentClusterId.value && !clusters.value.some((c) => c.id === currentClusterId.value)) {
         setCurrentClusterId(clusters.value[0]?.id || '')
       } else if (!currentClusterId.value && clusters.value.length) {

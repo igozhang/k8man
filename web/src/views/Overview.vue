@@ -4,19 +4,22 @@ import { RouterLink } from 'vue-router'
 import { readApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { asArray, createSeq, errMessage } from '../utils/safe'
+import { TTL, cacheFresh, cacheGet, cacheKey, cacheSet } from '../utils/resourceCache'
 
 const { currentClusterId, currentCluster } = useClusterStore()
-const loading = ref(false)
-const error = ref('')
-const stats = ref({
-  namespaces: 0,
-  nodes: 0,
-  pods: 0,
-  badPods: 0
-})
-const loadSeq = createSeq()
 
 const emptyStats = () => ({ namespaces: 0, nodes: 0, pods: 0, badPods: 0 })
+
+const overviewHit = currentClusterId.value ? cacheGet(cacheKey('overview', currentClusterId.value)) : null
+const stats = ref(
+  overviewHit?.data && typeof overviewHit.data === 'object'
+    ? { ...emptyStats(), ...overviewHit.data }
+    : emptyStats()
+)
+const loading = ref(!!currentClusterId.value && !overviewHit)
+const refreshing = ref(false)
+const error = ref('')
+const loadSeq = createSeq()
 
 const dnsHostHint = computed(() => {
   const msg = error.value || ''
@@ -34,25 +37,70 @@ const dnsHostHint = computed(() => {
 
 const isDNSError = computed(() => /no such host|lookup /i.test(error.value || ''))
 
-async function load() {
+async function listNamespacesCached(id, { force = false } = {}) {
+  const key = cacheKey('namespaces', id)
+  const hit = cacheGet(key)
+  if (!force && hit && cacheFresh(key, TTL.namespaces)) return asArray(hit.data)
+  const list = asArray(await readApi.listNamespaces(id))
+  cacheSet(key, list)
+  return list
+}
+
+async function listNodesCached(id, { force = false } = {}) {
+  const usageKey = cacheKey('nodeUsage', id)
+  const nodesKey = cacheKey('nodes', id)
+  if (!force) {
+    if (cacheFresh(nodesKey, TTL.nodes)) return asArray(cacheGet(nodesKey)?.data)
+    if (cacheFresh(usageKey, TTL.nodeUsage)) return asArray(cacheGet(usageKey)?.data)
+  }
+  const list = asArray(await readApi.listNodes(id))
+  cacheSet(nodesKey, list)
+  return list
+}
+
+async function listPodsCached(id, nsName, { force = false } = {}) {
+  const key = cacheKey('pods', id, nsName)
+  const hit = cacheGet(key)
+  if (!force && hit && cacheFresh(key, TTL.pods)) return asArray(hit.data)
+  const list = asArray(await readApi.listPods(id, nsName))
+  cacheSet(key, list)
+  return list
+}
+
+async function load({ force = false } = {}) {
   const seq = loadSeq.next()
   error.value = ''
   if (!currentClusterId.value) {
     stats.value = emptyStats()
     loading.value = false
+    refreshing.value = false
     return
   }
-  loading.value = true
+  const key = cacheKey('overview', currentClusterId.value)
+  const hit = cacheGet(key)
+  if (hit && hit.data && typeof hit.data === 'object') {
+    stats.value = { ...emptyStats(), ...hit.data }
+  } else {
+    stats.value = emptyStats()
+  }
+  if (!force && cacheFresh(key, TTL.overview)) {
+    loading.value = false
+    refreshing.value = false
+    return
+  }
+  const has = !!(hit && hit.data)
+  loading.value = !has
+  refreshing.value = has
   const next = emptyStats()
   try {
-    const ns = asArray(await readApi.listNamespaces(currentClusterId.value))
+    const ns = await listNamespacesCached(currentClusterId.value)
     if (!loadSeq.is(seq)) return
     next.namespaces = ns.length
 
     let nodes = []
     if (currentCluster.value?.permType !== 'project') {
       try {
-        nodes = asArray(await readApi.listNodes(currentClusterId.value))
+        nodes = await listNodesCached(currentClusterId.value)
       } catch {
         nodes = []
       }
@@ -67,7 +115,7 @@ async function load() {
       if (!loadSeq.is(seq)) return
       if (!n?.name) continue
       try {
-        const list = asArray(await readApi.listPods(currentClusterId.value, n.name))
+        const list = await listPodsCached(currentClusterId.value, n.name)
         pods += list.length
         bad += list.filter((p) => p?.status !== 'Running' && p?.status !== 'Succeeded').length
       } catch {
@@ -78,12 +126,16 @@ async function load() {
     next.pods = pods
     next.badPods = bad
     stats.value = next
+    cacheSet(key, next)
   } catch (e) {
     if (!loadSeq.is(seq)) return
     error.value = errMessage(e)
-    stats.value = emptyStats()
+    if (!has) stats.value = emptyStats()
   } finally {
-    if (loadSeq.is(seq)) loading.value = false
+    if (loadSeq.is(seq)) {
+      loading.value = false
+      refreshing.value = false
+    }
   }
 }
 
@@ -122,6 +174,7 @@ onMounted(load)
         <div class="panel stat"><div class="label">Pods（抽样）</div><div class="value">{{ loading ? '…' : stats.pods }}</div></div>
         <div class="panel stat"><div class="label">异常 Pod（抽样）</div><div class="value">{{ loading ? '…' : stats.badPods }}</div></div>
       </div>
+      <p v-if="refreshing" class="muted">更新中…</p>
     </template>
   </div>
 </template>

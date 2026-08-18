@@ -4,13 +4,17 @@ import { readApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { asArray, createSeq, errMessage } from '../utils/safe'
 import { copyText } from '../utils/clipboard'
+import { TTL, cacheFresh, cacheGet, cacheKey, cacheSet } from '../utils/resourceCache'
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import TextDrawer from '../components/TextDrawer.vue'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 
-const loading = ref(false)
+const busy = ref(false)
+const hasReport = ref(false)
+const loading = computed(() => busy.value && !hasReport.value)
+const refreshing = computed(() => busy.value && hasReport.value)
 const error = ref('')
 const issues = ref([])
 const counts = ref(emptyCounts())
@@ -68,6 +72,22 @@ function emptyReport() {
   skippedNodes.value = isProject.value
   scanErrors.value = {}
   scan.value = {}
+  hasReport.value = false
+}
+
+function applyReport(data) {
+  issues.value = asArray(data?.issues)
+  counts.value = { ...emptyCounts(), ...(data?.counts || {}) }
+  truncated.value = !!data?.truncated
+  skippedNodes.value = !!data?.skippedNodes
+  scanErrors.value = data?.errors && typeof data.errors === 'object' ? data.errors : {}
+  scan.value = data?.scan && typeof data.scan === 'object' ? data.scan : {}
+  hasReport.value = true
+}
+
+{
+  const hit = currentClusterId.value ? cacheGet(cacheKey('diagnose', currentClusterId.value)) : null
+  if (hit?.data) applyReport(hit.data)
 }
 
 function kindKey(row) {
@@ -539,30 +559,42 @@ function showSummary() {
   explainDrawer.value?.open('诊断总结', summaryFull.value)
 }
 
-async function load() {
+async function load(opts = {}) {
+  const force = opts?.force === true
   const seq = loadSeq.next()
   error.value = ''
   if (!currentClusterId.value) {
     emptyReport()
-    loading.value = false
+    busy.value = false
     return
   }
-  loading.value = true
+  const key = cacheKey('diagnose', currentClusterId.value)
+  const hit = cacheGet(key)
+  if (hit?.data) applyReport(hit.data)
+  else emptyReport()
+  if (!force && cacheFresh(key, TTL.diagnose)) {
+    busy.value = false
+    return
+  }
+  busy.value = true
   try {
     const data = await readApi.diagnose(currentClusterId.value)
     if (!loadSeq.is(seq)) return
-    issues.value = asArray(data?.issues)
-    counts.value = { ...emptyCounts(), ...(data?.counts || {}) }
-    truncated.value = !!data?.truncated
-    skippedNodes.value = !!data?.skippedNodes
-    scanErrors.value = data?.errors && typeof data.errors === 'object' ? data.errors : {}
-    scan.value = data?.scan && typeof data.scan === 'object' ? data.scan : {}
+    applyReport(data)
+    cacheSet(key, {
+      issues: issues.value,
+      counts: counts.value,
+      truncated: truncated.value,
+      skippedNodes: skippedNodes.value,
+      errors: scanErrors.value,
+      scan: scan.value
+    })
   } catch (e) {
     if (!loadSeq.is(seq)) return
     error.value = errMessage(e)
-    emptyReport()
+    if (!hit) emptyReport()
   } finally {
-    if (loadSeq.is(seq)) loading.value = false
+    if (loadSeq.is(seq)) busy.value = false
   }
 }
 
@@ -621,7 +653,7 @@ onUnmounted(() => {
 <template>
   <div>
     <h1>诊断</h1>
-    <p class="page-desc">只列出当前不健康的对象。历史累计重启、滚动发布中的副本缺口、探针未达阈值的 Warning 不计入。判定规则见页底。</p>
+    <p class="page-desc">只列出当前不健康的对象。历史累计重启、滚动发布中的副本缺口、探针未达阈值的 Warning 不计入。同一会话内 90 秒内再次打开沿用上次扫描；需要最新结果时点「刷新」。判定规则见页底。</p>
     <div v-if="!currentClusterId" class="empty">请先在「KubeConfig」导入集群，并在上方选择集群。</div>
     <template v-else>
       <div class="grid">
@@ -703,17 +735,18 @@ onUnmounted(() => {
           <option value="critical">严重</option>
           <option value="warning">警告</option>
         </select>
-        <button class="btn btn-sm" type="button" :disabled="loading" @click="load">刷新</button>
+        <button class="btn btn-sm" type="button" :disabled="busy" @click="load({ force: true })">刷新</button>
       </div>
 
       <p v-if="error" class="error">{{ error }}</p>
       <p v-for="e in errorEntries" :key="e.key" class="muted">{{ categoryLabel(e.key) }}扫描失败：{{ e.message }}</p>
-      <p v-if="scanLine && !loading" class="muted">{{ scanLine }}</p>
-      <p v-if="scan.metricsSkipped && !loading" class="muted">节点指标未采集，CPU/内存异常无法判断：{{ scan.metricsSkipped }}</p>
+      <p v-if="scanLine && hasReport" class="muted">{{ scanLine }}</p>
+      <p v-if="scan.metricsSkipped && hasReport" class="muted">节点指标未采集，CPU/内存异常无法判断：{{ scan.metricsSkipped }}</p>
       <p v-if="truncated" class="muted">结果已截断（见上方扫描统计），仅展示部分异常。</p>
       <p v-if="loading" class="muted">加载中…</p>
+      <p v-else-if="refreshing" class="muted">更新中…</p>
 
-      <table v-else-if="filtered.length" class="table">
+      <table v-if="filtered.length" class="table">
         <thead>
           <tr>
             <th>严重程度</th>

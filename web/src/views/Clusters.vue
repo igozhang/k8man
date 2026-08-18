@@ -3,9 +3,10 @@ import { ref, onMounted } from 'vue'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { asArray, errMessage } from '../utils/safe'
+import { cacheGet, cacheKey } from '../utils/resourceCache'
 
 const { refreshClusters, setCurrentClusterId } = useClusterStore()
-const list = ref([])
+const list = ref(asArray(cacheGet(cacheKey('clusters', 'local'))?.data))
 const error = ref('')
 const showForm = ref(false)
 /** create | edit */
@@ -47,10 +48,10 @@ async function load() {
   error.value = ''
   try {
     list.value = asArray(await readApi.listClusters())
-    await refreshClusters(async () => list.value)
+    await refreshClusters(async () => list.value, { force: true })
   } catch (e) {
     error.value = errMessage(e)
-    list.value = []
+    if (!list.value.length) list.value = []
   }
 }
 

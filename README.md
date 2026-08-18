@@ -45,7 +45,7 @@ npm run dev   # Vite 代理 /api -> :8080
 
 - 镜像仓库：`krccr.ccs.tencentyun.com/igokorea/k8man`
 - 构建机：`VM-4-11-ubuntu`（nerdctl，2C2G 限并行 + cache）
-- 运行：`zabbix68`，`k8man` namespace，域名 `k8man.sunwoda-evb.com`
+- 运行：`zabbix68`，`k8man` namespace，域名 `k8man.igozhang.cn`
 
 步骤见 [docs/deploy.md](docs/deploy.md)（单条 build/push 命令）。
 

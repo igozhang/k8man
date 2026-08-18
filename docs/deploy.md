@@ -5,7 +5,7 @@
 | 镜像仓库 | `krccr.ccs.tencentyun.com/igokorea/k8man` |
 | 构建机 | `VM-4-11-ubuntu`（nerdctl + buildkit，约 2C2G） |
 | 运行集群 | `zabbix68`，Namespace `k8man` |
-| 域名 | `k8man.sunwoda-evb.com` |
+| 域名 | `k8man.igozhang.cn` |
 
 ## 构建并推送（VM-4-11，仓库根目录）
 
@@ -28,7 +28,7 @@ kubectl apply -f deploy/k8s/k8man.yaml && kubectl -n k8man rollout restart deplo
 ## 验证
 
 ```bash
-curl -sS http://k8man.sunwoda-evb.com/api/health
+curl -sS http://k8man.igozhang.cn/api/health
 ```
 
 ## 说明

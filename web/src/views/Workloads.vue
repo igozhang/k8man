@@ -1,10 +1,20 @@
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch } from 'vue'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
 import { asArray, createSeq, errMessage } from '../utils/safe'
+import {
+  TTL,
+  cacheFresh,
+  cacheGet,
+  cacheKey,
+  cacheSet,
+  getViewPref,
+  invalidateNsLists,
+  setViewPref
+} from '../utils/resourceCache'
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import ConfigMapEditor from '../components/ConfigMapEditor.vue'
@@ -18,8 +28,8 @@ const rows = ref([])
 const podMetrics = ref([])
 const metricsTip = ref('')
 const loading = ref(false)
+const refreshing = ref(false)
 const error = ref('')
-const metricsSeq = createSeq()
 const rowsSeq = createSeq()
 const nsSeq = createSeq()
 
@@ -44,39 +54,68 @@ const specEditor = ref({
   busy: false
 })
 
-async function loadNamespaces() {
+function applyNsList(list) {
+  namespaces.value = list
+  if (ns.value && !list.some((n) => n.name === ns.value)) ns.value = ''
+}
+
+function applyWorkloadsPref() {
+  const pref = getViewPref('workloads', currentClusterId.value)
+  tab.value = pref?.tab || 'pods'
+  ns.value = pref?.ns || ''
+}
+
+function persistWorkloadsPref() {
+  if (!currentClusterId.value) return
+  setViewPref('workloads', currentClusterId.value, { ns: ns.value, tab: tab.value })
+}
+
+function rowCacheKind() {
+  return tab.value === 'metrics' ? 'podMetrics' : tab.value
+}
+
+function rowCacheKey() {
+  return cacheKey(rowCacheKind(), currentClusterId.value, ns.value)
+}
+
+function applyCachedRows(data) {
+  if (tab.value === 'metrics') podMetrics.value = asArray(data)
+  else rows.value = asArray(data)
+}
+
+function clearRows() {
+  rows.value = []
+  podMetrics.value = []
+  metricsTip.value = ''
+}
+
+async function loadNamespaces({ force = false } = {}) {
   const seq = nsSeq.next()
   if (!currentClusterId.value) {
     namespaces.value = []
     ns.value = ''
-    rows.value = []
-    podMetrics.value = []
+    clearRows()
     loading.value = false
+    refreshing.value = false
     return
   }
+  const key = cacheKey('namespaces', currentClusterId.value)
+  const hit = cacheGet(key)
+  if (hit) applyNsList(asArray(hit.data))
+  if (!force && cacheFresh(key, TTL.namespaces)) return
   try {
     const list = asArray(await readApi.listNamespaces(currentClusterId.value))
     if (!nsSeq.is(seq)) return
-    namespaces.value = list
-    // 换集群后清空选择，不自动选中、不拉业务数据
-    ns.value = ''
-    rows.value = []
-    podMetrics.value = []
-    metricsTip.value = ''
+    cacheSet(key, list)
+    applyNsList(list)
     error.value = ''
-    rowsSeq.bump()
-    metricsSeq.bump()
-    loading.value = false
   } catch (e) {
     if (!nsSeq.is(seq)) return
-    namespaces.value = []
-    ns.value = ''
-    rows.value = []
-    podMetrics.value = []
-    metricsTip.value = ''
-    rowsSeq.bump()
-    metricsSeq.bump()
-    loading.value = false
+    if (!hit) {
+      namespaces.value = []
+      ns.value = ''
+      clearRows()
+    }
     error.value = errMessage(e)
   }
 }
@@ -91,8 +130,7 @@ function mapDeployment(d) {
     ready: `${ready}/${desired}`,
     extra: `更新 ${d.status?.updatedReplicas ?? 0} · 可用 ${d.status?.availableReplicas ?? 0}`,
     canScale: true,
-    replicas: desired,
-    raw: d
+    replicas: desired
   }
 }
 
@@ -106,8 +144,7 @@ function mapStatefulSet(s) {
     ready: `${ready}/${desired}`,
     extra: `当前 ${s.status?.currentReplicas ?? 0} · 更新 ${s.status?.updatedReplicas ?? 0}`,
     canScale: true,
-    replicas: desired,
-    raw: s
+    replicas: desired
   }
 }
 
@@ -121,8 +158,7 @@ function mapDaemonSet(ds) {
     ready: `${ready}/${desired}`,
     extra: `可用 ${ds.status?.numberAvailable ?? 0} · 更新 ${ds.status?.updatedNumberScheduled ?? 0}`,
     canScale: false,
-    replicas: desired,
-    raw: ds
+    replicas: desired
   }
 }
 
@@ -153,63 +189,91 @@ async function loadControllers() {
   return list
 }
 
-async function loadPodMetrics() {
-  const seq = metricsSeq.next()
-  metricsTip.value = ''
-  podMetrics.value = []
-  if (!currentClusterId.value || !ns.value) return
-  try {
-    const items = asArray(await readApi.podMetrics(currentClusterId.value, ns.value))
-    if (!metricsSeq.is(seq)) return
-    podMetrics.value = items
-  } catch (e) {
-    if (!metricsSeq.is(seq)) return
-    metricsTip.value = metricsErrorTip(e)
+async function fetchRowItems() {
+  if (tab.value === 'metrics') {
+    return asArray(await readApi.podMetrics(currentClusterId.value, ns.value))
+  }
+  if (tab.value === 'pods') {
+    return asArray(await readApi.listPods(currentClusterId.value, ns.value))
+  }
+  if (tab.value === 'controllers') {
+    return await loadControllers()
+  }
+  if (tab.value === 'configmaps') {
+    return asArray(await readApi.listConfigMaps(currentClusterId.value, ns.value))
+  }
+  if (tab.value === 'services') {
+    return asArray(await readApi.listServices(currentClusterId.value, ns.value))
+  }
+  return []
+}
+
+function ttlForTab() {
+  if (tab.value === 'metrics') return TTL.podMetrics
+  if (tab.value === 'controllers') return TTL.controllers
+  if (tab.value === 'services') return TTL.services
+  if (tab.value === 'configmaps') return TTL.configmaps
+  return TTL.pods
+}
+
+async function loadRows({ force = false } = {}) {
+  const seq = rowsSeq.next()
+  error.value = ''
+  if (tab.value !== 'metrics') {
     podMetrics.value = []
+    metricsTip.value = ''
+  }
+  if (!currentClusterId.value || !ns.value) {
+    clearRows()
+    if (rowsSeq.is(seq)) {
+      loading.value = false
+      refreshing.value = false
+    }
+    return
+  }
+
+  const key = rowCacheKey()
+  const hit = cacheGet(key)
+  if (hit) applyCachedRows(hit.data)
+  else if (tab.value === 'metrics') podMetrics.value = []
+  else rows.value = []
+
+  if (!force && cacheFresh(key, ttlForTab())) {
+    loading.value = false
+    refreshing.value = false
+    return
+  }
+
+  const has = tab.value === 'metrics' ? podMetrics.value.length > 0 : rows.value.length > 0
+  loading.value = !has
+  refreshing.value = has
+  try {
+    const items = await fetchRowItems()
+    if (!rowsSeq.is(seq)) return
+    cacheSet(key, items)
+    applyCachedRows(items)
+    if (tab.value === 'metrics') metricsTip.value = ''
+  } catch (e) {
+    if (!rowsSeq.is(seq)) return
+    if (tab.value === 'metrics') {
+      metricsTip.value = metricsErrorTip(e)
+      error.value = ''
+      if (!hit) podMetrics.value = []
+    } else {
+      error.value = errMessage(e)
+      if (!hit) rows.value = []
+    }
+  } finally {
+    if (rowsSeq.is(seq)) {
+      loading.value = false
+      refreshing.value = false
+    }
   }
 }
 
-async function loadRows() {
-  const seq = rowsSeq.next()
-  error.value = ''
-  rows.value = []
-  metricsTip.value = ''
-  if (tab.value !== 'metrics') {
-    metricsSeq.bump()
-    podMetrics.value = []
-  }
-  if (!currentClusterId.value || !ns.value) {
-    if (rowsSeq.is(seq)) loading.value = false
-    return
-  }
-  loading.value = true
-  try {
-    if (tab.value === 'metrics') {
-      await loadPodMetrics()
-    } else if (tab.value === 'pods') {
-      const items = asArray(await readApi.listPods(currentClusterId.value, ns.value))
-      if (!rowsSeq.is(seq)) return
-      rows.value = items
-    } else if (tab.value === 'controllers') {
-      const items = await loadControllers()
-      if (!rowsSeq.is(seq)) return
-      rows.value = items
-    } else if (tab.value === 'configmaps') {
-      const items = asArray(await readApi.listConfigMaps(currentClusterId.value, ns.value))
-      if (!rowsSeq.is(seq)) return
-      rows.value = items
-    } else if (tab.value === 'services') {
-      const items = asArray(await readApi.listServices(currentClusterId.value, ns.value))
-      if (!rowsSeq.is(seq)) return
-      rows.value = items
-    }
-  } catch (e) {
-    if (!rowsSeq.is(seq)) return
-    error.value = errMessage(e)
-    rows.value = []
-  } finally {
-    if (rowsSeq.is(seq)) loading.value = false
-  }
+function afterWrite() {
+  invalidateNsLists(currentClusterId.value, ns.value)
+  return loadRows({ force: true })
 }
 
 async function restart(pod) {
@@ -217,7 +281,7 @@ async function restart(pod) {
   try {
     const r = await writeApi.restartPod(currentClusterId.value, ns.value, pod.name)
     alert(r?.message || '已提交重启')
-    await loadRows()
+    await afterWrite()
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -276,7 +340,7 @@ async function doScale() {
       )
     }
     scaleForm.value.open = false
-    await loadRows()
+    await afterWrite()
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -411,7 +475,7 @@ async function saveSpecEdit() {
       }
     )
     specEditor.value.open = false
-    await loadRows()
+    await afterWrite()
   } catch (e) {
     error.value = errMessage(e)
   } finally {
@@ -423,10 +487,19 @@ function onChildError(msg) {
   error.value = msg
 }
 
-watch([currentClusterId], async () => {
+watch(currentClusterId, async () => {
   closeAllEditors()
+  applyWorkloadsPref()
   await loadNamespaces()
-})
+  persistWorkloadsPref()
+  if (ns.value) loadRows()
+  else {
+    rowsSeq.bump()
+    clearRows()
+    loading.value = false
+    refreshing.value = false
+  }
+}, { immediate: true })
 watch(ns, () => {
   closeAllEditors()
 })
@@ -434,17 +507,13 @@ watch(tab, () => {
   // 同命名空间切 Tab 只关日志；保留 YAML/ConfigMap 未保存编辑
   closeLogsOnly()
 })
-onMounted(async () => {
-  await loadNamespaces()
-})
 watch([ns, tab], () => {
+  persistWorkloadsPref()
   if (!ns.value) {
     rowsSeq.bump()
-    metricsSeq.bump()
-    rows.value = []
-    podMetrics.value = []
-    metricsTip.value = ''
+    clearRows()
     loading.value = false
+    refreshing.value = false
     return
   }
   loadRows()
@@ -455,7 +524,7 @@ watch([ns, tab], () => {
   <div>
     <h1>工作负载</h1>
     <p class="page-desc">
-      查看与运维 Pod / 控制器 / Service / ConfigMap；请先选择命名空间后再加载。Pod 指标仅在选中对应 Tab 且已选命名空间时请求。
+      查看与运维 Pod / 控制器 / Service / ConfigMap；首次请选择命名空间。同一会话内会沿用上次选择，并复用未过期的列表。
     </p>
     <div v-if="!currentClusterId" class="empty">请先选择集群。</div>
     <template v-else>
@@ -488,6 +557,7 @@ watch([ns, tab], () => {
       <div v-if="!ns" class="empty">请选择命名空间后再加载资源。</div>
       <template v-else>
       <p v-if="loading" class="muted">加载中…</p>
+      <p v-else-if="refreshing" class="muted">更新中…</p>
 
       <template v-if="tab === 'pods'">
         <table v-if="rows.length" class="table">
@@ -592,7 +662,7 @@ watch([ns, tab], () => {
 
       <template v-else-if="tab === 'metrics'">
         <p v-if="metricsTip" class="muted">{{ metricsTip }}</p>
-        <table v-if="!loading && podMetrics.length" class="table">
+        <table v-if="podMetrics.length" class="table">
           <thead><tr><th>Pod</th><th>容器</th><th>CPU</th><th>内存</th></tr></thead>
           <tbody>
             <template v-for="m in podMetrics" :key="m.metadata?.name">
@@ -621,14 +691,14 @@ watch([ns, tab], () => {
       ref="yamlDrawer"
       :cluster-id="currentClusterId"
       :ns="ns"
-      @saved="loadRows"
+      @saved="afterWrite"
       @error="onChildError"
     />
     <ConfigMapEditor
       ref="cmEditor"
       :cluster-id="currentClusterId"
       :ns="ns"
-      @saved="loadRows"
+      @saved="afterWrite"
       @error="onChildError"
     />
 

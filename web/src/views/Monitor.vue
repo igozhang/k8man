@@ -5,6 +5,15 @@ import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory, fmtTime, mergeNodeUsage } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
 import { asArray, createSeq, errMessage } from '../utils/safe'
+import {
+  TTL,
+  cacheFresh,
+  cacheGet,
+  cacheKey,
+  cacheSet,
+  getViewPref,
+  setViewPref
+} from '../utils/resourceCache'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 const namespaces = ref([])
@@ -17,17 +26,18 @@ const error = ref('')
 const nodeTip = ref('')
 const podTip = ref('')
 const nodeLoading = ref(false)
+const nodeRefreshing = ref(false)
 const podLoading = ref(false)
+const podRefreshing = ref(false)
 const nsLoading = ref(false)
 
 const nodesSeq = createSeq()
 const podsSeq = createSeq()
-const pageSeq = createSeq()
 
 const isProject = computed(() => currentCluster.value?.permType === 'project')
 const showNodesTab = computed(() => !isProject.value)
 
-function clearAll() {
+function resetView() {
   nodesSeq.bump()
   podsSeq.bump()
   nodeRows.value = []
@@ -35,38 +45,76 @@ function clearAll() {
   nodeTip.value = ''
   podTip.value = ''
   nodeLoading.value = false
+  nodeRefreshing.value = false
   podLoading.value = false
+  podRefreshing.value = false
   nsLoading.value = false
   namespaces.value = []
   ns.value = ''
+  tab.value = ''
   error.value = ''
 }
 
-async function ensureNamespaces() {
+function applyMonitorPref() {
+  const pref = getViewPref('monitor', currentClusterId.value)
+  ns.value = pref?.ns || ''
+  if (pref?.tab === 'pods') tab.value = 'pods'
+  else if (pref?.tab === 'nodes' && showNodesTab.value) tab.value = 'nodes'
+  else tab.value = showNodesTab.value ? 'nodes' : ''
+}
+
+function persistMonitorPref() {
   if (!currentClusterId.value) return
-  if (namespaces.value.length || nsLoading.value) return
+  setViewPref('monitor', currentClusterId.value, { tab: tab.value, ns: ns.value })
+}
+
+async function ensureNamespaces({ force = false } = {}) {
+  if (!currentClusterId.value) return
   const clusterId = currentClusterId.value
-  nsLoading.value = true
+  const key = cacheKey('namespaces', clusterId)
+  const hit = cacheGet(key)
+  if (hit) {
+    namespaces.value = asArray(hit.data)
+    if (ns.value && !namespaces.value.some((n) => n.name === ns.value)) ns.value = ''
+  }
+  if (!force && cacheFresh(key, TTL.namespaces)) return
+  if (nsLoading.value && namespaces.value.length) return
+  nsLoading.value = !namespaces.value.length
   try {
     const list = asArray(await readApi.listNamespaces(clusterId))
-    // 请求期间若已换集群，丢弃结果
     if (currentClusterId.value !== clusterId) return
+    cacheSet(key, list)
     namespaces.value = list
+    if (ns.value && !list.some((n) => n.name === ns.value)) ns.value = ''
   } catch (e) {
     if (currentClusterId.value !== clusterId) return
     error.value = errMessage(e)
-    namespaces.value = []
+    if (!hit) namespaces.value = []
   } finally {
     nsLoading.value = false
   }
 }
 
-async function loadNodes() {
+async function loadNodes({ force = false } = {}) {
   const seq = nodesSeq.next()
-  nodeRows.value = []
   nodeTip.value = ''
-  if (!currentClusterId.value || isProject.value) return
-  nodeLoading.value = true
+  if (!currentClusterId.value || isProject.value) {
+    nodeRows.value = []
+    nodeLoading.value = false
+    nodeRefreshing.value = false
+    return
+  }
+  const key = cacheKey('nodeUsage', currentClusterId.value)
+  const hit = cacheGet(key)
+  if (hit) nodeRows.value = asArray(hit.data)
+  else nodeRows.value = []
+  if (!force && cacheFresh(key, TTL.nodeUsage)) {
+    nodeLoading.value = false
+    nodeRefreshing.value = false
+    return
+  }
+  nodeLoading.value = !nodeRows.value.length
+  nodeRefreshing.value = nodeRows.value.length > 0
   try {
     const [nodes, metrics] = await Promise.all([
       readApi.listNodes(currentClusterId.value),
@@ -76,69 +124,98 @@ async function loadNodes() {
       })
     ])
     if (!nodesSeq.is(seq)) return
-    nodeRows.value = mergeNodeUsage(asArray(nodes), asArray(metrics))
+    const list = asArray(nodes)
+    cacheSet(cacheKey('nodes', currentClusterId.value), list)
+    const merged = mergeNodeUsage(list, asArray(metrics))
+    cacheSet(key, merged)
+    nodeRows.value = merged
   } catch (e) {
     if (!nodesSeq.is(seq)) return
     nodeTip.value = errMessage(e)
-    nodeRows.value = []
+    if (!hit) nodeRows.value = []
   } finally {
-    if (nodesSeq.is(seq)) nodeLoading.value = false
+    if (nodesSeq.is(seq)) {
+      nodeLoading.value = false
+      nodeRefreshing.value = false
+    }
   }
 }
 
-async function loadPodMetrics() {
+async function loadPodMetrics({ force = false } = {}) {
   const seq = podsSeq.next()
-  podMetrics.value = []
   podTip.value = ''
-  if (!currentClusterId.value || !ns.value) return
-  podLoading.value = true
+  if (!currentClusterId.value || !ns.value) {
+    podMetrics.value = []
+    podLoading.value = false
+    podRefreshing.value = false
+    return
+  }
+  const key = cacheKey('podMetrics', currentClusterId.value, ns.value)
+  const hit = cacheGet(key)
+  if (hit) podMetrics.value = asArray(hit.data)
+  else podMetrics.value = []
+  if (!force && cacheFresh(key, TTL.podMetrics)) {
+    podLoading.value = false
+    podRefreshing.value = false
+    return
+  }
+  podLoading.value = !podMetrics.value.length
+  podRefreshing.value = podMetrics.value.length > 0
   try {
     const items = asArray(await readApi.podMetrics(currentClusterId.value, ns.value))
     if (!podsSeq.is(seq)) return
+    cacheSet(key, items)
     podMetrics.value = items
   } catch (e) {
     if (!podsSeq.is(seq)) return
     podTip.value = metricsErrorTip(e)
-    podMetrics.value = []
+    if (!hit) podMetrics.value = []
   } finally {
-    if (podsSeq.is(seq)) podLoading.value = false
+    if (podsSeq.is(seq)) {
+      podLoading.value = false
+      podRefreshing.value = false
+    }
   }
 }
 
 function selectTab(next) {
   if (next === 'nodes' && !showNodesTab.value) return
   tab.value = next
+  persistMonitorPref()
   if (next === 'nodes') {
-    ns.value = ''
     podsSeq.bump()
-    podMetrics.value = []
-    podTip.value = ''
+    podLoading.value = false
+    podRefreshing.value = false
     loadNodes()
     return
   }
   if (next === 'pods') {
-    nodesSeq.bump()
-    nodeRows.value = []
-    nodeTip.value = ''
-    ns.value = ''
-    podMetrics.value = []
-    podTip.value = ''
     ensureNamespaces()
+    if (ns.value) loadPodMetrics()
   }
 }
 
 function enterPage() {
-  const seq = pageSeq.next()
-  clearAll()
-  tab.value = ''
-  if (!currentClusterId.value) return
-  // 等集群元数据就绪再决定是否自动拉节点，避免 project 误打 nodes API
+  error.value = ''
+  if (!currentClusterId.value) {
+    resetView()
+    return
+  }
+  applyMonitorPref()
+  persistMonitorPref()
   if (!currentCluster.value) return
-  if (showNodesTab.value) {
-    tab.value = 'nodes'
-    loadNodes().then(() => {
-      if (!pageSeq.is(seq)) return
-    })
+  if (tab.value === 'nodes') {
+    if (!showNodesTab.value) {
+      tab.value = ''
+      persistMonitorPref()
+      return
+    }
+    loadNodes()
+    return
+  }
+  if (tab.value === 'pods') {
+    ensureNamespaces()
+    if (ns.value) loadPodMetrics()
   }
 }
 
@@ -150,21 +227,22 @@ watch(
     if (isProject.value) {
       if (tab.value === 'nodes') {
         nodesSeq.bump()
-        nodeRows.value = []
-        nodeTip.value = ''
         nodeLoading.value = false
+        nodeRefreshing.value = false
         tab.value = ''
+        persistMonitorPref()
       }
       return
     }
-    // cluster 元数据刚就绪且尚未选 tab：自动进入节点
     if (!tab.value) {
       tab.value = 'nodes'
-      loadNodes()
+      persistMonitorPref()
     }
+    if (tab.value === 'nodes') loadNodes()
   }
 )
 watch(ns, (v) => {
+  persistMonitorPref()
   if (tab.value !== 'pods') return
   if (v) loadPodMetrics()
   else {
@@ -172,16 +250,18 @@ watch(ns, (v) => {
     podMetrics.value = []
     podTip.value = ''
     podLoading.value = false
+    podRefreshing.value = false
   }
 })
 onMounted(enterPage)
 </script>
 
+
 <template>
   <div>
     <h1>监控</h1>
     <p class="page-desc">
-      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）；进入页面默认加载。Pod 指标需手动选择命名空间。未安装或权限不足时降级提示。
+      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。同一会话内复用未过期数据；过期后后台更新，不先清空。Pod 指标需选择命名空间。未安装或权限不足时降级提示。
     </p>
     <div v-if="!currentClusterId" class="empty">请先选择集群。</div>
     <template v-else>
@@ -206,7 +286,8 @@ onMounted(enterPage)
       <template v-else-if="tab === 'nodes' && showNodesTab">
         <p v-if="nodeTip" class="muted">{{ nodeTip }}</p>
         <p v-if="nodeLoading" class="muted">加载中…</p>
-        <table v-else-if="nodeRows.length" class="table">
+        <p v-else-if="nodeRefreshing" class="muted">更新中…</p>
+        <table v-if="nodeRows.length" class="table">
           <thead>
             <tr>
               <th>名称</th>
@@ -255,7 +336,8 @@ onMounted(enterPage)
         <template v-else>
           <p v-if="podTip" class="muted">{{ podTip }}</p>
           <p v-if="podLoading" class="muted">加载中…</p>
-          <table v-else-if="podMetrics.length" class="table">
+          <p v-else-if="podRefreshing" class="muted">更新中…</p>
+          <table v-if="podMetrics.length" class="table">
             <thead><tr><th>Pod</th><th>容器</th><th>CPU</th><th>内存</th></tr></thead>
             <tbody>
               <template v-for="m in podMetrics" :key="m.metadata?.name || m.name">
