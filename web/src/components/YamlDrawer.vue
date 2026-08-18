@@ -6,7 +6,8 @@ import { copyText } from '../utils/clipboard'
 
 const props = defineProps({
   clusterId: { type: String, default: '' },
-  ns: { type: String, default: '' }
+  ns: { type: String, default: '' },
+  readOnly: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['saved', 'error'])
@@ -14,6 +15,7 @@ const emit = defineEmits(['saved', 'error'])
 const open = ref(false)
 const kind = ref('')
 const name = ref('')
+const activeNs = ref('')
 const yaml = ref('')
 const busy = ref(false)
 const copied = ref(false)
@@ -26,11 +28,13 @@ watch(
   }
 )
 
-async function openEditor(resourceKind, resourceName) {
+async function openEditor(resourceKind, resourceName, resourceNs) {
+  const ns = resourceNs || props.ns
   try {
-    const r = await readApi.getYAML(props.clusterId, props.ns, resourceKind, resourceName)
+    const r = await readApi.getYAML(props.clusterId, ns, resourceKind, resourceName)
     kind.value = resourceKind
     name.value = resourceName
+    activeNs.value = ns
     yaml.value = r?.yaml || ''
     open.value = true
   } catch (e) {
@@ -40,12 +44,14 @@ async function openEditor(resourceKind, resourceName) {
 
 function close() {
   open.value = false
+  activeNs.value = ''
 }
 
 async function save() {
+  if (props.readOnly) return
   busy.value = true
   try {
-    await writeApi.applyYAML(props.clusterId, props.ns, kind.value, name.value, yaml.value)
+    await writeApi.applyYAML(props.clusterId, activeNs.value || props.ns, kind.value, name.value, yaml.value)
     open.value = false
     emit('saved')
   } catch (e) {
@@ -77,14 +83,19 @@ defineExpose({ open: openEditor, close })
     <div class="toolbar">
       <strong>YAML · {{ kind }}/{{ name }}</strong>
       <div class="actions">
-        <button class="btn btn-primary btn-sm" :disabled="busy" @click="save">
+        <button
+          v-if="!readOnly"
+          class="btn btn-primary btn-sm"
+          :disabled="busy"
+          @click="save"
+        >
           {{ busy ? '应用中…' : '应用' }}
         </button>
         <button class="btn btn-sm" @click="close">关闭</button>
       </div>
     </div>
     <div class="field-copy-wrap">
-      <textarea v-model="yaml" class="cm-yaml"></textarea>
+      <textarea v-model="yaml" class="cm-yaml" :readonly="readOnly"></textarea>
       <button
         type="button"
         class="field-copy"

@@ -78,6 +78,7 @@ func NewRouter(d Deps) *gin.Engine {
 		readGroup.GET("/clusters/:id", rh.GetCluster)
 		readGroup.GET("/clusters/:id/namespaces", rh.ListNamespaces)
 		readGroup.GET("/clusters/:id/nodes", rh.ListNodes)
+		readGroup.GET("/clusters/:id/diagnose", rh.Diagnose)
 		readGroup.GET("/clusters/:id/namespaces/:ns/pods", rh.ListPods)
 		readGroup.GET("/clusters/:id/namespaces/:ns/pods/:name", rh.GetPod)
 		readGroup.GET("/clusters/:id/namespaces/:ns/pods/:name/logs", rh.PodLogs)

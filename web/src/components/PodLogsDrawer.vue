@@ -17,6 +17,9 @@ const LOG_W_KEY = 'k8man.logDrawerPx'
 const logsSeq = createSeq()
 const open = ref(false)
 const podName = ref('')
+const activeNs = ref('')
+const container = ref('')
+const previous = ref(false)
 const content = ref('')
 const auto = ref(true)
 const loading = ref(false)
@@ -98,6 +101,9 @@ function close() {
   }
   open.value = false
   podName.value = ''
+  activeNs.value = ''
+  container.value = ''
+  previous.value = false
   content.value = ''
   auto.value = true
   loading.value = false
@@ -118,7 +124,8 @@ function scheduleLogTick() {
 }
 
 async function pullLogs() {
-  if (!open.value || !props.clusterId || !props.ns || !podName.value) return
+  const ns = activeNs.value || props.ns
+  if (!open.value || !props.clusterId || !ns || !podName.value) return
   if (loading.value) return
   const seq = logsSeq.next()
   loading.value = true
@@ -126,9 +133,11 @@ async function pullLogs() {
   const ac = new AbortController()
   logAbort = ac
   try {
-    const r = await readApi.podLogs(props.clusterId, props.ns, podName.value, {
+    const r = await readApi.podLogs(props.clusterId, ns, podName.value, {
       tail: LOG_TAIL,
-      signal: ac.signal
+      signal: ac.signal,
+      container: container.value || undefined,
+      previous: previous.value
     })
     if (!logsSeq.is(seq)) return
     content.value = r?.logs || '(empty)'
@@ -148,7 +157,7 @@ async function pullLogs() {
   }
 }
 
-async function openLogs(name) {
+async function openLogs(name, resourceNs, opts = {}) {
   stopLogTimer()
   logsSeq.bump()
   if (logAbort) {
@@ -158,6 +167,9 @@ async function openLogs(name) {
   logStickBottom.value = true
   open.value = true
   podName.value = name
+  activeNs.value = resourceNs || props.ns
+  container.value = opts.container || ''
+  previous.value = !!opts.previous
   content.value = ''
   auto.value = true
   loading.value = false
@@ -240,7 +252,11 @@ defineExpose({ open: openLogs, close })
       @pointerdown.prevent="startResizeLogs"
     ></div>
     <div class="toolbar">
-      <strong>日志 · {{ podName }}</strong>
+      <strong>
+        日志 · {{ podName }}
+        <template v-if="container"> · {{ container }}</template>
+        <template v-if="previous"> · previous</template>
+      </strong>
       <div class="actions">
         <button class="btn btn-sm" type="button" @click="toggleLogAuto">
           {{ auto ? '暂停' : '继续' }}

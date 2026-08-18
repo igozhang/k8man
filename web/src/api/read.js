@@ -8,8 +8,15 @@ export const readApi = {
   listNodes: (id) => http.get(`/read/clusters/${id}/nodes`),
   listPods: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/pods`),
   getPod: (id, ns, name) => http.get(`/read/clusters/${id}/namespaces/${ns}/pods/${name}`),
-  podLogs: (id, ns, name, { tail = 200, signal } = {}) =>
-    http.get(`/read/clusters/${id}/namespaces/${ns}/pods/${name}/logs`, { params: { tail }, signal }),
+  podLogs: (id, ns, name, { tail = 200, signal, container, previous } = {}) =>
+    http.get(`/read/clusters/${id}/namespaces/${ns}/pods/${name}/logs`, {
+      params: {
+        tail,
+        ...(container ? { container } : {}),
+        ...(previous ? { previous: 1 } : {})
+      },
+      signal
+    }),
   listDeployments: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/deployments`),
   listStatefulSets: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/statefulsets`),
   listDaemonSets: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/daemonsets`),
@@ -23,6 +30,7 @@ export const readApi = {
   nodeMetrics: (id) => http.get(`/read/clusters/${id}/metrics/nodes`),
   podMetrics: (id, namespace) =>
     http.get(`/read/clusters/${id}/metrics/pods`, { params: { namespace } }),
+  diagnose: (id, params) => http.get(`/read/clusters/${id}/diagnose`, { params }),
   listDocs: (params) => http.get('/read/docs', { params }),
   getDoc: (docId) => http.get(`/read/docs/${docId}`),
   listHosts: () => http.get('/read/hosts')

@@ -57,6 +57,7 @@ onMounted(() => {
             <RouterLink to="/clusters">KubeConfig</RouterLink>
             <RouterLink to="/workloads">工作负载</RouterLink>
             <RouterLink to="/monitor">监控</RouterLink>
+            <RouterLink to="/diagnose">诊断</RouterLink>
             <RouterLink to="/docs">运维文档</RouterLink>
           </nav>
         </div>

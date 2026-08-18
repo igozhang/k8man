@@ -23,6 +23,67 @@
 | GET | `/clusters/:id` | 集群详情 |
 | GET | `/clusters/:id/namespaces` | Namespace 列表 |
 | GET | `/clusters/:id/nodes` | 节点列表（project 返回 403） |
+| GET | `/clusters/:id/diagnose?namespace=` | 诊断扫描，只返回异常项（见下方） |
+
+### 诊断
+
+`GET /clusters/:id/diagnose?namespace=`
+
+并行扫描节点（project 跳过）、Deployment / StatefulSet / DaemonSet、Pod、近期 `type=Warning` 事件。`namespace` 为空则优先集群级 List（首页 `resourceVersion=0` 走 API Server watch cache）；仅 403 时才回退按命名空间拉取。某一类失败不阻断其它类，写入 `errors`。
+
+为降低对 API Server / etcd 的压力：Pod 带 `status.phase!=Succeeded` 过滤已完成 Job；事件最多 80 条；指标单独 5s 超时，失败则跳过用量告警。Warning 事件优先挂到已发现的异常 `evidence` 上，未匹配的才作为独立 `event` 行。
+
+响应 `data`：
+
+```json
+{
+  "issues": [
+    {
+      "severity": "critical",
+      "category": "pod",
+      "kind": "Pod",
+      "namespace": "default",
+      "name": "web-0",
+      "reason": "CrashLoopBackOff",
+      "message": "back-off restarting failed container",
+      "age": "12m",
+      "since": "1m",
+      "node": "n1",
+      "container": "app",
+      "evidence": [
+        "phase=Running ready=0/1 restarts=12",
+        "node=n1",
+        "app waiting CrashLoopBackOff restarts=12: back-off | lastExit OOMKilled exit=137 1m ago"
+      ],
+      "logPath": "/var/log/pods/default_web-0_<uid>/app/11.log",
+      "logSource": "previous container=app tail=40",
+      "logExcerpt": [
+        "ERROR connection refused",
+        "retrying",
+        "FATAL panic: nil pointer"
+      ]
+    }
+  ],
+  "counts": { "nodes": 0, "workloads": 0, "pods": 1, "events": 0, "critical": 1, "warning": 0 },
+  "scan": { "nodes": 12, "pods": 80, "deployments": 20, "statefulSets": 2, "daemonSets": 3, "events": 40, "eventsAttached": 12, "logsFetched": 1, "elapsedMs": 900, "fromCache": true },
+  "truncated": false,
+  "skippedNodes": false
+}
+```
+
+- `severity`：`critical` / `warning`
+- `category`：`node` / `workload` / `pod` / `event`
+- `since`：异常条件持续时长（如 Ready=False 的 LastTransitionTime）；`age` 仍为对象创建时长
+- `logPath`：节点上 kubelet 日志文件路径（`/var/log/pods/<ns>_<pod>_<uid>/<container>/<n>.log`）
+- `logSource`：`previous`/`current`、容器名、tail 行数；CrashLoop/OOM 优先上一份日志
+- `logExcerpt`：关键行 ±1 行有限上下文（最多 8 行）；排序后优先 CrashLoop/OOM，最多 8 个严重 Pod；ImagePull 等无容器日志的不拉
+- `scan`：本轮实际列出的对象数、耗时；`logsFetched` 为实际拉到的日志摘录份数；`fromCache=true` 表示 List 首页走 watch cache；`metricsSkipped` 表示节点指标未采集（用量异常无法判断）
+- Warning 事件先最多取 500 条再按时间留 80 条，并优先挂到已发现异常的 `evidence`
+- `skippedNodes`：`project` kubeconfig 为 `true`
+- `truncated`：扫描或结果达到上限（每类最多 200 条，事件最多 80 条）
+- `errors`：可选，某类扫描失败信息（如 `{"pods":"..."}`）
+
+节点 CPU/内存 ≥90% 仅在 metrics-server 可用时计入；指标不可用则跳过，不报错。
 
 ### 工作负载
 
@@ -30,7 +91,7 @@
 |------|------|------|
 | GET | `/clusters/:id/namespaces/:ns/pods` | Pod 列表 |
 | GET | `/clusters/:id/namespaces/:ns/pods/:name` | Pod 详情 |
-| GET | `/clusters/:id/namespaces/:ns/pods/:name/logs?tail=200` | Pod 日志（默认尾部 200 行、上限 500；服务端 LimitBytes 256KiB） |
+| GET | `/clusters/:id/namespaces/:ns/pods/:name/logs?tail=200&container=&previous=` | Pod 日志（默认尾部 200 行、上限 500；`container` 可选；`previous=1` 读上一份；服务端 LimitBytes 256KiB） |
 | GET | `/clusters/:id/namespaces/:ns/deployments` | Deployment 列表 |
 | GET | `/clusters/:id/namespaces/:ns/statefulsets` | StatefulSet 列表 |
 | GET | `/clusters/:id/namespaces/:ns/daemonsets` | DaemonSet 列表 |

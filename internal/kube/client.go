@@ -309,9 +309,29 @@ func (c *Clients) DeletePod(ctx context.Context, ns, name string) error {
 }
 
 func (c *Clients) PodLogs(ctx context.Context, ns, name string, tail int64) (string, error) {
-	tail = ClampPodLogTail(tail)
-	limit := DefaultPodLogBytes
-	opts := &corev1.PodLogOptions{TailLines: &tail, LimitBytes: &limit}
+	return c.PodLogsQuery(ctx, ns, name, PodLogQuery{Tail: tail})
+}
+
+// PodLogQuery is a bounded log read (diagnose / drawer).
+type PodLogQuery struct {
+	Container  string
+	Tail       int64
+	Previous   bool
+	LimitBytes int64
+}
+
+func (c *Clients) PodLogsQuery(ctx context.Context, ns, name string, q PodLogQuery) (string, error) {
+	tail := ClampPodLogTail(q.Tail)
+	limit := q.LimitBytes
+	if limit <= 0 {
+		limit = DefaultPodLogBytes
+	}
+	opts := &corev1.PodLogOptions{
+		Container:  q.Container,
+		Previous:   q.Previous,
+		TailLines:  &tail,
+		LimitBytes: &limit,
+	}
 	req := c.Clientset.CoreV1().Pods(ns).GetLogs(name, opts)
 	raw, err := req.Do(ctx).Raw()
 	if err != nil {

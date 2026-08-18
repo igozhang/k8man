@@ -117,14 +117,14 @@ func (h *Handler) ListNodes(c *gin.Context) {
 		return
 	}
 	type nodeView struct {
-		Name             string            `json:"name"`
-		Status           string            `json:"status"`
-		Roles            string            `json:"roles"`
-		Version          string            `json:"version"`
-		InternalIP       string            `json:"internalIP"`
-		AllocatableCPU   string            `json:"allocatableCPU"`
-		AllocatableMem   string            `json:"allocatableMemory"`
-		Labels           map[string]string `json:"labels"`
+		Name           string            `json:"name"`
+		Status         string            `json:"status"`
+		Roles          string            `json:"roles"`
+		Version        string            `json:"version"`
+		InternalIP     string            `json:"internalIP"`
+		AllocatableCPU string            `json:"allocatableCPU"`
+		AllocatableMem string            `json:"allocatableMemory"`
+		Labels         map[string]string `json:"labels"`
 	}
 	out := make([]nodeView, 0, len(items))
 	for _, n := range items {
@@ -156,6 +156,35 @@ func (h *Handler) ListNodes(c *gin.Context) {
 		})
 	}
 	respond.OK(c, out)
+}
+
+func (h *Handler) Diagnose(c *gin.Context) {
+	cl, err := h.Store.GetCluster(c.Param("id"), true)
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	if cl == nil {
+		respond.NotFound(c, "cluster not found")
+		return
+	}
+	clients, err := h.Pool.Get(cl.ID, cl.Kubeconfig)
+	if err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	rep, err := clients.Diagnose(ctx, kube.DiagnoseOptions{
+		Namespace:  strings.TrimSpace(c.Query("namespace")),
+		PermType:   cl.PermType,
+		FallbackNS: cl.Namespaces,
+	})
+	if err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	respond.OK(c, rep)
 }
 
 func (h *Handler) ListPods(c *gin.Context) {
@@ -230,9 +259,15 @@ func (h *Handler) PodLogs(c *gin.Context) {
 			tail = kube.ClampPodLogTail(v)
 		}
 	}
+	prev := c.Query("previous")
+	q := kube.PodLogQuery{
+		Container: strings.TrimSpace(c.Query("container")),
+		Tail:      tail,
+		Previous:  prev == "1" || strings.EqualFold(prev, "true"),
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
 	defer cancel()
-	logs, err := clients.PodLogs(ctx, c.Param("ns"), c.Param("name"), tail)
+	logs, err := clients.PodLogsQuery(ctx, c.Param("ns"), c.Param("name"), q)
 	if err != nil {
 		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
 		return
