@@ -4,6 +4,7 @@ export const writeApi = {
   createCluster: (payload) => http.post('/write/clusters', payload),
   updateCluster: (id, payload) => http.put(`/write/clusters/${id}`, payload),
   deleteCluster: (id) => http.delete(`/write/clusters/${id}`),
+  testCluster: (id) => http.post(`/write/clusters/${id}/test`),
   restartPod: (id, ns, name) =>
     http.post(`/write/clusters/${id}/namespaces/${ns}/pods/${name}/restart`),
   scaleDeployment: (id, ns, name, replicas) =>

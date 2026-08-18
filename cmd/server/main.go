@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"gitee.com/k8man/internal/api"
@@ -44,7 +46,10 @@ func main() {
 	if err := hostsFile.Reload(); err != nil {
 		log.Fatalf("load hosts file: %v", err)
 	}
-	go hostsFile.Watch(context.Background(), 2*time.Second)
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	go hostsFile.Watch(rootCtx, 2*time.Second)
 
 	var webFS fs.FS
 	sub, err := fs.Sub(webEmbed, "webdist")
@@ -73,8 +78,35 @@ func main() {
 	}
 	log.Printf("k8man %s listening on %s (db=%s etc=%s hosts=%s banner=%s)",
 		version, cfg.Addr, cfg.DBPath, cfg.EtcDir, hostsFile.Path(), bannerNote)
-	if err := r.Run(cfg.Addr); err != nil && err != http.ErrServerClosed {
-		log.Println(err)
-		os.Exit(1)
+
+	srv := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			log.Println(err)
+			os.Exit(1)
+		}
+	case sig := <-sigCh:
+		log.Printf("shutdown signal: %v", sig)
+		rootCancel()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("graceful shutdown: %v", err)
+			_ = srv.Close()
+		}
 	}
 }

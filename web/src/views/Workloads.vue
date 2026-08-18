@@ -1,10 +1,13 @@
 <script setup>
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
 import { asArray, createSeq, errMessage } from '../utils/safe'
+import PodLogsDrawer from '../components/PodLogsDrawer.vue'
+import YamlDrawer from '../components/YamlDrawer.vue'
+import ConfigMapEditor from '../components/ConfigMapEditor.vue'
 
 const { currentClusterId } = useClusterStore()
 const namespaces = ref([])
@@ -19,212 +22,12 @@ const error = ref('')
 const metricsSeq = createSeq()
 const rowsSeq = createSeq()
 const nsSeq = createSeq()
-const logsSeq = createSeq()
 
-const LOG_TAIL = 200
-const LOG_INTERVAL_MS = 5000
-const LOG_W_MIN = 420
-const LOG_W_KEY = 'k8man.logDrawerPx'
+const logsDrawer = ref(null)
+const yamlDrawer = ref(null)
+const cmEditor = ref(null)
 
-const logPanel = ref({
-  open: false,
-  podName: '',
-  content: '',
-  auto: true,
-  loading: false,
-  error: '',
-  truncated: false,
-  updatedAt: ''
-})
-const logWidth = ref(720)
-const logStickBottom = ref(true)
-const logViewRef = ref(null)
-let logTimer = 0
-let logAbort = null
-
-function initLogWidth() {
-  try {
-    const n = Number(localStorage.getItem(LOG_W_KEY))
-    if (Number.isFinite(n) && n >= LOG_W_MIN) {
-      logWidth.value = clampLogWidth(n)
-      return
-    }
-  } catch {
-    /* ignore */
-  }
-  logWidth.value = clampLogWidth(720)
-}
-
-function logMinWidth() {
-  return Math.min(LOG_W_MIN, window.innerWidth)
-}
-
-function clampLogWidth(n) {
-  return Math.min(window.innerWidth, Math.max(logMinWidth(), n))
-}
-
-function stopLogResize() {
-  document.body.classList.remove('is-drawer-resizing')
-}
-
-function startResizeLogs(e) {
-  const startX = e.clientX
-  const startW = logWidth.value
-  const handle = e.currentTarget
-  handle.setPointerCapture?.(e.pointerId)
-  const onMove = (ev) => {
-    logWidth.value = clampLogWidth(startW + (startX - ev.clientX))
-  }
-  const onUp = () => {
-    handle.releasePointerCapture?.(e.pointerId)
-    handle.removeEventListener('pointermove', onMove)
-    handle.removeEventListener('pointerup', onUp)
-    handle.removeEventListener('pointercancel', onUp)
-    stopLogResize()
-    try {
-      localStorage.setItem(LOG_W_KEY, String(Math.round(logWidth.value)))
-    } catch {
-      /* ignore */
-    }
-  }
-  document.body.classList.add('is-drawer-resizing')
-  handle.addEventListener('pointermove', onMove)
-  handle.addEventListener('pointerup', onUp)
-  handle.addEventListener('pointercancel', onUp)
-}
-
-function stopLogTimer() {
-  if (logTimer) {
-    window.clearTimeout(logTimer)
-    logTimer = 0
-  }
-}
-
-function closeLogs() {
-  stopLogTimer()
-  logsSeq.bump()
-  if (logAbort) {
-    logAbort.abort()
-    logAbort = null
-  }
-  logPanel.value = {
-    open: false,
-    podName: '',
-    content: '',
-    auto: true,
-    loading: false,
-    error: '',
-    truncated: false,
-    updatedAt: ''
-  }
-}
-
-function scheduleLogTick() {
-  stopLogTimer()
-  if (!logPanel.value.open || !logPanel.value.auto || document.hidden) return
-  logTimer = window.setTimeout(async () => {
-    logTimer = 0
-    if (!logPanel.value.open || !logPanel.value.auto || document.hidden) return
-    await pullLogs()
-    scheduleLogTick()
-  }, LOG_INTERVAL_MS)
-}
-
-async function pullLogs() {
-  if (!logPanel.value.open || !currentClusterId.value || !ns.value || !logPanel.value.podName) return
-  if (logPanel.value.loading) return
-  const seq = logsSeq.next()
-  logPanel.value.loading = true
-  logPanel.value.error = ''
-  const ac = new AbortController()
-  logAbort = ac
-  try {
-    const r = await readApi.podLogs(currentClusterId.value, ns.value, logPanel.value.podName, {
-      tail: LOG_TAIL,
-      signal: ac.signal
-    })
-    if (!logsSeq.is(seq)) return
-    logPanel.value.content = r?.logs || '(empty)'
-    logPanel.value.truncated = !!r?.truncated
-    logPanel.value.updatedAt = new Date().toLocaleTimeString()
-    await nextTick()
-    if (logStickBottom.value && logViewRef.value) {
-      logViewRef.value.scrollTop = logViewRef.value.scrollHeight
-    }
-  } catch (e) {
-    if (!logsSeq.is(seq)) return
-    if (e?.code === 'canceled') return
-    logPanel.value.error = errMessage(e)
-  } finally {
-    if (logsSeq.is(seq)) logPanel.value.loading = false
-    if (logAbort === ac) logAbort = null
-  }
-}
-
-async function showLogs(pod) {
-  stopLogTimer()
-  logsSeq.bump()
-  if (logAbort) {
-    logAbort.abort()
-    logAbort = null
-  }
-  logStickBottom.value = true
-  logPanel.value = {
-    open: true,
-    podName: pod.name,
-    content: '',
-    auto: true,
-    loading: false,
-    error: '',
-    truncated: false,
-    updatedAt: ''
-  }
-  await pullLogs()
-  scheduleLogTick()
-}
-
-function toggleLogAuto() {
-  logPanel.value.auto = !logPanel.value.auto
-  if (logPanel.value.auto) {
-    pullLogs().then(() => scheduleLogTick())
-  } else {
-    stopLogTimer()
-  }
-}
-
-function onLogScroll(e) {
-  const el = e.target
-  logStickBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48
-}
-
-function onLogVisibility() {
-  if (document.hidden) {
-    stopLogTimer()
-    return
-  }
-  if (logPanel.value.open && logPanel.value.auto) {
-    pullLogs().then(() => scheduleLogTick())
-  }
-}
-
-const yamlEditor = ref({ open: false, kind: '', name: '', yaml: '' })
 const scaleForm = ref({ open: false, kind: 'deployment', name: '', replicas: 1 })
-
-const cmEditor = ref({
-  open: false,
-  name: '',
-  mode: 'kv', // kv | yaml
-  entries: [], // { key, value }
-  binaryKeys: [],
-  yaml: '',
-  busy: false
-})
-/** 复制反馈：'yaml' | `v:${index}` | '' */
-const cmCopied = ref('')
-let cmCopiedTimer = 0
-const CM_VAL_MIN_PX = 120
-const CM_VAL_MAX_VH = 0.55
-const CM_VAL_MAX_PX = 560
 
 const specEditor = ref({
   open: false,
@@ -420,29 +223,29 @@ async function restart(pod) {
   }
 }
 
-async function openYAML(kind, name) {
-  try {
-    const r = await readApi.getYAML(currentClusterId.value, ns.value, kind, name)
-    yamlEditor.value = { open: true, kind, name, yaml: r?.yaml || '' }
-  } catch (e) {
-    error.value = errMessage(e)
-  }
+function showLogs(pod) {
+  logsDrawer.value?.open(pod.name)
 }
 
-async function saveYAML() {
-  try {
-    await writeApi.applyYAML(
-      currentClusterId.value,
-      ns.value,
-      yamlEditor.value.kind,
-      yamlEditor.value.name,
-      yamlEditor.value.yaml
-    )
-    yamlEditor.value.open = false
-    await loadRows()
-  } catch (e) {
-    error.value = errMessage(e)
-  }
+function openYAML(kind, name) {
+  yamlDrawer.value?.open(kind, name)
+}
+
+function openConfigMap(name) {
+  cmEditor.value?.open(name)
+}
+
+function closeLogsOnly() {
+  logsDrawer.value?.close()
+}
+
+/** 换集群 / 换命名空间时关闭全部编辑抽屉，避免对着旧上下文保存 */
+function closeAllEditors() {
+  logsDrawer.value?.close()
+  yamlDrawer.value?.close()
+  cmEditor.value?.close()
+  scaleForm.value.open = false
+  specEditor.value.open = false
 }
 
 function openScale(row) {
@@ -481,184 +284,6 @@ async function doScale() {
 
 function yamlKind(kind) {
   return String(kind || '').toLowerCase()
-}
-
-function dataToEntries(data) {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return []
-  return Object.keys(data)
-    .sort()
-    .map((key) => ({ key, value: data[key] ?? '' }))
-}
-
-function entriesToData(entries) {
-  const data = {}
-  for (const e of asArray(entries)) {
-    const k = String(e.key || '').trim()
-    if (!k) continue
-    if (Object.prototype.hasOwnProperty.call(data, k)) {
-      throw new Error(`重复键：${k}`)
-    }
-    data[k] = e.value ?? ''
-  }
-  return data
-}
-
-function cmValMaxPx() {
-  return Math.round(Math.min(window.innerHeight * CM_VAL_MAX_VH, CM_VAL_MAX_PX))
-}
-
-/** 按内容增高，夹在最小/最大高度之间 */
-function fitCmValue(el) {
-  if (!el) return
-  const max = cmValMaxPx()
-  el.style.height = '0px'
-  const content = el.scrollHeight
-  const next = Math.min(max, Math.max(CM_VAL_MIN_PX, content))
-  el.style.height = `${next}px`
-  el.style.overflowY = content > max ? 'auto' : 'hidden'
-}
-
-function fitAllCmValues() {
-  nextTick(() => {
-    document.querySelectorAll('.cm-kv-row textarea.kv-val').forEach(fitCmValue)
-  })
-}
-
-async function copyText(text, token) {
-  const t = String(text ?? '')
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(t)
-    } else {
-      const ta = document.createElement('textarea')
-      ta.value = t
-      ta.setAttribute('readonly', '')
-      ta.style.position = 'fixed'
-      ta.style.left = '-9999px'
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
-    }
-    cmCopied.value = token
-    window.clearTimeout(cmCopiedTimer)
-    cmCopiedTimer = window.setTimeout(() => {
-      if (cmCopied.value === token) cmCopied.value = ''
-    }, 1500)
-  } catch {
-    alert('复制失败')
-  }
-}
-
-function copyCmValue(i) {
-  const e = cmEditor.value.entries[i]
-  if (!e) return
-  copyText(e.value ?? '', `v:${i}`)
-}
-
-function copyCmYaml() {
-  copyText(cmEditor.value.yaml || '', 'yaml')
-}
-
-async function openConfigMap(name) {
-  error.value = ''
-  cmCopied.value = ''
-  try {
-    const detail = await readApi.getConfigMap(currentClusterId.value, ns.value, name)
-    cmEditor.value = {
-      open: true,
-      name,
-      mode: 'kv',
-      entries: dataToEntries(detail?.data),
-      binaryKeys: asArray(detail?.binaryKeys),
-      yaml: '',
-      busy: false
-    }
-    fitAllCmValues()
-  } catch (e) {
-    error.value = errMessage(e)
-  }
-}
-
-function addCmEntry() {
-  cmEditor.value.entries.push({ key: '', value: '' })
-  fitAllCmValues()
-}
-
-function removeCmEntry(i) {
-  cmEditor.value.entries.splice(i, 1)
-}
-
-async function switchCmMode(mode) {
-  if (mode === cmEditor.value.mode) return
-  if (
-    !confirm(
-      mode === 'yaml'
-        ? '切换到 YAML 会丢弃未保存的键值修改，并从集群重新加载。继续？'
-        : '切换到键值会丢弃未保存的 YAML 修改，并从集群重新加载。继续？'
-    )
-  ) {
-    return
-  }
-  error.value = ''
-  if (mode === 'yaml') {
-    try {
-      const r = await readApi.getYAML(
-        currentClusterId.value,
-        ns.value,
-        'configmap',
-        cmEditor.value.name
-      )
-      cmEditor.value.yaml = r?.yaml || ''
-      cmEditor.value.mode = 'yaml'
-    } catch (e) {
-      error.value = errMessage(e)
-    }
-    return
-  }
-  try {
-    const detail = await readApi.getConfigMap(
-      currentClusterId.value,
-      ns.value,
-      cmEditor.value.name
-    )
-    cmEditor.value.entries = dataToEntries(detail?.data)
-    cmEditor.value.binaryKeys = asArray(detail?.binaryKeys)
-    cmEditor.value.mode = 'kv'
-    fitAllCmValues()
-  } catch (e) {
-    error.value = errMessage(e)
-  }
-}
-
-async function saveConfigMap() {
-  error.value = ''
-  cmEditor.value.busy = true
-  try {
-    if (cmEditor.value.mode === 'yaml') {
-      await writeApi.applyYAML(
-        currentClusterId.value,
-        ns.value,
-        'configmap',
-        cmEditor.value.name,
-        cmEditor.value.yaml
-      )
-    } else {
-      const data = entriesToData(cmEditor.value.entries)
-      await writeApi.patchConfigMapData(
-        currentClusterId.value,
-        ns.value,
-        cmEditor.value.name,
-        data
-      )
-    }
-    cmEditor.value.open = false
-    await loadRows()
-  } catch (e) {
-    error.value = errMessage(e)
-  } finally {
-    cmEditor.value.busy = false
-  }
 }
 
 function applyContainerToForm(ctr) {
@@ -794,22 +419,25 @@ async function saveSpecEdit() {
   }
 }
 
+function onChildError(msg) {
+  error.value = msg
+}
+
 watch([currentClusterId], async () => {
-  closeLogs()
+  closeAllEditors()
   await loadNamespaces()
+})
+watch(ns, () => {
+  closeAllEditors()
+})
+watch(tab, () => {
+  // 同命名空间切 Tab 只关日志；保留 YAML/ConfigMap 未保存编辑
+  closeLogsOnly()
 })
 onMounted(async () => {
-  initLogWidth()
-  document.addEventListener('visibilitychange', onLogVisibility)
   await loadNamespaces()
 })
-onUnmounted(() => {
-  document.removeEventListener('visibilitychange', onLogVisibility)
-  stopLogResize()
-  closeLogs()
-})
 watch([ns, tab], () => {
-  closeLogs()
   if (!ns.value) {
     rowsSeq.bump()
     metricsSeq.bump()
@@ -984,71 +612,25 @@ watch([ns, tab], () => {
       </template>
     </template>
 
-    <div v-if="logPanel.open" class="drawer-backdrop" @click="closeLogs"></div>
-    <div
-      v-if="logPanel.open"
-      class="drawer drawer-logs"
-      :style="{ width: logWidth + 'px' }"
-    >
-      <div
-        class="drawer-resize"
-        title="拖拽调整宽度"
-        @pointerdown.prevent="startResizeLogs"
-      ></div>
-      <div class="toolbar">
-        <strong>日志 · {{ logPanel.podName }}</strong>
-        <div class="actions">
-          <button class="btn btn-sm" type="button" @click="toggleLogAuto">
-            {{ logPanel.auto ? '暂停' : '继续' }}
-          </button>
-          <button class="btn btn-sm" type="button" :disabled="logPanel.loading" @click="pullLogs">刷新</button>
-          <button class="btn btn-sm" type="button" @click="closeLogs">关闭</button>
-        </div>
-      </div>
-      <p class="muted log-hint">
-        尾部 {{ LOG_TAIL }} 行 · 每 {{ LOG_INTERVAL_MS / 1000 }}s 刷新
-        <template v-if="logPanel.updatedAt"> · {{ logPanel.updatedAt }}</template>
-        <template v-if="logPanel.loading"> · 加载中…</template>
-        <template v-if="logPanel.truncated"> · 已截断（≤256KB）</template>
-      </p>
-      <p v-if="logPanel.error" class="error">{{ logPanel.error }}</p>
-      <div class="field-copy-wrap log-copy-wrap">
-        <textarea
-          ref="logViewRef"
-          class="log-view"
-          readonly
-          spellcheck="false"
-          :value="logPanel.content"
-          @scroll="onLogScroll"
-        ></textarea>
-        <button
-          type="button"
-          class="field-copy"
-          :class="{ 'is-copied': cmCopied === 'logs' }"
-          @click="copyText(logPanel.content, 'logs')"
-        >{{ cmCopied === 'logs' ? '已复制' : '复制' }}</button>
-      </div>
-    </div>
-
-    <div v-if="yamlEditor.open" class="drawer-backdrop" @click="yamlEditor.open = false"></div>
-    <div v-if="yamlEditor.open" class="drawer drawer-wide">
-      <div class="toolbar">
-        <strong>YAML · {{ yamlEditor.kind }}/{{ yamlEditor.name }}</strong>
-        <div class="actions">
-          <button class="btn btn-primary btn-sm" @click="saveYAML">应用</button>
-          <button class="btn btn-sm" @click="yamlEditor.open = false">关闭</button>
-        </div>
-      </div>
-      <div class="field-copy-wrap">
-        <textarea v-model="yamlEditor.yaml" class="cm-yaml"></textarea>
-        <button
-          type="button"
-          class="field-copy"
-          :class="{ 'is-copied': cmCopied === 'res-yaml' }"
-          @click="copyText(yamlEditor.yaml, 'res-yaml')"
-        >{{ cmCopied === 'res-yaml' ? '已复制' : '复制' }}</button>
-      </div>
-    </div>
+    <PodLogsDrawer
+      ref="logsDrawer"
+      :cluster-id="currentClusterId"
+      :ns="ns"
+    />
+    <YamlDrawer
+      ref="yamlDrawer"
+      :cluster-id="currentClusterId"
+      :ns="ns"
+      @saved="loadRows"
+      @error="onChildError"
+    />
+    <ConfigMapEditor
+      ref="cmEditor"
+      :cluster-id="currentClusterId"
+      :ns="ns"
+      @saved="loadRows"
+      @error="onChildError"
+    />
 
     <div v-if="scaleForm.open" class="drawer-backdrop" @click="scaleForm.open = false"></div>
     <div v-if="scaleForm.open" class="drawer" style="width:min(360px,100%)">
@@ -1065,72 +647,6 @@ watch([ns, tab], () => {
       <div class="actions">
         <button class="btn btn-primary" @click="doScale">确定</button>
         <button class="btn" @click="scaleForm.open = false">取消</button>
-      </div>
-    </div>
-
-    <!-- ConfigMap editor -->
-    <div v-if="cmEditor.open" class="drawer-backdrop" @click="cmEditor.open = false"></div>
-    <div v-if="cmEditor.open" class="drawer drawer-wide">
-      <div class="toolbar">
-        <strong>ConfigMap · {{ cmEditor.name }}</strong>
-        <div class="actions">
-          <button
-            class="btn btn-sm"
-            :class="{ 'btn-primary': cmEditor.mode === 'kv' }"
-            @click="switchCmMode('kv')"
-          >键值</button>
-          <button
-            class="btn btn-sm"
-            :class="{ 'btn-primary': cmEditor.mode === 'yaml' }"
-            @click="switchCmMode('yaml')"
-          >YAML</button>
-          <button class="btn btn-primary btn-sm" :disabled="cmEditor.busy" @click="saveConfigMap">
-            {{ cmEditor.busy ? '保存中…' : '保存' }}
-          </button>
-          <button class="btn btn-sm" @click="cmEditor.open = false">关闭</button>
-        </div>
-      </div>
-      <p v-if="error" class="error">{{ error }}</p>
-      <p v-if="cmEditor.binaryKeys.length" class="muted">
-        含二进制键（不可在键值表编辑）：{{ cmEditor.binaryKeys.join(', ') }}
-      </p>
-      <template v-if="cmEditor.mode === 'kv'">
-        <div class="kv-list cm-kv-list">
-          <div v-for="(e, i) in cmEditor.entries" :key="i" class="kv-row cm-kv-row">
-            <input v-model="e.key" placeholder="key" class="kv-key" />
-            <div class="cm-kv-actions">
-              <button class="btn btn-sm btn-danger" @click="removeCmEntry(i)">删</button>
-            </div>
-            <div class="cm-kv-val-wrap field-copy-wrap">
-              <textarea
-                v-model="e.value"
-                placeholder="value"
-                class="kv-val"
-                rows="4"
-                @input="fitCmValue($event.target)"
-              ></textarea>
-              <button
-                type="button"
-                class="field-copy"
-                :class="{ 'is-copied': cmCopied === 'v:' + i }"
-                @click="copyCmValue(i)"
-              >{{ cmCopied === 'v:' + i ? '已复制' : '复制' }}</button>
-            </div>
-          </div>
-        </div>
-        <button class="btn btn-sm" @click="addCmEntry">添加键</button>
-      </template>
-      <div v-else class="field-copy-wrap">
-        <textarea
-          v-model="cmEditor.yaml"
-          class="cm-yaml"
-        ></textarea>
-        <button
-          type="button"
-          class="field-copy"
-          :class="{ 'is-copied': cmCopied === 'yaml' }"
-          @click="copyCmYaml"
-        >{{ cmCopied === 'yaml' ? '已复制' : '复制' }}</button>
       </div>
     </div>
 

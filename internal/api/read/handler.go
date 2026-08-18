@@ -66,41 +66,6 @@ func (h *Handler) GetCluster(c *gin.Context) {
 	respond.OK(c, cl)
 }
 
-func (h *Handler) TestCluster(c *gin.Context) {
-	cl, err := h.Store.GetCluster(c.Param("id"), true)
-	if err != nil {
-		respond.Internal(c, err.Error())
-		return
-	}
-	if cl == nil {
-		respond.NotFound(c, "cluster not found")
-		return
-	}
-	ctx, cancel := h.ctx(c)
-	defer cancel()
-	if h.Hosts != nil {
-		_, _ = h.Hosts.SyncIfChanged()
-	}
-	probe := kube.Probe(ctx, cl.Kubeconfig, h.Pool.Hosts())
-	cl.Server = probe.Server
-	cl.PermType = probe.PermType
-	cl.Namespaces = probe.Namespaces
-	cl.Status = probe.Status
-	cl.LastError = probe.LastError
-	cl.UpdatedAt = time.Now().UTC()
-	if err := h.Store.UpdateCluster(cl); err != nil {
-		respond.Internal(c, err.Error())
-		return
-	}
-	respond.OK(c, gin.H{
-		"server":     probe.Server,
-		"permType":   probe.PermType,
-		"namespaces": probe.Namespaces,
-		"status":     probe.Status,
-		"lastError":  probe.LastError,
-	})
-}
-
 func (h *Handler) ListNamespaces(c *gin.Context) {
 	clients, ok := h.clients(c)
 	if !ok {

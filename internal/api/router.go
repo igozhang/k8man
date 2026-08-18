@@ -38,6 +38,16 @@ func NewRouter(d Deps) *gin.Engine {
 	wh := &write.Handler{Store: d.Store, Pool: d.Pool, Hosts: d.Hosts}
 
 	r.GET("/api/health", func(c *gin.Context) {
+		if d.Store != nil {
+			if err := d.Store.Ping(); err != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"status":  "error",
+					"version": d.Version,
+					"error":   "database",
+				})
+				return
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "version": d.Version})
 	})
 
@@ -66,7 +76,6 @@ func NewRouter(d Deps) *gin.Engine {
 	{
 		readGroup.GET("/clusters", rh.ListClusters)
 		readGroup.GET("/clusters/:id", rh.GetCluster)
-		readGroup.POST("/clusters/:id/test", rh.TestCluster)
 		readGroup.GET("/clusters/:id/namespaces", rh.ListNamespaces)
 		readGroup.GET("/clusters/:id/nodes", rh.ListNodes)
 		readGroup.GET("/clusters/:id/namespaces/:ns/pods", rh.ListPods)
@@ -93,6 +102,7 @@ func NewRouter(d Deps) *gin.Engine {
 		writeGroup.POST("/clusters", wh.CreateCluster)
 		writeGroup.PUT("/clusters/:id", wh.UpdateCluster)
 		writeGroup.DELETE("/clusters/:id", wh.DeleteCluster)
+		writeGroup.POST("/clusters/:id/test", wh.TestCluster)
 		writeGroup.POST("/clusters/:id/namespaces/:ns/pods/:name/restart", wh.RestartPod)
 		writeGroup.PATCH("/clusters/:id/namespaces/:ns/deployments/:name/scale", wh.ScaleDeployment)
 		writeGroup.PATCH("/clusters/:id/namespaces/:ns/statefulsets/:name/scale", wh.ScaleStatefulSet)

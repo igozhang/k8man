@@ -262,7 +262,7 @@ async function testCurrent() {
   error.value = ''
   notice.value = ''
   try {
-    const r = await readApi.testCluster(editingId.value)
+    const r = await writeApi.testCluster(editingId.value)
     await load()
     // 刷新后保持编辑态展示最新状态标记
     const cur = list.value.find((c) => c.id === editingId.value)

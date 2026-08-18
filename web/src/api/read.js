@@ -4,7 +4,6 @@ export const readApi = {
   getUI: () => http.get('/read/ui'),
   listClusters: () => http.get('/read/clusters'),
   getCluster: (id) => http.get(`/read/clusters/${id}`),
-  testCluster: (id) => http.post(`/read/clusters/${id}/test`),
   listNamespaces: (id) => http.get(`/read/clusters/${id}/namespaces`),
   listNodes: (id) => http.get(`/read/clusters/${id}/nodes`),
   listPods: (id, ns) => http.get(`/read/clusters/${id}/namespaces/${ns}/pods`),

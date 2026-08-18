@@ -6,7 +6,7 @@
 
 ## Health
 
-- `GET /api/health`
+- `GET /api/health` — 存活/就绪探针；会 `Ping` SQLite。正常 `{ "status": "ok", "version": "..." }`；数据库不可用时 HTTP **503**，`{ "status": "error", "version": "...", "error": "database" }`
 
 ## UI
 
@@ -21,7 +21,6 @@
 |------|------|------|
 | GET | `/clusters` | 集群列表（不含 kubeconfig 原文） |
 | GET | `/clusters/:id` | 集群详情 |
-| POST | `/clusters/:id/test` | 连通性与权限重探测（不改库） |
 | GET | `/clusters/:id/namespaces` | Namespace 列表 |
 | GET | `/clusters/:id/nodes` | 节点列表（project 返回 403） |
 
@@ -84,6 +83,7 @@
 | POST | `/clusters` | 导入 kubeconfig body: `{name,description,kubeconfig}` |
 | PUT | `/clusters/:id` | 更新（可只改 name/description，或同时更新 kubeconfig） |
 | DELETE | `/clusters/:id` | 删除 |
+| POST | `/clusters/:id/test` | 连通性与权限重探测，并回写 `status` / `permType` / `namespaces` / `server` / `lastError` |
 
 ### 运维
 
