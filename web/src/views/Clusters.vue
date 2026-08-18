@@ -11,7 +11,7 @@ const showForm = ref(false)
 /** create | edit */
 const formMode = ref('create')
 const editingId = ref('')
-const form = ref({ name: '', description: '', kubeconfig: '', serverOverride: '', insecureSkipTLS: false })
+const form = ref({ name: '', description: '', kubeconfig: '', serverOverride: '', insecureSkipTLS: true })
 const busy = ref(false)
 /** paste | upload */
 const importMode = ref('paste')
@@ -141,7 +141,7 @@ async function removeHost(h) {
 function openCreate() {
   editingId.value = ''
   formMode.value = 'create'
-  form.value = { name: '', description: '', kubeconfig: '', serverOverride: '', insecureSkipTLS: false }
+  form.value = { name: '', description: '', kubeconfig: '', serverOverride: '', insecureSkipTLS: true }
   importMode.value = 'paste'
   uploadFileName.value = ''
   notice.value = ''
@@ -373,7 +373,7 @@ onMounted(() => {
         <label class="check-label">
           <input v-model="form.insecureSkipTLS" type="checkbox" />
           跳过 TLS 证书校验
-          <span class="muted">（内网 / Rancher 证书不受信时勾选；等同 kubeconfig 的 insecure-skip-tls-verify）</span>
+          <span class="muted">（添加时默认跳过；证书受信时请取消勾选。等同 kubeconfig 的 insecure-skip-tls-verify）</span>
         </label>
       </div>
 
