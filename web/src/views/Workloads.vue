@@ -10,7 +10,7 @@ import {
   cacheFresh,
   cacheGet,
   cacheKey,
-  cacheSet,
+  cacheLoad,
   getViewPref,
   invalidateNsLists,
   setViewPref
@@ -70,14 +70,6 @@ function persistWorkloadsPref() {
   setViewPref('workloads', currentClusterId.value, { ns: ns.value, tab: tab.value })
 }
 
-function rowCacheKind() {
-  return tab.value === 'metrics' ? 'podMetrics' : tab.value
-}
-
-function rowCacheKey() {
-  return cacheKey(rowCacheKind(), currentClusterId.value, ns.value)
-}
-
 function applyCachedRows(data) {
   if (tab.value === 'metrics') podMetrics.value = asArray(data)
   else rows.value = asArray(data)
@@ -91,7 +83,8 @@ function clearRows() {
 
 async function loadNamespaces({ force = false } = {}) {
   const seq = nsSeq.next()
-  if (!currentClusterId.value) {
+  const clusterId = currentClusterId.value
+  if (!clusterId) {
     namespaces.value = []
     ns.value = ''
     clearRows()
@@ -99,14 +92,15 @@ async function loadNamespaces({ force = false } = {}) {
     refreshing.value = false
     return
   }
-  const key = cacheKey('namespaces', currentClusterId.value)
+  const key = cacheKey('namespaces', clusterId)
   const hit = cacheGet(key)
   if (hit) applyNsList(asArray(hit.data))
   if (!force && cacheFresh(key, TTL.namespaces)) return
   try {
-    const list = asArray(await readApi.listNamespaces(currentClusterId.value))
+    const list = asArray(
+      await cacheLoad(key, TTL.namespaces, () => readApi.listNamespaces(clusterId), { force })
+    )
     if (!nsSeq.is(seq)) return
-    cacheSet(key, list)
     applyNsList(list)
     error.value = ''
   } catch (e) {
@@ -162,13 +156,11 @@ function mapDaemonSet(ds) {
   }
 }
 
-async function loadControllers() {
-  const id = currentClusterId.value
-  const namespace = ns.value
+async function loadControllers(clusterId, namespace) {
   const settled = await Promise.allSettled([
-    readApi.listDeployments(id, namespace),
-    readApi.listStatefulSets(id, namespace),
-    readApi.listDaemonSets(id, namespace)
+    readApi.listDeployments(clusterId, namespace),
+    readApi.listStatefulSets(clusterId, namespace),
+    readApi.listDaemonSets(clusterId, namespace)
   ])
   const deps = settled[0].status === 'fulfilled' ? asArray(settled[0].value) : []
   const sts = settled[1].status === 'fulfilled' ? asArray(settled[1].value) : []
@@ -189,41 +181,44 @@ async function loadControllers() {
   return list
 }
 
-async function fetchRowItems() {
-  if (tab.value === 'metrics') {
-    return asArray(await readApi.podMetrics(currentClusterId.value, ns.value))
+async function fetchRowItems(clusterId, namespace, kind) {
+  if (kind === 'metrics') {
+    return asArray(await readApi.podMetrics(clusterId, namespace))
   }
-  if (tab.value === 'pods') {
-    return asArray(await readApi.listPods(currentClusterId.value, ns.value))
+  if (kind === 'pods') {
+    return asArray(await readApi.listPods(clusterId, namespace))
   }
-  if (tab.value === 'controllers') {
-    return await loadControllers()
+  if (kind === 'controllers') {
+    return await loadControllers(clusterId, namespace)
   }
-  if (tab.value === 'configmaps') {
-    return asArray(await readApi.listConfigMaps(currentClusterId.value, ns.value))
+  if (kind === 'configmaps') {
+    return asArray(await readApi.listConfigMaps(clusterId, namespace))
   }
-  if (tab.value === 'services') {
-    return asArray(await readApi.listServices(currentClusterId.value, ns.value))
+  if (kind === 'services') {
+    return asArray(await readApi.listServices(clusterId, namespace))
   }
   return []
 }
 
-function ttlForTab() {
-  if (tab.value === 'metrics') return TTL.podMetrics
-  if (tab.value === 'controllers') return TTL.controllers
-  if (tab.value === 'services') return TTL.services
-  if (tab.value === 'configmaps') return TTL.configmaps
+function ttlForTab(kind) {
+  if (kind === 'metrics') return TTL.podMetrics
+  if (kind === 'controllers') return TTL.controllers
+  if (kind === 'services') return TTL.services
+  if (kind === 'configmaps') return TTL.configmaps
   return TTL.pods
 }
 
 async function loadRows({ force = false } = {}) {
   const seq = rowsSeq.next()
+  const clusterId = currentClusterId.value
+  const namespace = ns.value
+  const kind = tab.value
   error.value = ''
-  if (tab.value !== 'metrics') {
+  if (kind !== 'metrics') {
     podMetrics.value = []
     metricsTip.value = ''
   }
-  if (!currentClusterId.value || !ns.value) {
+  if (!clusterId || !namespace) {
     clearRows()
     if (rowsSeq.is(seq)) {
       loading.value = false
@@ -232,30 +227,30 @@ async function loadRows({ force = false } = {}) {
     return
   }
 
-  const key = rowCacheKey()
+  const key = cacheKey(kind === 'metrics' ? 'podMetrics' : kind, clusterId, namespace)
+  const ttl = ttlForTab(kind)
   const hit = cacheGet(key)
   if (hit) applyCachedRows(hit.data)
-  else if (tab.value === 'metrics') podMetrics.value = []
+  else if (kind === 'metrics') podMetrics.value = []
   else rows.value = []
 
-  if (!force && cacheFresh(key, ttlForTab())) {
+  if (!force && cacheFresh(key, ttl)) {
     loading.value = false
     refreshing.value = false
     return
   }
 
-  const has = tab.value === 'metrics' ? podMetrics.value.length > 0 : rows.value.length > 0
+  const has = kind === 'metrics' ? podMetrics.value.length > 0 : rows.value.length > 0
   loading.value = !has
   refreshing.value = has
   try {
-    const items = await fetchRowItems()
+    const items = await cacheLoad(key, ttl, () => fetchRowItems(clusterId, namespace, kind), { force })
     if (!rowsSeq.is(seq)) return
-    cacheSet(key, items)
     applyCachedRows(items)
-    if (tab.value === 'metrics') metricsTip.value = ''
+    if (kind === 'metrics') metricsTip.value = ''
   } catch (e) {
     if (!rowsSeq.is(seq)) return
-    if (tab.value === 'metrics') {
+    if (kind === 'metrics') {
       metricsTip.value = metricsErrorTip(e)
       error.value = ''
       if (!hit) podMetrics.value = []
@@ -524,7 +519,7 @@ watch([ns, tab], () => {
   <div>
     <h1>工作负载</h1>
     <p class="page-desc">
-      查看与运维 Pod / 控制器 / Service / ConfigMap；首次请选择命名空间。同一会话内会沿用上次选择，并复用未过期的列表。
+      查看与运维 Pod / 控制器 / Service / ConfigMap；首次请选择命名空间。当前选用集群在 TTL 内复用列表并合并重复请求；切页不先清空。
     </p>
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>

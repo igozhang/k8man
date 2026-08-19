@@ -1,9 +1,10 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { marked } from 'marked'
 import { readApi } from '../api'
 import { errMessage } from '../utils/safe'
+import { TTL, cacheGet, cacheKey, cacheLoad } from '../utils/resourceCache'
 
 const route = useRoute()
 const doc = ref(null)
@@ -16,14 +17,31 @@ const html = computed(() => {
   }
 })
 
-onMounted(async () => {
-  try {
-    doc.value = await readApi.getDoc(route.params.id)
-  } catch (e) {
-    error.value = errMessage(e)
+let docSeq = 0
+
+async function load() {
+  const seq = ++docSeq
+  const docId = String(route.params.id || '')
+  error.value = ''
+  if (!docId) {
     doc.value = null
+    return
   }
-})
+  const docKey = cacheKey('doc', 'local', docId)
+  const hit = cacheGet(docKey)
+  if (hit?.data) doc.value = hit.data
+  try {
+    const data = await cacheLoad(docKey, TTL.docs, () => readApi.getDoc(docId))
+    if (seq !== docSeq) return
+    doc.value = data
+  } catch (e) {
+    if (seq !== docSeq) return
+    error.value = errMessage(e)
+    if (!hit?.data) doc.value = null
+  }
+}
+
+watch(() => String(route.params.id || ''), load, { immediate: true })
 </script>
 
 <template>

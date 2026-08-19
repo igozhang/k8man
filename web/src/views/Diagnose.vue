@@ -1,16 +1,19 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { readApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { asArray, createSeq, errMessage } from '../utils/safe'
 import { copyText } from '../utils/clipboard'
-import { TTL, cacheFresh, cacheGet, cacheKey, cacheSet } from '../utils/resourceCache'
+import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad } from '../utils/resourceCache'
 import { permTypeLabel } from '../utils/labels'
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import TextDrawer from '../components/TextDrawer.vue'
 
 const { currentClusterId, currentCluster } = useClusterStore()
+const route = useRoute()
+const DIAG_CATS = new Set(['node', 'workload', 'pod', 'event'])
 
 const busy = ref(false)
 const hasReport = ref(false)
@@ -170,11 +173,24 @@ function messageBody(row) {
   return String(row?.message || '').replace(/^x\d+\s*·\s*/, '').trim()
 }
 
+function evidenceSelector(row) {
+  for (const e of evidenceList(row)) {
+    const s = String(e || '').trim()
+    if (s.startsWith('selector=')) return s.slice('selector='.length).trim()
+  }
+  return ''
+}
+
+function hasRestartEvidence(row) {
+  return evidenceList(row).some((e) => /^restart\[\d+\]/.test(String(e || '').trim()))
+}
+
 function isDuplicateEvidence(row, line) {
   const s = String(line || '').trim()
   if (!s) return true
   if (/^(出处|对象|上报组件|上报节点|容器|次数):/.test(s)) return true
   if (row.node && /^node=/.test(s)) return true
+  if (/^selector=/.test(s)) return true
   if (row.category === 'event' && s.startsWith('Warning ')) {
     const body = messageBody(row)
     if (row.reason && s.includes(row.reason) && body && s.includes(body.slice(0, 80))) return true
@@ -248,10 +264,27 @@ function kubectlCommands(row, logsInfo) {
   } else if (row.category === 'workload') {
     cmds.push({ comment: '副本状态', cmd: `kubectl get ${kind} ${name}${nsFlag}` })
     cmds.push({ comment: '条件与近期事件', cmd: `kubectl describe ${kind} ${name}${nsFlag}` })
+    const sel = evidenceSelector(row)
+    if (sel && row.namespace) {
+      cmds.push({
+        comment: '下属 Pod 重启计数与上次退出',
+        cmd: `kubectl get pods${nsFlag} -l ${shArg(sel)} -o 'custom-columns=NAME:.metadata.name,RESTARTS:.status.containerStatuses[0].restartCount,LAST:.status.containerStatuses[0].lastState.terminated.reason,FINISHED:.status.containerStatuses[0].lastState.terminated.finishedAt'`
+      })
+    }
   } else if (row.category === 'pod') {
     cmds.push({ comment: 'Pod 所在节点与 IP', cmd: `kubectl get pod ${name}${nsFlag} -o wide` })
     cmds.push({ comment: '容器状态与探针', cmd: `kubectl describe pod ${name}${nsFlag}` })
     cmds.push({ comment: 'Warning 事件', cmd: eventsCmd })
+    if (hasRestartEvidence(row) && row.namespace) {
+      cmds.push({
+        comment: '上次退出（API 只保留 1 次）',
+        cmd: `kubectl get pod ${name}${nsFlag} -o jsonpath='{range .status.containerStatuses[*]}{.name} lastState={.lastState.terminated.reason} exit={.lastState.terminated.exitCode} finished={.lastState.terminated.finishedAt} restarts={.restartCount}{"\\n"}{end}'`
+      })
+      cmds.push({
+        comment: '重启相关事件（含聚合 BackOff）',
+        cmd: `kubectl get events${nsFlag} --field-selector involvedObject.kind=Pod,involvedObject.name=${name} --sort-by=.lastTimestamp`
+      })
+    }
   }
 
   if (canLogs(row)) {
@@ -569,7 +602,8 @@ async function load(opts = {}) {
     busy.value = false
     return
   }
-  const key = cacheKey('diagnose', currentClusterId.value)
+  const clusterId = currentClusterId.value
+  const key = cacheKey('diagnose', clusterId)
   const hit = cacheGet(key)
   if (hit?.data) applyReport(hit.data)
   else emptyReport()
@@ -579,17 +613,14 @@ async function load(opts = {}) {
   }
   busy.value = true
   try {
-    const data = await readApi.diagnose(currentClusterId.value)
+    const data = await cacheLoad(
+      key,
+      TTL.diagnose,
+      () => readApi.diagnose(clusterId),
+      { force }
+    )
     if (!loadSeq.is(seq)) return
-    applyReport(data)
-    cacheSet(key, {
-      issues: issues.value,
-      counts: counts.value,
-      truncated: truncated.value,
-      skippedNodes: skippedNodes.value,
-      errors: scanErrors.value,
-      scan: scan.value
-    })
+    if (data) applyReport(data)
   } catch (e) {
     if (!loadSeq.is(seq)) return
     error.value = errMessage(e)
@@ -602,6 +633,13 @@ async function load(opts = {}) {
 function toggleCategory(cat) {
   if (cat === 'node' && isProject.value) return
   category.value = category.value === cat ? '' : cat
+}
+
+function applyQueryCategory() {
+  const q = String(route.query.category || '')
+  if (!DIAG_CATS.has(q)) return
+  if (q === 'node' && isProject.value) return
+  category.value = q
 }
 
 function onChildError(msg) {
@@ -630,8 +668,10 @@ watch(currentClusterId, () => {
   logsDrawer.value?.close()
   yamlDrawer.value?.close()
   explainDrawer.value?.close()
+  applyQueryCategory()
   load()
 })
+watch(() => String(route.query.category || ''), applyQueryCategory)
 onMounted(() => {
   try {
     const v = localStorage.getItem(RULES_KEY)
@@ -642,6 +682,7 @@ onMounted(() => {
   }
   if (rulesEl.value) rulesEl.value.open = rulesOpen.value
   window.addEventListener('resize', measureSummary)
+  applyQueryCategory()
   load()
   nextTick(measureSummary)
 })
@@ -843,6 +884,12 @@ onUnmounted(() => {
         <li>Pod 正在 CrashLoop / 拉镜像失败 / CreateContainerError / OOMKilled → 严重。Failed（非 Evicted/Shutdown 等）→ 严重。Unknown、Running 未就绪 → 警告。</li>
         <li>Pending Unschedulable 超过 2 分钟，或其它 Pending 超过 15 分钟 → 警告。Succeeded、刚创建的 Pending 不算。</li>
         <li>当前 Ready，但最近 2 小时内重启过且累计 ≥ 3 次 → 警告。上次重启更早的生命周期计数不算。</li>
+        <li>控制器副本已 Ready，但下属 Pod 仍符合上一条（CrashLoop / OOM / 近 2h 重启 ≥ 3）→ 警告 Restarts。已有 NotReady 时只把重启时间线挂到说明，不另占一行。滚动宽限期内不单独占控制器 Restarts 行。</li>
+      </ul>
+      <h3>说明里的最近重启</h3>
+      <ul>
+        <li>Pod / 控制器说明尽力列出最近 3 次重启时间与原因：优先 <code>status.lastState</code>（API 只保留上次退出），其余来自 Warning 的 Killing / BackOff。</li>
+        <li>凑不满 3 条会写 restartNote，不编造时间。事件常被聚合成一条 BackOff ×N，只能确认 lastSeen。</li>
       </ul>
       <h3>算事件</h3>
       <ul>

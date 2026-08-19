@@ -22,8 +22,8 @@
 |------|------|------|
 | GET | `/clusters` | 集群列表（不含 kubeconfig 原文） |
 | GET | `/clusters/:id` | 集群详情 |
-| GET | `/clusters/:id/namespaces` | Namespace 列表 |
-| GET | `/clusters/:id/nodes` | 节点列表（project 返回 403） |
+| GET | `/clusters/:id/namespaces` | Namespace 列表（List 首页 `resourceVersion=0` 走 API Server watch cache） |
+| GET | `/clusters/:id/nodes` | 节点列表（project 返回 403；同样走 watch cache） |
 | GET | `/clusters/:id/diagnose?namespace=` | 诊断扫描，只返回异常项（见下方） |
 
 ### 诊断
@@ -53,6 +53,9 @@
       "nodeIP": "10.0.0.8",
       "container": "app",
       "evidence": [
+        "restart[1] 1m ago pod=web-0 container=app OOMKilled exit=137 · status.lastState",
+        "restart[2] 8m ago pod=web-0 container=app BackOff ×4 · event",
+        "restart[3] 12m ago pod=web-0 container=app Killing · event",
         "phase=Running ready=0/1 restarts=12",
         "node=n1 ip=10.0.0.8",
         "app waiting CrashLoopBackOff restarts=12: back-off | lastExit OOMKilled exit=137 1m ago"
@@ -83,6 +86,8 @@
 - `logExcerpt`：关键行 ±1 行有限上下文（最多 8 行）；排序后优先 CrashLoop/OOM，最多 8 个严重 Pod；ImagePull / Evicted 等无容器日志的不拉，接口失败也不把错误写进摘录
 - `scan`：本轮实际列出的对象数、耗时；`logsFetched` 为实际拉到的日志摘录份数；`fromCache=true` 表示 List 首页走 watch cache；`metricsSkipped` 表示节点指标未采集（用量异常无法判断）
 - Warning 事件先最多取 500 条再按时间留 80 条，并优先挂到已发现异常的 `evidence`
+- `evidence` 前部可含 `restart[1..3]`：尽力列出最近三次重启时间与原因。`status.lastState` 只保留上次退出；更早次数来自 Warning 的 Killing / BackOff（常被聚合成一条）。凑不满 3 条时带 `restartNote`。控制器行另可有 `selector=`，用于对照下属 Pod
+- 控制器副本已 Ready、但下属 Pod 近 2h 仍 CrashLoop / OOM / 累计重启 ≥ 3 时，会多一行 `category=workload` `reason=Restarts`；已有 NotReady 则只挂证据、不另占行。滚动宽限期内不单独占控制器 Restarts 行
 - `skippedNodes`：`project` kubeconfig 为 `true`
 - `truncated`：扫描或结果达到上限（每类最多 200 条，事件最多 80 条）
 - `errors`：可选，某类扫描失败信息（如 `{"pods":"..."}`）

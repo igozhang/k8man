@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { readApi, writeApi } from '../api'
 import { asArray, errMessage } from '../utils/safe'
+import { TTL, cacheGet, cacheKey, cacheLoad, invalidateDocs } from '../utils/resourceCache'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,19 +19,26 @@ const form = ref({
 })
 const isEdit = !!route.params.id
 
+function applyDocForm(d) {
+  form.value = {
+    title: d?.title || '',
+    slug: d?.slug || '',
+    category: d?.category || 'general',
+    tags: asArray(d?.tags).join(','),
+    summary: d?.summary || '',
+    content: d?.content || '',
+    pinned: !!d?.pinned
+  }
+}
+
 onMounted(async () => {
   if (!isEdit) return
+  const id = String(route.params.id || '')
+  const key = cacheKey('doc', 'local', id)
+  const hit = cacheGet(key)
+  if (hit?.data) applyDocForm(hit.data)
   try {
-    const d = await readApi.getDoc(route.params.id)
-    form.value = {
-      title: d?.title || '',
-      slug: d?.slug || '',
-      category: d?.category || 'general',
-      tags: asArray(d?.tags).join(','),
-      summary: d?.summary || '',
-      content: d?.content || '',
-      pinned: !!d?.pinned
-    }
+    applyDocForm(await cacheLoad(key, TTL.docs, () => readApi.getDoc(id)))
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -55,6 +63,7 @@ async function save() {
       error.value = '保存成功但未返回文档 ID'
       return
     }
+    invalidateDocs(d.id)
     router.push(`/docs/${d.id}`)
   } catch (e) {
     error.value = errMessage(e)

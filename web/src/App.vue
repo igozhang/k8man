@@ -4,6 +4,10 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { readApi } from './api'
 import { useClusterStore } from './stores/cluster'
 import { permTypeLabel } from './utils/labels'
+import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad } from './utils/resourceCache'
+
+const UI_KEY = cacheKey('ui', 'local')
+const cachedUI = cacheGet(UI_KEY)?.data
 
 const {
   clusters,
@@ -15,15 +19,15 @@ const route = useRoute()
 const showClusterBar = computed(() => !String(route.path || '').startsWith('/docs'))
 
 const ui = ref({
-  title: 'k8s多集群运维工具',
-  tagline: 'practice makes perfect',
-  hasBanner: false,
-  bannerUrl: '/banner',
-  iconUrl: '/icon',
-  version: '0.1.0'
+  title: cachedUI?.title || 'k8s多集群运维',
+  tagline: cachedUI?.tagline || 'practice makes perfect',
+  hasBanner: !!cachedUI?.hasBanner,
+  bannerUrl: cachedUI?.bannerUrl || '/banner',
+  iconUrl: cachedUI?.iconUrl || '/icon',
+  version: cachedUI?.version || '0.1.0'
 })
 
-const mediaStamp = ref(Date.now())
+const mediaStamp = ref(cacheGet(UI_KEY)?.at || Date.now())
 
 const bannerStyle = computed(() => {
   if (!ui.value.hasBanner) return {}
@@ -45,22 +49,24 @@ function setFavicon(href) {
 }
 
 onMounted(() => {
+  if (ui.value.title) document.title = ui.value.title
   setFavicon(iconSrc.value)
   refreshClusters(() => readApi.listClusters()).catch(() => {})
-  readApi
-    .getUI()
+  const uiFresh = cacheFresh(UI_KEY, TTL.ui)
+  cacheLoad(UI_KEY, TTL.ui, () => readApi.getUI())
     .then((data) => {
-      if (data) {
+      if (!data) return
+      ui.value = {
+        title: data.title || ui.value.title,
+        tagline: data.tagline || 'practice makes perfect',
+        hasBanner: !!data.hasBanner,
+        bannerUrl: data.bannerUrl || '/banner',
+        iconUrl: data.iconUrl || '/icon',
+        version: data.version || '0.1.0'
+      }
+      if (data.title) document.title = data.title
+      if (!uiFresh) {
         mediaStamp.value = Date.now()
-        ui.value = {
-          title: data.title || ui.value.title,
-          tagline: data.tagline || 'practice makes perfect',
-          hasBanner: !!data.hasBanner,
-          bannerUrl: data.bannerUrl || '/banner',
-          iconUrl: data.iconUrl || '/icon',
-          version: data.version || '0.1.0'
-        }
-        if (data.title) document.title = data.title
         setFavicon(`${ui.value.iconUrl}?t=${mediaStamp.value}`)
       }
     })

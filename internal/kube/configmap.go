@@ -26,9 +26,14 @@ type ConfigMapDetail struct {
 }
 
 func (c *Clients) ListConfigMaps(ctx context.Context, ns string) ([]ConfigMapView, error) {
-	list, err := c.Clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{Limit: 1000})
+	list, err := listViaWatchCache(1000, func(opts metav1.ListOptions) (*corev1.ConfigMapList, error) {
+		return c.Clientset.CoreV1().ConfigMaps(ns).List(ctx, opts)
+	})
 	if err != nil {
 		return nil, err
+	}
+	if list == nil {
+		return []ConfigMapView{}, nil
 	}
 	out := make([]ConfigMapView, 0, len(list.Items))
 	for _, cm := range list.Items {
@@ -86,9 +91,14 @@ func (c *Clients) PatchConfigMapData(ctx context.Context, ns, name string, data 
 }
 
 func (c *Clients) ListSecretNames(ctx context.Context, ns string) ([]string, error) {
-	list, err := c.Clientset.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{Limit: 1000})
+	list, err := listViaWatchCache(1000, func(opts metav1.ListOptions) (*corev1.SecretList, error) {
+		return c.Clientset.CoreV1().Secrets(ns).List(ctx, opts)
+	})
 	if err != nil {
 		return nil, err
+	}
+	if list == nil {
+		return []string{}, nil
 	}
 	out := make([]string, 0, len(list.Items))
 	for _, s := range list.Items {
@@ -101,9 +111,14 @@ func (c *Clients) ListSecretNames(ctx context.Context, ns string) ([]string, err
 }
 
 func (c *Clients) ListConfigMapNames(ctx context.Context, ns string) ([]string, error) {
-	list, err := c.Clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{Limit: 1000})
+	list, err := listViaWatchCache(1000, func(opts metav1.ListOptions) (*corev1.ConfigMapList, error) {
+		return c.Clientset.CoreV1().ConfigMaps(ns).List(ctx, opts)
+	})
 	if err != nil {
 		return nil, err
+	}
+	if list == nil {
+		return []string{}, nil
 	}
 	out := make([]string, 0, len(list.Items))
 	for _, cm := range list.Items {

@@ -3,15 +3,16 @@
  * 在 TTL 内视为新鲜，跳过立刻打 API。写操作后需主动 invalidate。
  *
  * 内存 Map 服务 SPA 内切页；sessionStorage 撑住同标签 F5。
+ * 选用集群用 TTL，非选用用 TTL_IDLE（刷新不必勤）。
  */
 
 const STORE_PREFIX = 'k8man.rc.v1.'
 const INDEX_KEY = 'k8man.rc.v1.__keys'
 const PREF_PREFIX = 'k8man.pref.v1.'
-const MAX_ENTRIES = 48
+const MAX_ENTRIES = 96
 const MAX_ITEM_CHARS = 400_000
 
-/** 新鲜窗口：命中则不再请求。过期仍可展示，并在后台刷新。 */
+/** 当前选用集群：命中则不再请求。过期仍可展示，并在后台刷新。 */
 export const TTL = {
   clusters: 30_000,
   namespaces: 90_000,
@@ -23,10 +24,46 @@ export const TTL = {
   nodeUsage: 20_000,
   podMetrics: 15_000,
   overview: 45_000,
-  diagnose: 90_000
+  diagnose: 90_000,
+  docs: 60_000,
+  ui: 5 * 60_000
+}
+
+/** 非选用集群：只保证卡片/切回时有数，刷新窗口拉长。 */
+export const TTL_IDLE = {
+  namespaces: 10 * 60_000,
+  pods: 5 * 60_000,
+  controllers: 5 * 60_000,
+  services: 8 * 60_000,
+  configmaps: 8 * 60_000,
+  nodes: 5 * 60_000,
+  nodeUsage: 5 * 60_000,
+  podMetrics: 5 * 60_000,
+  overview: 10 * 60_000,
+  diagnose: 15 * 60_000
+}
+
+export function ttlOf(kind, selected = true) {
+  if (selected !== false) return TTL[kind] ?? 30_000
+  return TTL_IDLE[kind] ?? (TTL[kind] ?? 30_000) * 8
 }
 
 const mem = new Map()
+/** 同 key 并发读合并成一次网络请求 */
+const inflight = new Map()
+/** invalidate 后丢弃仍在飞的旧请求，避免把过期结果写回 */
+const gens = new Map()
+
+function genOf(key) {
+  return gens.get(key) || 0
+}
+
+function bumpGen(key) {
+  const g = genOf(key) + 1
+  gens.set(key, g)
+  inflight.delete(key)
+  return g
+}
 
 export function cacheKey(kind, clusterId, extra) {
   const id = String(clusterId ?? '')
@@ -136,7 +173,34 @@ export function cacheFresh(key, ttl) {
   return cacheAge(key) < ttl
 }
 
+/**
+ * 新鲜则立刻返回缓存；过期则打 API（同 key 合并 in-flight）。
+ * 调用方应先 cacheGet 展示旧数据，再 await 本函数做后台更新。
+ */
+export function cacheLoad(key, ttl, fetcher, { force = false } = {}) {
+  if (!force && cacheFresh(key, ttl)) {
+    const hit = cacheGet(key)
+    return Promise.resolve(hit ? hit.data : undefined)
+  }
+  const existing = inflight.get(key)
+  if (existing && !force) return existing.then((data) => clone(data))
+  // force 作废同 key 的在途请求，避免旧结果后到覆盖
+  const gen = force ? bumpGen(key) : genOf(key)
+  const p = Promise.resolve()
+    .then(fetcher)
+    .then((data) => {
+      if (genOf(key) === gen) cacheSet(key, data)
+      return data
+    })
+    .finally(() => {
+      if (inflight.get(key) === p) inflight.delete(key)
+    })
+  inflight.set(key, p)
+  return p.then((data) => clone(data))
+}
+
 export function cacheInvalidate(key) {
+  bumpGen(key)
   mem.delete(key)
   try {
     sessionStorage.removeItem(STORE_PREFIX + key)
@@ -169,6 +233,11 @@ export function invalidateClusterLists(clusterId) {
   const id = String(clusterId || '')
   if (!id) return
   cacheInvalidateWhere((k) => k.split('::')[1] === id)
+}
+
+export function invalidateDocs(docId) {
+  if (docId) cacheInvalidate(cacheKey('doc', 'local', String(docId)))
+  cacheInvalidateWhere((k) => k.startsWith('docs::'))
 }
 
 function readPrefStore(name) {

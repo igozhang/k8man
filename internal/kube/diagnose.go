@@ -26,8 +26,10 @@ const (
 	diagnosePendingAge   = 2 * time.Minute
 	diagnosePendingOther = 15 * time.Minute
 	diagnoseRestartWarn  = int32(3)
+	diagnoseRestartMax   = 3
 	// 回看窗口：mixin 用 for:15m 防值班误叫；诊断页是复盘，2h 内重启/事件仍要看。
 	diagnoseRestartRecent = 2 * time.Hour
+	diagnoseRestartDedup  = 2 * time.Minute
 	diagnoseEventFresh    = 2 * time.Hour
 	// 防误报等待：滚动缺口、普通 Pending 仍用 15m，拉长到 2h 会把卡住的发布瞒掉。
 	diagnoseRolloutGrace   = 15 * time.Minute
@@ -167,12 +169,14 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 	}
 
 	var (
-		events      []corev1.Event
-		eventsTrunc bool
-		locMu       sync.Mutex
-		podLocs     = map[string]resourceLoc{}
-		podOK       = map[string]bool{}
-		nodeIPs     = map[string]string{}
+		events       []corev1.Event
+		eventsTrunc  bool
+		listedPods   []corev1.Pod
+		workloadRefs []workloadRef
+		locMu        sync.Mutex
+		podLocs      = map[string]resourceLoc{}
+		podOK        = map[string]bool{}
+		nodeIPs      = map[string]string{}
 	)
 
 	var wg sync.WaitGroup
@@ -235,6 +239,9 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 			return
 		}
 		addScan(func(s *DiagnoseScan) { s.Pods = len(pods) })
+		mu.Lock()
+		listedPods = pods
+		mu.Unlock()
 		for _, p := range pods {
 			locMu.Lock()
 			podLocs[issueKey("Pod", p.Namespace, p.Name)] = resourceLoc{
@@ -255,11 +262,14 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 	})
 
 	run("workloads", func() {
-		issues, trunc, err := c.scanWorkloads(ctx, opt, addScan)
+		issues, refs, trunc, err := c.scanWorkloads(ctx, opt, addScan)
 		if err != nil {
 			addErr("workloads", err.Error())
 			return
 		}
+		mu.Lock()
+		workloadRefs = refs
+		mu.Unlock()
 		if keepTopIssues(&issues, diagnoseMaxIssues) {
 			trunc = true
 		}
@@ -279,6 +289,7 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 
 	wg.Wait()
 
+	rep.Issues = attachRestartHistory(rep.Issues, listedPods, workloadRefs, events, opt.Now)
 	merged, attached := attachEvents(rep.Issues, events, opt.Now, podOK)
 	rep.Issues = merged
 	enrichLocations(rep.Issues, podLocs, nodeIPs)
@@ -768,6 +779,9 @@ func attachEvents(issues []Issue, events []corev1.Event, now time.Time, podOK ma
 		}
 		line := eventEvidenceLine(e, now)
 		for _, i := range ids {
+			if (e.Reason == "BackOff" || e.Reason == "Killing") && hasRestartTimelineEvidence(issues[i].Evidence) {
+				continue
+			}
 			if warningEvidenceCount(issues[i].Evidence) >= diagnoseEventPerIssue {
 				continue
 			}
@@ -1498,10 +1512,11 @@ func appendWarningEvidence(ev []string, line string) []string {
 		return append(ev, line)
 	}
 	for i := len(ev) - 1; i >= 0; i-- {
-		if !strings.HasPrefix(ev[i], "Warning ") {
-			ev[i] = line
-			return ev
+		if strings.HasPrefix(ev[i], "Warning ") || isRestartEvidenceLine(ev[i]) {
+			continue
 		}
+		ev[i] = line
+		return ev
 	}
 	return ev
 }
@@ -1662,18 +1677,18 @@ func (c *Clients) listPodsDiagnose(ctx context.Context, opt DiagnoseOptions) ([]
 	})
 }
 
-func (c *Clients) scanWorkloads(ctx context.Context, opt DiagnoseOptions, addScan func(func(*DiagnoseScan))) ([]Issue, bool, error) {
+func (c *Clients) scanWorkloads(ctx context.Context, opt DiagnoseOptions, addScan func(func(*DiagnoseScan))) ([]Issue, []workloadRef, bool, error) {
 	deps, dTrunc, err := c.listDeploymentsDiagnose(ctx, opt)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	sts, sTrunc, err := c.listStatefulSetsDiagnose(ctx, opt)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	dss, dsTrunc, err := c.listDaemonSetsDiagnose(ctx, opt)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	addScan(func(s *DiagnoseScan) {
 		s.Deployments = len(deps)
@@ -1681,16 +1696,29 @@ func (c *Clients) scanWorkloads(ctx context.Context, opt DiagnoseOptions, addSca
 		s.DaemonSets = len(dss)
 	})
 	var issues []Issue
+	var refs []workloadRef
 	for _, d := range deps {
 		issues = append(issues, diagnoseDeployment(d, opt.Now)...)
+		if r, ok := newWorkloadRef("Deployment", d.Namespace, d.Name, d.CreationTimestamp.Time, d.Spec.Selector); ok {
+			r.RolloutRecent = deploymentRolloutRecent(d, opt.Now)
+			refs = append(refs, r)
+		}
 	}
 	for _, s := range sts {
 		issues = append(issues, diagnoseStatefulSet(s, opt.Now)...)
+		if r, ok := newWorkloadRef("StatefulSet", s.Namespace, s.Name, s.CreationTimestamp.Time, s.Spec.Selector); ok {
+			r.RolloutRecent = statefulSetRolloutRecent(s, opt.Now)
+			refs = append(refs, r)
+		}
 	}
 	for _, ds := range dss {
 		issues = append(issues, diagnoseDaemonSet(ds, opt.Now)...)
+		if r, ok := newWorkloadRef("DaemonSet", ds.Namespace, ds.Name, ds.CreationTimestamp.Time, ds.Spec.Selector); ok {
+			r.RolloutRecent = daemonSetRolloutRecent(ds, opt.Now)
+			refs = append(refs, r)
+		}
 	}
-	return issues, dTrunc || sTrunc || dsTrunc, nil
+	return issues, refs, dTrunc || sTrunc || dsTrunc, nil
 }
 
 func (c *Clients) listDeploymentsDiagnose(ctx context.Context, opt DiagnoseOptions) ([]appsv1.Deployment, bool, error) {

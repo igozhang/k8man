@@ -10,6 +10,7 @@ import {
   cacheFresh,
   cacheGet,
   cacheKey,
+  cacheLoad,
   cacheSet,
   getViewPref,
   setViewPref
@@ -78,12 +79,12 @@ async function ensureNamespaces({ force = false } = {}) {
     if (ns.value && !namespaces.value.some((n) => n.name === ns.value)) ns.value = ''
   }
   if (!force && cacheFresh(key, TTL.namespaces)) return
-  if (nsLoading.value && namespaces.value.length) return
   nsLoading.value = !namespaces.value.length
   try {
-    const list = asArray(await readApi.listNamespaces(clusterId))
+    const list = asArray(
+      await cacheLoad(key, TTL.namespaces, () => readApi.listNamespaces(clusterId), { force })
+    )
     if (currentClusterId.value !== clusterId) return
-    cacheSet(key, list)
     namespaces.value = list
     if (ns.value && !list.some((n) => n.name === ns.value)) ns.value = ''
   } catch (e) {
@@ -116,16 +117,16 @@ async function loadNodes({ force = false } = {}) {
   nodeLoading.value = !nodeRows.value.length
   nodeRefreshing.value = nodeRows.value.length > 0
   try {
+    const id = currentClusterId.value
     const [nodes, metrics] = await Promise.all([
-      readApi.listNodes(currentClusterId.value),
-      readApi.nodeMetrics(currentClusterId.value).catch((e) => {
+      cacheLoad(cacheKey('nodes', id), TTL.nodes, () => readApi.listNodes(id), { force }),
+      readApi.nodeMetrics(id).catch((e) => {
         if (nodesSeq.is(seq)) nodeTip.value = metricsErrorTip(e)
         return []
       })
     ])
     if (!nodesSeq.is(seq)) return
     const list = asArray(nodes)
-    cacheSet(cacheKey('nodes', currentClusterId.value), list)
     const merged = mergeNodeUsage(list, asArray(metrics))
     cacheSet(key, merged)
     nodeRows.value = merged
@@ -150,7 +151,9 @@ async function loadPodMetrics({ force = false } = {}) {
     podRefreshing.value = false
     return
   }
-  const key = cacheKey('podMetrics', currentClusterId.value, ns.value)
+  const id = currentClusterId.value
+  const namespace = ns.value
+  const key = cacheKey('podMetrics', id, namespace)
   const hit = cacheGet(key)
   if (hit) podMetrics.value = asArray(hit.data)
   else podMetrics.value = []
@@ -162,9 +165,10 @@ async function loadPodMetrics({ force = false } = {}) {
   podLoading.value = !podMetrics.value.length
   podRefreshing.value = podMetrics.value.length > 0
   try {
-    const items = asArray(await readApi.podMetrics(currentClusterId.value, ns.value))
+    const items = asArray(
+      await cacheLoad(key, TTL.podMetrics, () => readApi.podMetrics(id, namespace), { force })
+    )
     if (!podsSeq.is(seq)) return
-    cacheSet(key, items)
     podMetrics.value = items
   } catch (e) {
     if (!podsSeq.is(seq)) return
@@ -261,7 +265,7 @@ onMounted(enterPage)
   <div>
     <h1>监控</h1>
     <p class="page-desc">
-      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。同一会话内复用未过期数据；过期后后台更新，不先清空。Pod 指标需选择命名空间。未安装或权限不足时降级提示。
+      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。当前选用集群在 TTL 内复用并合并重复请求；过期后后台更新，不先清空。Pod 指标需选择命名空间。未安装或权限不足时降级提示。
     </p>
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>

@@ -1,6 +1,6 @@
 import { ref, watch, computed } from 'vue'
 import { asArray } from '../utils/safe'
-import { TTL, cacheGet, cacheKey, cacheSet, cacheFresh } from '../utils/resourceCache'
+import { TTL, cacheGet, cacheKey, cacheLoad, cacheFresh } from '../utils/resourceCache'
 
 const STORAGE_KEY = 'k8man.currentClusterId'
 const CLUSTERS_KEY = cacheKey('clusters', 'local')
@@ -13,6 +13,7 @@ function initialClusters() {
 const clusters = ref(initialClusters())
 const currentClusterId = ref(localStorage.getItem(STORAGE_KEY) || '')
 const loadingClusters = ref(false)
+let refreshSeq = 0
 
 export function useClusterStore() {
   const currentCluster = computed(() =>
@@ -29,11 +30,12 @@ export function useClusterStore() {
     if (!force && clusters.value.length && cacheFresh(CLUSTERS_KEY, TTL.clusters)) {
       return
     }
+    const seq = ++refreshSeq
     loadingClusters.value = !clusters.value.length
     try {
-      const list = asArray(await fetcher())
+      const list = asArray(await cacheLoad(CLUSTERS_KEY, TTL.clusters, fetcher, { force }))
+      if (seq !== refreshSeq) return
       clusters.value = list
-      cacheSet(CLUSTERS_KEY, list)
       if (currentClusterId.value && !clusters.value.some((c) => c.id === currentClusterId.value)) {
         setCurrentClusterId(clusters.value[0]?.id || '')
       } else if (!currentClusterId.value && clusters.value.length) {
@@ -42,7 +44,7 @@ export function useClusterStore() {
     } catch {
       // 保留上次列表，避免顶部集群选择器被清空导致整页不可用
     } finally {
-      loadingClusters.value = false
+      if (seq === refreshSeq) loadingClusters.value = false
     }
   }
 

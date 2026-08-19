@@ -3,10 +3,10 @@ import { ref, onMounted } from 'vue'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { asArray, errMessage } from '../utils/safe'
-import { cacheGet, cacheKey } from '../utils/resourceCache'
+import { cacheGet, cacheKey, invalidateClusterLists } from '../utils/resourceCache'
 import { permTypeLabel, clusterStatusLabel, clusterStatusClass } from '../utils/labels'
 
-const { currentClusterId, refreshClusters, setCurrentClusterId } = useClusterStore()
+const { clusters, currentClusterId, refreshClusters, setCurrentClusterId } = useClusterStore()
 const list = ref(asArray(cacheGet(cacheKey('clusters', 'local'))?.data))
 const error = ref('')
 const showForm = ref(false)
@@ -45,14 +45,14 @@ function applyKubeconfig(text, { fillName = true } = {}) {
   }
 }
 
-async function load() {
+async function load({ force = false } = {}) {
   error.value = ''
   try {
-    list.value = asArray(await readApi.listClusters())
-    await refreshClusters(async () => list.value, { force: true })
+    await refreshClusters(() => readApi.listClusters(), { force })
+    list.value = asArray(clusters.value)
   } catch (e) {
     error.value = errMessage(e)
-    if (!list.value.length) list.value = []
+    if (!list.value.length) list.value = asArray(clusters.value)
   }
 }
 
@@ -241,7 +241,8 @@ async function save() {
       })
     }
     closeForm()
-    await load()
+    if (saved?.id) invalidateClusterLists(saved.id)
+    await load({ force: true })
     if (saved?.status === 'error' && saved?.lastError) {
       notice.value = `已保存，但连通性检测失败：${saved.lastError}`
     } else {
@@ -258,7 +259,8 @@ async function remove(c) {
   if (!confirm(`删除集群配置「${c.name}」？`)) return
   try {
     await writeApi.deleteCluster(c.id)
-    await load()
+    invalidateClusterLists(c.id)
+    await load({ force: true })
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -271,7 +273,8 @@ async function testClusterConn(c) {
   notice.value = ''
   try {
     const r = await writeApi.testCluster(c.id)
-    await load()
+    invalidateClusterLists(c.id)
+    await load({ force: true })
     if (editingId.value === c.id) {
       const cur = list.value.find((x) => x.id === c.id)
       if (cur) form.value.insecureSkipTLS = !!cur.insecureSkipTLS

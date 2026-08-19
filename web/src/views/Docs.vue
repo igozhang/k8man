@@ -3,21 +3,35 @@ import { ref, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { readApi, writeApi } from '../api'
 import { asArray, errMessage } from '../utils/safe'
+import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad, invalidateDocs } from '../utils/resourceCache'
 
 const list = ref([])
 const q = ref('')
 const category = ref('')
 const error = ref('')
 
-async function load() {
+async function load({ force = false } = {}) {
   error.value = ''
+  const qNow = q.value
+  const catNow = category.value
+  const key = cacheKey('docs', 'local', `${qNow || ''}::${catNow || ''}`)
+  const hit = cacheGet(key)
+  if (hit) list.value = asArray(hit.data)
+  if (!force && cacheFresh(key, TTL.docs)) return
   try {
-    list.value = asArray(
-      await readApi.listDocs({ q: q.value || undefined, category: category.value || undefined })
+    const items = asArray(
+      await cacheLoad(
+        key,
+        TTL.docs,
+        () => readApi.listDocs({ q: qNow || undefined, category: catNow || undefined }),
+        { force }
+      )
     )
+    if (q.value !== qNow || category.value !== catNow) return
+    list.value = items
   } catch (e) {
     error.value = errMessage(e)
-    list.value = []
+    if (!hit) list.value = []
   }
 }
 
@@ -25,7 +39,8 @@ async function remove(d) {
   if (!confirm(`删除文档「${d.title}」？`)) return
   try {
     await writeApi.deleteDoc(d.id)
-    await load()
+    invalidateDocs(d.id)
+    await load({ force: true })
   } catch (e) {
     error.value = errMessage(e)
   }

@@ -146,16 +146,22 @@ func Probe(ctx context.Context, kubeconfigYAML string, hosts *HostsResolver) Pro
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	nsList, err := c.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{Limit: 500})
+	nsList, err := listViaWatchCache(500, func(opts metav1.ListOptions) (*corev1.NamespaceList, error) {
+		return c.Clientset.CoreV1().Namespaces().List(ctx, opts)
+	})
 	if err != nil {
 		res.LastError = FriendlyConnectivityError(err)
 		return res
 	}
-	for _, n := range nsList.Items {
-		res.Namespaces = append(res.Namespaces, n.Name)
+	if nsList != nil {
+		for _, n := range nsList.Items {
+			res.Namespaces = append(res.Namespaces, n.Name)
+		}
 	}
 
-	_, err = c.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: 1})
+	_, err = listViaWatchCache(1, func(opts metav1.ListOptions) (*corev1.NodeList, error) {
+		return c.Clientset.CoreV1().Nodes().List(ctx, opts)
+	})
 	if err == nil {
 		res.PermType = "cluster"
 	} else {
@@ -277,27 +283,33 @@ func FriendlyConnectivityError(err error) string {
 }
 
 func (c *Clients) ListNamespaces(ctx context.Context) ([]corev1.Namespace, error) {
-	list, err := c.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{Limit: 500})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return listViaWatchCache(500, func(opts metav1.ListOptions) ([]corev1.Namespace, error) {
+		list, err := c.Clientset.CoreV1().Namespaces().List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return list.Items, nil
+	})
 }
 
 func (c *Clients) ListNodes(ctx context.Context) ([]corev1.Node, error) {
-	list, err := c.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: 500})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return listViaWatchCache(500, func(opts metav1.ListOptions) ([]corev1.Node, error) {
+		list, err := c.Clientset.CoreV1().Nodes().List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return list.Items, nil
+	})
 }
 
 func (c *Clients) ListPods(ctx context.Context, ns string) ([]corev1.Pod, error) {
-	list, err := c.Clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{Limit: 1000})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return listViaWatchCache(1000, func(opts metav1.ListOptions) ([]corev1.Pod, error) {
+		list, err := c.Clientset.CoreV1().Pods(ns).List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return list.Items, nil
+	})
 }
 
 func (c *Clients) GetPod(ctx context.Context, ns, name string) (*corev1.Pod, error) {
@@ -341,27 +353,33 @@ func (c *Clients) PodLogsQuery(ctx context.Context, ns, name string, q PodLogQue
 }
 
 func (c *Clients) ListDeployments(ctx context.Context, ns string) (interface{}, error) {
-	list, err := c.Clientset.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{Limit: 1000})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return listViaWatchCache(1000, func(opts metav1.ListOptions) (interface{}, error) {
+		list, err := c.Clientset.AppsV1().Deployments(ns).List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return list.Items, nil
+	})
 }
 
 func (c *Clients) ListStatefulSets(ctx context.Context, ns string) (interface{}, error) {
-	list, err := c.Clientset.AppsV1().StatefulSets(ns).List(ctx, metav1.ListOptions{Limit: 1000})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return listViaWatchCache(1000, func(opts metav1.ListOptions) (interface{}, error) {
+		list, err := c.Clientset.AppsV1().StatefulSets(ns).List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return list.Items, nil
+	})
 }
 
 func (c *Clients) ListDaemonSets(ctx context.Context, ns string) (interface{}, error) {
-	list, err := c.Clientset.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{Limit: 1000})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return listViaWatchCache(1000, func(opts metav1.ListOptions) (interface{}, error) {
+		list, err := c.Clientset.AppsV1().DaemonSets(ns).List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return list.Items, nil
+	})
 }
 
 func (c *Clients) ScaleDeployment(ctx context.Context, ns, name string, replicas int32) error {
@@ -385,11 +403,13 @@ func (c *Clients) ScaleStatefulSet(ctx context.Context, ns, name string, replica
 }
 
 func (c *Clients) ListServices(ctx context.Context, ns string) ([]corev1.Service, error) {
-	list, err := c.Clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{Limit: 1000})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
+	return listViaWatchCache(1000, func(opts metav1.ListOptions) ([]corev1.Service, error) {
+		list, err := c.Clientset.CoreV1().Services(ns).List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return list.Items, nil
+	})
 }
 
 var allowedKinds = map[string]schema.GroupVersionResource{

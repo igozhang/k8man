@@ -1,4 +1,4 @@
-# k8s多集群运维工具（k8man）
+# k8s多集群运维（k8man）
 
 通过导入有权限的 kubeconfig（含 Rancher 集群管理员 / Project 两类），对目标 K8s 集群做运维、管理与监控。
 

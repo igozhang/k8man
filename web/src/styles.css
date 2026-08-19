@@ -449,6 +449,9 @@ h4 {
   font: inherit;
   color: inherit;
 }
+.stats-strip button.stat:hover:not(:disabled) {
+  background: rgba(61, 107, 74, 0.06);
+}
 .stats-strip button.stat:disabled {
   cursor: default;
 }
