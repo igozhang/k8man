@@ -263,7 +263,7 @@ onMounted(enterPage)
     <p class="page-desc">
       节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。同一会话内复用未过期数据；过期后后台更新，不先清空。Pod 指标需选择命名空间。未安装或权限不足时降级提示。
     </p>
-    <div v-if="!currentClusterId" class="empty">请先选择集群。</div>
+    <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
       <p v-if="error" class="error">{{ error }}</p>
 

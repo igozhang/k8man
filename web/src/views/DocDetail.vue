@@ -32,7 +32,11 @@ onMounted(async () => {
     <template v-else-if="doc">
       <div class="toolbar">
         <div>
-          <div class="doc-meta"><span class="tag">{{ doc.category }}</span> · {{ new Date(doc.updatedAt).toLocaleString() }}</div>
+          <div class="doc-meta">
+            <span class="tag">{{ doc.category }}</span>
+            <span v-if="doc.pinned" class="tag current">置顶</span>
+            <span>{{ new Date(doc.updatedAt).toLocaleString() }}</span>
+          </div>
           <h1>{{ doc.title }}</h1>
         </div>
         <RouterLink class="btn" :to="`/docs/edit/${doc.id}`">编辑</RouterLink>

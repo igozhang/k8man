@@ -205,16 +205,20 @@ defineExpose({ open: openEditor, close })
     <div class="toolbar">
       <strong>ConfigMap · {{ name }}</strong>
       <div class="actions">
-        <button
-          class="btn btn-sm"
-          :class="{ 'btn-primary': mode === 'kv' }"
-          @click="switchMode('kv')"
-        >键值</button>
-        <button
-          class="btn btn-sm"
-          :class="{ 'btn-primary': mode === 'yaml' }"
-          @click="switchMode('yaml')"
-        >YAML</button>
+        <div class="tabs">
+          <button
+            type="button"
+            class="tab"
+            :class="{ active: mode === 'kv' }"
+            @click="switchMode('kv')"
+          >键值</button>
+          <button
+            type="button"
+            class="tab"
+            :class="{ active: mode === 'yaml' }"
+            @click="switchMode('yaml')"
+          >YAML</button>
+        </div>
         <button class="btn btn-primary btn-sm" :disabled="busy" @click="save">
           {{ busy ? '保存中…' : '保存' }}
         </button>

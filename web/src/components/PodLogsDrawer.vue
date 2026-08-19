@@ -258,15 +258,20 @@ defineExpose({ open: openLogs, close })
         <template v-if="previous"> · previous</template>
       </strong>
       <div class="actions">
-        <button class="btn btn-sm" type="button" @click="toggleLogAuto">
-          {{ auto ? '暂停' : '继续' }}
-        </button>
+        <button
+          class="btn btn-sm"
+          :class="{ 'is-current': auto }"
+          type="button"
+          @click="toggleLogAuto"
+        >{{ auto ? '自动刷新 · 开' : '自动刷新 · 关' }}</button>
         <button class="btn btn-sm" type="button" :disabled="loading" @click="pullLogs">刷新</button>
         <button class="btn btn-sm" type="button" @click="close">关闭</button>
       </div>
     </div>
     <p class="muted log-hint">
-      尾部 {{ LOG_TAIL }} 行 · 每 {{ LOG_INTERVAL_MS / 1000 }}s 刷新
+      尾部 {{ LOG_TAIL }} 行
+      <template v-if="auto"> · 每 {{ LOG_INTERVAL_MS / 1000 }}s 自动刷新</template>
+      <template v-else> · 已暂停自动刷新</template>
       <template v-if="updatedAt"> · {{ updatedAt }}</template>
       <template v-if="loading"> · 加载中…</template>
       <template v-if="truncated"> · 已截断（≤256KB）</template>

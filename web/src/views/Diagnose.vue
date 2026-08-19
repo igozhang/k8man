@@ -5,6 +5,7 @@ import { useClusterStore } from '../stores/cluster'
 import { asArray, createSeq, errMessage } from '../utils/safe'
 import { copyText } from '../utils/clipboard'
 import { TTL, cacheFresh, cacheGet, cacheKey, cacheSet } from '../utils/resourceCache'
+import { permTypeLabel } from '../utils/labels'
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import TextDrawer from '../components/TextDrawer.vue'
@@ -452,7 +453,7 @@ function healthyCheckLines() {
   const ev = s.events ?? 0
 
   if (skippedNodes.value) {
-    lines.push('- 节点: 未检查（project 凭证）')
+    lines.push('- 节点: 未检查（项目凭证）')
   } else if (!scanHasError('nodes')) {
     if (!nodes) {
       lines.push('- 节点: 范围内无节点')
@@ -493,11 +494,11 @@ function healthyCheckLines() {
 const summaryFull = computed(() => {
   const lines = []
   const name = currentCluster.value?.name || ''
-  const perm = currentCluster.value?.permType || ''
+  const perm = permTypeLabel(currentCluster.value?.permType || '')
   if (!currentClusterId.value) {
     return '结论: 尚未选择集群。'
   }
-  lines.push(`集群: ${name || '未命名'}${perm ? ` (${perm})` : ''}`)
+  lines.push(`集群: ${name || '未命名'}${perm ? `（${perm}）` : ''}`)
   if (loading.value) {
     lines.push('正在扫描…')
     return lines.join('\n')
@@ -518,7 +519,7 @@ const summaryFull = computed(() => {
     lines.push(`结论: 发现 ${total} 条当前异常（严重 ${c.critical || 0} · 警告 ${c.warning || 0}）。`)
   }
   if (scanLine.value) lines.push(scanLine.value)
-  if (skippedNodes.value && total) lines.push('节点: project 凭证未扫描。')
+  if (skippedNodes.value && total) lines.push('节点: 项目凭证未扫描。')
   if (scan.value?.metricsSkipped && total) lines.push(`节点指标未采集: ${scan.value.metricsSkipped}`)
   if (truncated.value) lines.push('结果已截断，仅展示部分异常。')
   for (const e of errorEntries.value) {
@@ -654,7 +655,7 @@ onUnmounted(() => {
   <div>
     <h1>诊断</h1>
     <p class="page-desc">只列出当前不健康的对象。历史累计重启、滚动发布中的副本缺口、探针未达阈值的 Warning 不计入。同一会话内 90 秒内再次打开沿用上次扫描；需要最新结果时点「刷新」。判定规则见页底。</p>
-    <div v-if="!currentClusterId" class="empty">请先在「KubeConfig」导入集群，并在上方选择集群。</div>
+    <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
       <div class="panel stats-strip">
         <button
@@ -792,7 +793,12 @@ onUnmounted(() => {
             <td class="actions">
               <button v-if="canLogs(row)" class="btn btn-sm" type="button" @click="showLogs(row)">日志</button>
               <button v-if="canYAML(row)" class="btn btn-sm" type="button" @click="openYAML(row)">YAML</button>
-              <button class="btn btn-sm" type="button" @click="copyIssue(row, idx)">
+              <button
+                class="btn btn-sm"
+                type="button"
+                :class="{ 'is-current': copiedKey === rowKey(row, idx) }"
+                @click="copyIssue(row, idx)"
+              >
                 {{ copiedKey === rowKey(row, idx) ? '已复制' : '复制' }}
               </button>
             </td>
@@ -831,7 +837,7 @@ onUnmounted(() => {
       <p class="rules-lead">异常看对象当前状态；事件是过程记录，默认只挂到说明里。对齐 kubernetes-mixin / kube-prometheus 的「当前不健康才告警」，诊断页当场显示，不等值班窗口。</p>
       <h3>算异常</h3>
       <ul>
-        <li>节点 Ready≠True → 严重；Disk/Memory/PID/Network 压力为 True → 警告；CPU/内存用量 ≥ 90% → 警告。project 凭证不扫节点。</li>
+        <li>节点 Ready≠True → 严重；Disk/Memory/PID/Network 压力为 True → 警告；CPU/内存用量 ≥ 90% → 警告。项目凭证不扫节点。</li>
         <li>负载 ready &lt; desired 且不是滚动中 → 副本为 0 严重，否则警告。DaemonSet misscheduled &gt; 0 → 警告。缩到 0 不算。</li>
         <li>滚动中（Progressing=True 且 ReplicaSetUpdated 等，或 Unavailable&gt;0 且 Progressing 持续不足 15 分钟）不算；超过 15 分钟仍对不上才报。</li>
         <li>Pod 正在 CrashLoop / 拉镜像失败 / CreateContainerError / OOMKilled → 严重。Failed（非 Evicted/Shutdown 等）→ 严重。Unknown、Running 未就绪 → 警告。</li>
@@ -872,6 +878,10 @@ onUnmounted(() => {
 .msg {
   max-width: 28rem;
   vertical-align: middle;
+}
+.table td.actions .btn-sm {
+  min-width: 4.6em;
+  justify-content: center;
 }
 .explain-brief {
   appearance: none;

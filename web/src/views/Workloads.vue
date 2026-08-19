@@ -526,7 +526,7 @@ watch([ns, tab], () => {
     <p class="page-desc">
       查看与运维 Pod / 控制器 / Service / ConfigMap；首次请选择命名空间。同一会话内会沿用上次选择，并复用未过期的列表。
     </p>
-    <div v-if="!currentClusterId" class="empty">请先选择集群。</div>
+    <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
       <div class="toolbar">
         <select v-model="ns">

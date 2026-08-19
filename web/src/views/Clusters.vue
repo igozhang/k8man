@@ -4,8 +4,9 @@ import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { asArray, errMessage } from '../utils/safe'
 import { cacheGet, cacheKey } from '../utils/resourceCache'
+import { permTypeLabel, clusterStatusLabel, clusterStatusClass } from '../utils/labels'
 
-const { refreshClusters, setCurrentClusterId } = useClusterStore()
+const { currentClusterId, refreshClusters, setCurrentClusterId } = useClusterStore()
 const list = ref(asArray(cacheGet(cacheKey('clusters', 'local'))?.data))
 const error = ref('')
 const showForm = ref(false)
@@ -19,7 +20,7 @@ const importMode = ref('paste')
 const uploadFileName = ref('')
 const fileInput = ref(null)
 const notice = ref('')
-const testing = ref(false)
+const testingId = ref('')
 
 const hosts = ref([])
 const hostsPath = ref('')
@@ -139,6 +140,12 @@ async function removeHost(h) {
   }
 }
 
+function closeForm() {
+  showForm.value = false
+  formMode.value = 'create'
+  editingId.value = ''
+}
+
 function openCreate() {
   editingId.value = ''
   formMode.value = 'create'
@@ -233,7 +240,7 @@ async function save() {
         insecureSkipTLS: !!form.value.insecureSkipTLS
       })
     }
-    showForm.value = false
+    closeForm()
     await load()
     if (saved?.status === 'error' && saved?.lastError) {
       notice.value = `已保存，但连通性检测失败：${saved.lastError}`
@@ -257,27 +264,34 @@ async function remove(c) {
   }
 }
 
-async function testCurrent() {
-  if (!editingId.value) return
-  testing.value = true
+async function testClusterConn(c) {
+  if (!c?.id) return
+  testingId.value = c.id
   error.value = ''
   notice.value = ''
   try {
-    const r = await writeApi.testCluster(editingId.value)
+    const r = await writeApi.testCluster(c.id)
     await load()
-    // 刷新后保持编辑态展示最新状态标记
-    const cur = list.value.find((c) => c.id === editingId.value)
-    if (cur) form.value.insecureSkipTLS = !!cur.insecureSkipTLS
+    if (editingId.value === c.id) {
+      const cur = list.value.find((x) => x.id === c.id)
+      if (cur) form.value.insecureSkipTLS = !!cur.insecureSkipTLS
+    }
     if (r.status === 'ok') {
-      notice.value = `测试通过：${r.permType} · ${r.server}`
+      notice.value = `「${c.name}」测试通过：${permTypeLabel(r.permType)} · ${r.server}`
     } else {
-      error.value = `测试失败：${r.lastError || r.status}`
+      error.value = `「${c.name}」测试失败：${r.lastError || r.status}`
     }
   } catch (e) {
     error.value = errMessage(e)
   } finally {
-    testing.value = false
+    testingId.value = ''
   }
+}
+
+async function testCurrent() {
+  const cur = list.value.find((x) => x.id === editingId.value)
+  if (!cur) return
+  await testClusterConn(cur)
 }
 
 onMounted(() => {
@@ -383,10 +397,10 @@ onMounted(() => {
         <button
           v-if="formMode === 'edit'"
           class="btn"
-          :disabled="testing || busy"
+          :disabled="!!testingId || busy"
           @click="testCurrent"
-        >{{ testing ? '测试中…' : '测试连接' }}</button>
-        <button class="btn" @click="showForm = false">取消</button>
+        >{{ testingId === editingId ? '测试中…' : '测试连接' }}</button>
+        <button class="btn" @click="closeForm">取消</button>
       </div>
     </div>
 
@@ -401,21 +415,40 @@ onMounted(() => {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="c in list" :key="c.id">
+        <tr v-for="c in list" :key="c.id" :class="{ 'is-current': c.id === currentClusterId }">
           <td>
-            <strong>{{ c.name }}</strong>
+            <div class="cluster-name">
+              <strong>{{ c.name }}</strong>
+              <span v-if="c.id === currentClusterId" class="tag current">当前</span>
+            </div>
             <div class="muted">{{ c.description }}</div>
             <div v-if="c.insecureSkipTLS" class="muted">TLS: 已跳过校验</div>
           </td>
-          <td><span class="tag" :class="c.permType">{{ c.permType }}</span></td>
+          <td><span class="tag" :class="c.permType">{{ permTypeLabel(c.permType) }}</span></td>
           <td class="muted">{{ c.server }}</td>
           <td>
-            {{ c.status }}
+            <span class="tag" :class="clusterStatusClass(c.status)">{{ clusterStatusLabel(c.status) }}</span>
             <div v-if="c.lastError" class="error" style="white-space: pre-wrap; max-width: 420px">{{ c.lastError }}</div>
           </td>
           <td class="actions">
-            <button class="btn btn-sm" @click="setCurrentClusterId(c.id)">选用</button>
-            <button class="btn btn-sm" @click="openEdit(c)">编辑</button>
+            <button
+              type="button"
+              class="btn btn-sm"
+              :class="{ 'is-current': c.id === currentClusterId }"
+              :disabled="c.id === currentClusterId"
+              @click="setCurrentClusterId(c.id)"
+            >{{ c.id === currentClusterId ? '已选用' : '选用' }}</button>
+            <button
+              class="btn btn-sm"
+              :disabled="!!testingId"
+              @click="testClusterConn(c)"
+            >{{ testingId === c.id ? '测试中…' : '测试' }}</button>
+            <button
+              type="button"
+              class="btn btn-sm"
+              :class="{ 'is-current': showForm && formMode === 'edit' && editingId === c.id }"
+              @click="openEdit(c)"
+            >{{ showForm && formMode === 'edit' && editingId === c.id ? '编辑中' : '编辑' }}</button>
             <button class="btn btn-sm btn-danger" @click="remove(c)">删除</button>
           </td>
         </tr>
@@ -464,10 +497,15 @@ onMounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="h in hosts" :key="h.id">
+          <tr v-for="h in hosts" :key="h.id" :class="{ 'is-current': hostEditingId === h.id }">
             <td><code class="host-line-cell">{{ formatHostLine(h) }}</code></td>
             <td class="actions">
-              <button class="btn btn-sm" @click="openHostEdit(h)">编辑</button>
+              <button
+                type="button"
+                class="btn btn-sm"
+                :class="{ 'is-current': hostEditingId === h.id }"
+                @click="openHostEdit(h)"
+              >{{ hostEditingId === h.id ? '编辑中' : '编辑' }}</button>
               <button class="btn btn-sm btn-danger" @click="removeHost(h)">删除</button>
             </td>
           </tr>
@@ -483,6 +521,16 @@ onMounted(() => {
   margin: 0 0 12px;
   font-size: 15px;
   font-weight: 600;
+}
+.cluster-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+}
+.table td.actions .btn-sm {
+  min-width: 5.2em;
+  justify-content: center;
 }
 .notice {
   color: var(--accent);

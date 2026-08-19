@@ -66,7 +66,7 @@ onMounted(load)
         <h2 class="doc-capsule-title"><RouterLink :to="`/docs/${d.id}`">{{ d.title }}</RouterLink></h2>
         <span class="doc-capsule-head-meta">
           <span class="tag">{{ d.category }}</span>
-          <span v-if="d.pinned">置顶</span>
+          <span v-if="d.pinned" class="tag current">置顶</span>
           <span>{{ fmtTime(d.updatedAt) }}</span>
         </span>
       </div>

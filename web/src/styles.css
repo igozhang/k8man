@@ -131,6 +131,28 @@ a:hover { text-decoration: underline; }
   min-width: 0;
   flex: 0 1 auto;
 }
+.brand-home,
+.brand-home:link,
+.brand-home:visited,
+.brand-home:hover,
+.brand-home:active,
+.brand-home:focus,
+.brand-home:focus-visible,
+.brand-home.router-link-active,
+.brand-home.router-link-exact-active {
+  color: inherit;
+  text-decoration: none;
+  outline: none;
+  box-shadow: none;
+  cursor: default;
+  -webkit-tap-highlight-color: transparent;
+}
+.brand-home-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  line-height: 0;
+}
 .brand-icon {
   width: 36px;
   height: 36px;
@@ -138,6 +160,7 @@ a:hover { text-decoration: underline; }
   object-fit: cover;
   flex-shrink: 0;
   display: block;
+  border: 0;
 }
 .brand-copy {
   display: flex;
@@ -156,6 +179,9 @@ a:hover { text-decoration: underline; }
   color: var(--text);
   white-space: nowrap;
   text-align: left;
+}
+a.brand {
+  color: var(--text);
 }
 .site-head.has-banner .brand {
   text-shadow:
@@ -293,15 +319,38 @@ h4 {
   cursor: pointer;
 }
 .btn:hover { background: rgba(61, 107, 74, 0.08); text-decoration: none; }
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+/* 提交动作（保存 / 导入） */
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
 }
 .btn-primary:hover { background: var(--accent-hover); }
+/* 当前态（已选用、编辑中、开关开）：与保存同色，文案体现状态 */
+.btn.is-current {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn.is-current:hover { background: var(--accent-hover); }
+.btn.is-current:disabled,
+.btn.is-current:disabled:hover {
+  opacity: 1;
+  cursor: default;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 .btn-danger {
   color: var(--danger);
   border-color: #e8b4b0;
+}
+.btn-danger:disabled {
+  opacity: 0.55;
 }
 /* 与单行 input 同高：只缩水平 padding / 字号，不压扁垂直 */
 .btn-sm {
@@ -330,6 +379,9 @@ h4 {
   font-weight: 600;
 }
 .table tr:last-child td { border-bottom: none; }
+.table tbody tr.is-current td {
+  background: rgba(61, 107, 74, 0.08);
+}
 /*
  * 表格操作列：必须保持 table-cell。
  * .actions 的 display:flex 会让 td 脱离表格布局，剩余宽度全堆到该列，
@@ -489,9 +541,15 @@ td.actions {
   border-radius: 999px;
   background: rgba(61, 107, 74, 0.12);
   color: var(--accent);
+  vertical-align: middle;
 }
 .tag.project { background: rgba(47, 107, 69, 0.14); color: #1f5a34; }
+.tag.ok { background: rgba(47, 107, 69, 0.14); color: var(--ok); }
 .tag.error { background: rgba(180, 35, 24, 0.1); color: var(--danger); }
+.tag.current {
+  background: var(--accent);
+  color: #fff;
+}
 .muted { color: var(--muted); }
 .error { color: var(--danger); font-size: 13px; }
 .tabs {
@@ -832,6 +890,10 @@ body.is-drawer-resizing {
   color: var(--muted);
 }
 .doc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
   font-size: 12px;
   color: var(--muted);
   margin-bottom: 6px;

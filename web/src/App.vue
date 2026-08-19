@@ -1,8 +1,9 @@
 <script setup>
 import { onMounted, computed, ref } from 'vue'
-import { RouterLink, RouterView } from 'vue-router'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { readApi } from './api'
 import { useClusterStore } from './stores/cluster'
+import { permTypeLabel } from './utils/labels'
 
 const {
   clusters,
@@ -10,6 +11,8 @@ const {
   setCurrentClusterId,
   refreshClusters
 } = useClusterStore()
+const route = useRoute()
+const showClusterBar = computed(() => !String(route.path || '').startsWith('/docs'))
 
 const ui = ref({
   title: 'k8s多集群运维工具',
@@ -72,9 +75,11 @@ onMounted(() => {
         <!-- 标题靠左，导航靠右，与正文同宽 -->
         <div class="head-mid">
           <div class="brand-block">
-            <img class="brand-icon" :src="iconSrc" width="36" height="36" alt="" />
+            <RouterLink to="/" class="brand-home brand-home-icon">
+              <img class="brand-icon" :src="iconSrc" width="36" height="36" alt="" />
+            </RouterLink>
             <div class="brand-copy">
-              <div class="brand">{{ ui.title }}</div>
+              <RouterLink to="/" class="brand brand-home">{{ ui.title }}</RouterLink>
               <p v-if="ui.tagline" class="site-tagline">{{ ui.tagline }}</p>
             </div>
           </div>
@@ -91,17 +96,17 @@ onMounted(() => {
     </header>
 
     <main class="body shell">
-      <div class="cluster-bar">
-        <label class="cluster-label" for="cluster-select">选择集群</label>
+      <div v-if="showClusterBar" class="cluster-bar">
+        <label class="cluster-label" for="cluster-select">当前集群</label>
         <select
           id="cluster-select"
           class="cluster-select"
           :value="currentClusterId"
           @change="setCurrentClusterId($event.target.value)"
         >
-          <option value="">选择集群</option>
+          <option value="">未选择</option>
           <option v-for="c in clusters" :key="c.id" :value="c.id">
-            {{ c.name }} ({{ c.permType }})
+            {{ c.name }} · {{ permTypeLabel(c.permType) }}
           </option>
         </select>
       </div>
