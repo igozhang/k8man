@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -114,6 +115,7 @@ func BuildClients(kubeconfigYAML string, hosts *HostsResolver) (*Clients, error)
 		return nil, fmt.Errorf("parse kubeconfig: %w", err)
 	}
 	cfg.Timeout = 30 * time.Second
+	wrapGatewayAwareTransport(cfg)
 	if hosts != nil {
 		hosts.ApplyDial(cfg)
 	}
@@ -269,6 +271,10 @@ func FriendlyConnectivityError(err error) string {
 	if err == nil {
 		return ""
 	}
+	var ge *gatewayHTTPError
+	if errors.As(err, &ge) {
+		return ge.Error() + "\n提示：请求打到了前端网关（常见为 nginx HTML 页），没有到达 Kubernetes/Rancher API。请确认 Hosts 指向 Rancher 入口，且 nginx 已把 /k8s/clusters/...（或 /api）反代到后端。"
+	}
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "no such host"):
@@ -277,6 +283,8 @@ func FriendlyConnectivityError(err error) string {
 		return msg + "\n提示：连接超时，请检查 k8man 所在网络能否访问该 API Server（防火墙/路由/安全组）。"
 	case strings.Contains(msg, "certificate"), strings.Contains(msg, "x509"), strings.Contains(msg, "unknown authority"):
 		return msg + "\n提示：证书校验失败（内网/Rancher 常见）。请编辑该集群并勾选「跳过 TLS 证书校验」后重试。"
+	case strings.Contains(msg, "the server could not find the requested resource") && strings.Contains(msg, "namespaces"):
+		return msg + "\n提示：对端不像 Kubernetes API（Rancher 反代未生效时，nginx 常返回 HTML 404，client-go 会报这句）。请检查 Hosts 是否指向 Rancher，以及 nginx 是否代理了 /k8s/clusters/..."
 	default:
 		return msg
 	}
