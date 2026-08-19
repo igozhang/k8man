@@ -30,6 +30,7 @@ const metricsTip = ref('')
 const loading = ref(false)
 const refreshing = ref(false)
 const error = ref('')
+const notice = ref('')
 const rowsSeq = createSeq()
 const nsSeq = createSeq()
 
@@ -51,8 +52,10 @@ const specEditor = ref({
   env: [],
   envFrom: [],
   resources: { requestsCpu: '', requestsMemory: '', limitsCpu: '', limitsMemory: '' },
-  busy: false
+  busy: false,
+  loading: false
 })
+const specSeq = createSeq()
 
 function applyNsList(list) {
   namespaces.value = list
@@ -273,9 +276,11 @@ function afterWrite() {
 
 async function restart(pod) {
   if (!confirm(`重启 Pod ${pod.name}？（删除后由控制器重建）`)) return
+  error.value = ''
+  notice.value = ''
   try {
     const r = await writeApi.restartPod(currentClusterId.value, ns.value, pod.name)
-    alert(r?.message || '已提交重启')
+    notice.value = r?.message || `已提交重启 ${pod.name}`
     await afterWrite()
   } catch (e) {
     error.value = errMessage(e)
@@ -304,7 +309,9 @@ function closeAllEditors() {
   yamlDrawer.value?.close()
   cmEditor.value?.close()
   scaleForm.value.open = false
+  specSeq.bump()
   specEditor.value.open = false
+  specEditor.value.loading = false
 }
 
 function openScale(row) {
@@ -372,6 +379,22 @@ function applyContainerToForm(ctr) {
 async function openSpecEdit(row) {
   error.value = ''
   const kind = yamlKind(row.kind)
+  const seq = specSeq.next()
+  specEditor.value = {
+    open: true,
+    kind,
+    name: row.name,
+    containers: [],
+    configMaps: [],
+    secrets: [],
+    selected: '',
+    image: '',
+    env: [],
+    envFrom: [],
+    resources: { requestsCpu: '', requestsMemory: '', limitsCpu: '', limitsMemory: '' },
+    busy: false,
+    loading: true
+  }
   try {
     const data = await readApi.getWorkloadSpecEdit(
       currentClusterId.value,
@@ -379,25 +402,26 @@ async function openSpecEdit(row) {
       kind,
       row.name
     )
+    if (!specSeq.is(seq)) return
     const containers = asArray(data?.containers)
-    specEditor.value = {
-      open: true,
-      kind,
-      name: row.name,
-      containers,
-      configMaps: asArray(data?.configMaps),
-      secrets: asArray(data?.secrets),
-      selected: '',
-      image: '',
-      env: [],
-      envFrom: [],
-      resources: { requestsCpu: '', requestsMemory: '', limitsCpu: '', limitsMemory: '' },
-      busy: false
-    }
+    specEditor.value.containers = containers
+    specEditor.value.configMaps = asArray(data?.configMaps)
+    specEditor.value.secrets = asArray(data?.secrets)
+    specEditor.value.loading = false
     if (containers.length) applyContainerToForm(containers[0])
+    else error.value = `未读到 ${kind}/${row.name} 的容器规格`
   } catch (e) {
+    if (!specSeq.is(seq)) return
+    specEditor.value.loading = false
     error.value = errMessage(e)
   }
+}
+
+function closeSpecEdit() {
+  specSeq.bump()
+  specEditor.value.open = false
+  specEditor.value.loading = false
+  specEditor.value.busy = false
 }
 
 function onSpecContainerChange() {
@@ -470,6 +494,7 @@ async function saveSpecEdit() {
       }
     )
     specEditor.value.open = false
+    specEditor.value.loading = false
     await afterWrite()
   } catch (e) {
     error.value = errMessage(e)
@@ -549,6 +574,7 @@ watch([ns, tab], () => {
         </div>
       </div>
       <p v-if="error" class="error">{{ error }}</p>
+      <p v-if="notice" class="notice">{{ notice }}</p>
       <div v-if="!ns" class="empty">请选择命名空间后再加载资源。</div>
       <template v-else>
       <p v-if="loading" class="muted">加载中…</p>
@@ -716,20 +742,22 @@ watch([ns, tab], () => {
     </div>
 
     <!-- Spec edit -->
-    <div v-if="specEditor.open" class="drawer-backdrop" @click="specEditor.open = false"></div>
+    <div v-if="specEditor.open" class="drawer-backdrop" @click="closeSpecEdit"></div>
     <div v-if="specEditor.open" class="drawer drawer-wide">
       <div class="toolbar">
         <strong>常用编辑 · {{ specEditor.kind }}/{{ specEditor.name }}</strong>
         <div class="actions">
-          <button class="btn btn-primary btn-sm" :disabled="specEditor.busy" @click="saveSpecEdit">
+          <button class="btn btn-primary btn-sm" :disabled="specEditor.busy || specEditor.loading" @click="saveSpecEdit">
             {{ specEditor.busy ? '保存中…' : '保存' }}
           </button>
-          <button class="btn btn-sm" @click="specEditor.open = false">关闭</button>
+          <button class="btn btn-sm" @click="closeSpecEdit">关闭</button>
         </div>
       </div>
       <p class="muted">仅改镜像、环境变量、envFrom、资源；复杂变更请用 YAML。</p>
+      <p v-if="specEditor.loading" class="muted">正在加载当前规格…</p>
       <p v-if="error" class="error">{{ error }}</p>
 
+      <template v-if="!specEditor.loading && specEditor.containers.length">
       <div class="form-row">
         <label>容器</label>
         <select v-model="specEditor.selected" @change="onSpecContainerChange">
@@ -801,6 +829,7 @@ watch([ns, tab], () => {
           <input v-model="specEditor.resources.limitsMemory" placeholder="如 512Mi" />
         </div>
       </div>
+      </template>
     </div>
   </div>
 </template>

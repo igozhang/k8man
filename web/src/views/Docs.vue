@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { readApi, writeApi } from '../api'
 import { asArray, errMessage } from '../utils/safe'
@@ -9,6 +9,12 @@ const list = ref([])
 const q = ref('')
 const category = ref('')
 const error = ref('')
+let searchTimer = 0
+
+function scheduleSearch() {
+  window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => load(), 300)
+}
 
 async function load({ force = false } = {}) {
   error.value = ''
@@ -52,6 +58,10 @@ function fmtTime(t) {
 }
 
 onMounted(load)
+
+onUnmounted(() => {
+  window.clearTimeout(searchTimer)
+})
 </script>
 
 <template>
@@ -64,7 +74,7 @@ onMounted(load)
       <RouterLink class="btn btn-primary" to="/docs/edit">新建文档</RouterLink>
     </div>
     <div class="toolbar toolbar-start">
-      <input v-model="q" type="text" placeholder="搜索标题/摘要" @keyup.enter="load" />
+      <input v-model="q" type="text" placeholder="搜索标题/摘要" @keyup.enter="load" @input="scheduleSearch" />
       <select v-model="category" @change="load">
         <option value="">全部分类</option>
         <option value="k8s">k8s</option>

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, nextTick, onUnmounted, watch } from 'vue'
 import { readApi, writeApi } from '../api'
-import { asArray, errMessage } from '../utils/safe'
+import { asArray, createSeq, errMessage } from '../utils/safe'
 import { copyText } from '../utils/clipboard'
 
 const props = defineProps({
@@ -15,7 +15,9 @@ const CM_VAL_MIN_PX = 120
 const CM_VAL_MAX_VH = 0.55
 const CM_VAL_MAX_PX = 560
 
+const openSeq = createSeq()
 const open = ref(false)
+const loading = ref(false)
 const name = ref('')
 const mode = ref('kv') // kv | yaml
 const entries = ref([])
@@ -107,25 +109,36 @@ async function copyYaml() {
 }
 
 async function openEditor(cmName) {
+  const seq = openSeq.next()
   localError.value = ''
   copied.value = ''
+  name.value = cmName
+  mode.value = 'kv'
+  entries.value = []
+  binaryKeys.value = []
+  yaml.value = ''
+  busy.value = false
+  loading.value = true
+  open.value = true
   try {
     const detail = await readApi.getConfigMap(props.clusterId, props.ns, cmName)
-    name.value = cmName
-    mode.value = 'kv'
+    if (!openSeq.is(seq)) return
     entries.value = dataToEntries(detail?.data)
     binaryKeys.value = asArray(detail?.binaryKeys)
-    yaml.value = ''
-    busy.value = false
-    open.value = true
     fitAllCmValues()
   } catch (e) {
-    emit('error', errMessage(e))
+    if (!openSeq.is(seq)) return
+    localError.value = errMessage(e)
+    emit('error', localError.value)
+  } finally {
+    if (openSeq.is(seq)) loading.value = false
   }
 }
 
 function close() {
+  openSeq.bump()
   open.value = false
+  loading.value = false
 }
 
 function addEntry() {
@@ -138,7 +151,7 @@ function removeEntry(i) {
 }
 
 async function switchMode(next) {
-  if (next === mode.value) return
+  if (loading.value || next === mode.value) return
   if (
     !confirm(
       next === 'yaml'
@@ -182,7 +195,7 @@ async function save() {
       const data = entriesToData(entries.value)
       await writeApi.patchConfigMapData(props.clusterId, props.ns, name.value, data)
     }
-    open.value = false
+    close()
     emit('saved')
   } catch (e) {
     localError.value = errMessage(e)
@@ -210,26 +223,29 @@ defineExpose({ open: openEditor, close })
             type="button"
             class="tab"
             :class="{ active: mode === 'kv' }"
+            :disabled="loading"
             @click="switchMode('kv')"
           >键值</button>
           <button
             type="button"
             class="tab"
             :class="{ active: mode === 'yaml' }"
+            :disabled="loading"
             @click="switchMode('yaml')"
           >YAML</button>
         </div>
-        <button class="btn btn-primary btn-sm" :disabled="busy" @click="save">
+        <button class="btn btn-primary btn-sm" :disabled="busy || loading" @click="save">
           {{ busy ? '保存中…' : '保存' }}
         </button>
         <button class="btn btn-sm" @click="close">关闭</button>
       </div>
     </div>
+    <p v-if="loading" class="muted">正在加载 ConfigMap…</p>
     <p v-if="localError" class="error">{{ localError }}</p>
-    <p v-if="binaryKeys.length" class="muted">
+    <p v-if="!loading && binaryKeys.length" class="muted">
       含二进制键（不可在键值表编辑）：{{ binaryKeys.join(', ') }}
     </p>
-    <template v-if="mode === 'kv'">
+    <template v-if="!loading && mode === 'kv'">
       <div class="kv-list cm-kv-list">
         <div v-for="(e, i) in entries" :key="i" class="kv-row cm-kv-row">
           <input v-model="e.key" placeholder="key" class="kv-key" />
@@ -255,7 +271,7 @@ defineExpose({ open: openEditor, close })
       </div>
       <button class="btn btn-sm" @click="addEntry">添加键</button>
     </template>
-    <div v-else class="field-copy-wrap">
+    <div v-else-if="!loading && mode === 'yaml'" class="field-copy-wrap">
       <textarea v-model="yaml" class="cm-yaml"></textarea>
       <button
         type="button"

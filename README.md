@@ -4,7 +4,9 @@
 
 ## 特性
 
-- 多集群 kubeconfig 导入、连通性测试、cluster / project 权限自动探测
+- 多集群 kubeconfig 导入 / 编辑（抽屉回填原文）、连通性测试、cluster / project 权限探测
+- 轻量入口探测：ingress-nginx / 外置 nginx / Rancher（点「测试」后写在状态列）
+- 页面 Hosts（`IP hostname`）：kubeconfig 域名解析不到时用，约 2 秒生效
 - 工作负载查看与运维：Pod 日志/重启、Deployment/StatefulSet 扩缩容、ConfigMap 键值编辑、控制器常用字段（镜像/环境变量/资源）编辑、受限 YAML 查看与应用
 - 节点与基础监控（依赖目标集群 metrics-server）
 - 产品内运维文档（Markdown）
@@ -51,14 +53,18 @@ npm run dev   # Vite 代理 /api -> :8080
 
 ## 导入 kubeconfig
 
-1. 打开页面「KubeConfig」
-2. 粘贴 Rancher「Download KubeConfig‑Cluster」或「Project kubeconfig」
-3. 保存后自动探测权限类型：
-   - 能 List Node → `cluster`
-   - 否则 → `project`（仅其可访问 Namespace）
-4. 在页面功能区顶部「选择集群」后进行运维/监控
+1. 打开「KubeConfig」→「导入 kubeconfig」（右侧抽屉）
+2. 粘贴或上传 Rancher「Download KubeConfig‑Cluster」或 Project kubeconfig；标题可留空（用 `current-context`）
+3. 可选：改 API Server、勾选「跳过 TLS 证书校验」（内网 / 自签证书）
+4. 点「测试」探测连通、权限与入口；**保存不会自动探测**，导入后状态为「未测试」
+   - 能 List Node → `cluster`，否则 → `project`（仅其可访问 Namespace）
+   - 入口（启发式，写在状态列）：`ingress-nginx` / 外置 nginx / Rancher
+5. 域名解析不到时，在同页 Hosts 按系统 hosts 格式添加 `IP hostname`，约 2 秒后再生效，再测
+6. 「选用」后到工作负载 / 监控 / 诊断
 
-能力边界完全由导入的 kubeconfig 决定。
+点「编辑」会打开抽屉并加载已保存的 kubeconfig；未保存关闭会确认。改 YAML 或 API Server 后入口标签会清空，需再测。
+
+能力边界完全由导入的 kubeconfig 决定。详情见 [API](docs/api.md)。
 
 ## 目录说明
 

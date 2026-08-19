@@ -20,11 +20,37 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/clusters` | 集群列表（不含 kubeconfig 原文） |
-| GET | `/clusters/:id` | 集群详情 |
+| GET | `/clusters` | 集群列表（**不含** kubeconfig 原文） |
+| GET | `/clusters/:id` | 集群详情（**含** kubeconfig 原文，供编辑回填） |
 | GET | `/clusters/:id/namespaces` | Namespace 列表（List 首页 `resourceVersion=0` 走 API Server watch cache） |
 | GET | `/clusters/:id/nodes` | 节点列表（project 返回 403；同样走 watch cache） |
 | GET | `/clusters/:id/diagnose?namespace=` | 诊断扫描，只返回异常项（见下方） |
+
+集群对象常用字段：
+
+| 字段 | 说明 |
+|------|------|
+| `permType` | `cluster` / `project` / `unknown` |
+| `namespaces` | 有权命名空间 |
+| `server` | API Server URL |
+| `status` | `ok` / `error` / `unknown`（导入后默认 `unknown`，需点测试） |
+| `lastError` | 最近一次测试失败信息 |
+| `frontProxy` | 入口探测结果，见下方；空表示未测或无法判断 |
+| `insecureSkipTLS` | 是否跳过证书校验（由 kubeconfig 推导，非独立存储列） |
+
+#### `frontProxy`（入口探测）
+
+`POST /clusters/probe` 与 `POST /clusters/:id/test` 在探测 API 的同时，对 kubeconfig **host 的 origin**（不是 `/k8s/clusters/...` 等 API path）并行 GET `/ping` 和 `/k8man-front-probe`（约 2 秒超时）。启发式分类，不确定则空：
+
+| 值 | 页面标签 | 典型依据 |
+|------|------|------|
+| `ingress-nginx` | ingress-nginx | `default backend - 404`，或 `Server: nginx` + `text/plain` 404 |
+| `nginx` | 外置 nginx | HTML 404 / Welcome to nginx / `<center>nginx</center>` |
+| `rancher` | Rancher | `/ping` 返回 `pong`（优先于 nginx 指纹） |
+| `apiserver` | （不展示） | JSON `Status` |
+| 空 | （不展示） | 不确定 |
+
+改 kubeconfig / API Server / TLS 选项后该字段清空，需再测。Rancher 经 ingress-nginx 暴露且 `/ping` 可达时标为 `rancher`。
 
 ### 诊断
 
@@ -140,9 +166,11 @@
 
 ### Hosts
 
+页面「KubeConfig」底部与本接口共用同一文件（部署时 `/data/etc/hosts`）。格式与系统 hosts 相同：`IP hostname`。
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/hosts` | 私有解析列表（`{path,items}`） |
+| GET | `/hosts` | `{path, items}`；`items` 为 `{id,hostname,ip}` |
 
 ## 写操作 `/api/v1/write`
 
@@ -150,10 +178,17 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/clusters` | 导入 kubeconfig body: `{name,description,kubeconfig}` |
-| PUT | `/clusters/:id` | 更新（可只改 name/description，或同时更新 kubeconfig） |
+| POST | `/clusters` | 导入。不自动探测，`status` 为 `unknown` |
+| POST | `/clusters/probe` | **不落库**，测当前编辑内容（抽屉里「测试」） |
+| PUT | `/clusters/:id` | 更新；改 kubeconfig / server / TLS 会清空探测结果并丢弃该集群的客户端缓存 |
 | DELETE | `/clusters/:id` | 删除 |
-| POST | `/clusters/:id/test` | 连通性与权限重探测，并回写 `status` / `permType` / `namespaces` / `server` / `lastError` |
+| POST | `/clusters/:id/test` | 连通、权限与入口重探测，并回写 `status` / `permType` / `namespaces` / `server` / `lastError` / `frontProxy` |
+
+导入 body：`{name, description, kubeconfig, serverOverride?, insecureSkipTLS?}`。`name` 可空，取 kubeconfig 的 `current-context`。`serverOverride` 会改写 kubeconfig 内 cluster.server。
+
+更新 body（字段均可省略）：`{name, description, kubeconfig, serverOverride, insecureSkipTLS}`。`kubeconfig` 不传则不覆盖原文。
+
+`probe` / `test` 的 `data`：`{server, permType, namespaces, status, lastError, frontProxy}`。`probe` 的请求 body 与导入相同（`kubeconfig` 必填）。
 
 ### 运维
 
@@ -199,6 +234,8 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/hosts` | 添加 |
-| PUT | `/hosts/:hostId` | 更新 |
+| POST | `/hosts` | 添加 body: `{hostname, ip}` |
+| PUT | `/hosts/:hostId` | 更新；`hostId` 可为 id 或 hostname；body: `{hostname?, ip?}` |
 | DELETE | `/hosts/:hostId` | 删除 |
+
+写入后约 2 秒内对后续「测试」与 API 请求生效（进程内解析器热加载）。

@@ -85,6 +85,7 @@ func probeResponse(probe kube.ProbeResult) gin.H {
 		"namespaces": probe.Namespaces,
 		"status":     probe.Status,
 		"lastError":  probe.LastError,
+		"frontProxy": probe.FrontProxy,
 	}
 }
 
@@ -197,6 +198,7 @@ func (h *Handler) UpdateCluster(c *gin.Context) {
 		existing.Namespaces = []string{}
 		existing.Status = "unknown"
 		existing.LastError = ""
+		existing.FrontProxy = ""
 		h.Pool.Invalidate(id)
 	}
 	existing.UpdatedAt = time.Now().UTC()
@@ -251,6 +253,7 @@ func (h *Handler) TestCluster(c *gin.Context) {
 	cl.Namespaces = probe.Namespaces
 	cl.Status = probe.Status
 	cl.LastError = probe.LastError
+	cl.FrontProxy = probe.FrontProxy
 	cl.UpdatedAt = time.Now().UTC()
 	if err := h.Store.UpdateCluster(cl); err != nil {
 		respond.Internal(c, err.Error())

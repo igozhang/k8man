@@ -82,8 +82,30 @@ func TestProbeNginxHTML404IsGatewayError(t *testing.T) {
 	if !strings.Contains(res.LastError, "前端网关") && !strings.Contains(res.LastError, "nginx") {
 		t.Fatalf("want gateway hint, got %q", res.LastError)
 	}
-	if strings.Contains(res.LastError, "get namespaces") && !strings.Contains(res.LastError, "前端网关") {
+	if strings.Contains(res.LastError, "get namespaces") && !strings.Contains(res.LastError, "前端网关") && !strings.Contains(res.LastError, "外置 nginx") {
 		t.Fatalf("still wrapped as k8s namespaces 404: %q", res.LastError)
+	}
+	if res.FrontProxy != FrontNginx {
+		t.Fatalf("frontProxy=%q want nginx", res.FrontProxy)
+	}
+}
+
+func TestProbePrefersOriginRancherPing(t *testing.T) {
+	front := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ping" {
+			_, _ = w.Write([]byte("pong"))
+			return
+		}
+		writeNginx404(w)
+	}))
+	t.Cleanup(front.Close)
+
+	res := probeViaNginx(t, front, rancherPrefix, nil)
+	if res.Status != "error" {
+		t.Fatalf("want error, got %+v", res)
+	}
+	if res.FrontProxy != FrontRancher {
+		t.Fatalf("frontProxy=%q want rancher from origin /ping", res.FrontProxy)
 	}
 }
 

@@ -7,6 +7,20 @@ export function permTypeLabel(t) {
   return t || ''
 }
 
+export function frontProxyLabel(t) {
+  if (t === 'ingress-nginx') return 'ingress-nginx'
+  if (t === 'nginx') return '外置 nginx'
+  if (t === 'rancher') return 'Rancher'
+  return ''
+}
+
+export function frontProxyClass(t) {
+  if (t === 'ingress-nginx') return 'ingress'
+  if (t === 'nginx') return 'nginx-front'
+  if (t === 'rancher') return 'rancher'
+  return ''
+}
+
 export function clusterStatusLabel(status) {
   if (status === 'ok') return '正常'
   if (status === 'error') return '失败'

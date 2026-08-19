@@ -5,7 +5,7 @@ import { readApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { asArray, createSeq, errMessage } from '../utils/safe'
 import { cacheFresh, cacheGet, cacheKey, cacheLoad, cacheSet, setViewPref, ttlOf } from '../utils/resourceCache'
-import { permTypeLabel, clusterStatusLabel, clusterStatusClass } from '../utils/labels'
+import { permTypeLabel, clusterStatusLabel, clusterStatusClass, frontProxyLabel, frontProxyClass } from '../utils/labels'
 
 const router = useRouter()
 const { clusters, currentClusterId, setCurrentClusterId, refreshClusters } = useClusterStore()
@@ -392,17 +392,33 @@ onUnmounted(() => {
             </div>
             <div class="status-line">
               <span class="tag" :class="clusterStatusClass(c.status)">{{ clusterStatusLabel(c.status) }}</span>
-              <span v-if="c.lastError" class="error"> {{ c.lastError }}</span>
-              <span v-if="cardOf(c.id).refreshing" class="muted"> · 更新中…</span>
+              <span
+                v-if="frontProxyLabel(c.frontProxy)"
+                class="tag"
+                :class="frontProxyClass(c.frontProxy)"
+                :title="'入口探测：' + frontProxyLabel(c.frontProxy)"
+              >{{ frontProxyLabel(c.frontProxy) }}</span>
+              <span v-if="cardOf(c.id).refreshing" class="muted">更新中…</span>
             </div>
+            <p
+              v-if="c.lastError"
+              class="error error-clip"
+              :title="c.lastError"
+            >{{ c.lastError }}</p>
           </div>
-          <button
-            type="button"
-            class="btn btn-sm"
-            :class="{ 'is-current': c.id === currentClusterId }"
-            :disabled="c.id === currentClusterId"
-            @click="setCurrentClusterId(c.id)"
-          >{{ c.id === currentClusterId ? '已选用' : '选用' }}</button>
+          <div class="actions">
+            <RouterLink
+              class="btn btn-sm"
+              :to="{ path: '/clusters', query: { edit: c.id } }"
+            >编辑</RouterLink>
+            <button
+              type="button"
+              class="btn btn-sm"
+              :class="{ 'is-current': c.id === currentClusterId }"
+              :disabled="c.id === currentClusterId"
+              @click="setCurrentClusterId(c.id)"
+            >{{ c.id === currentClusterId ? '已选用' : '选用' }}</button>
+          </div>
         </div>
 
         <div v-if="cardOf(c.id).error" class="error-block">
@@ -571,6 +587,13 @@ onUnmounted(() => {
   align-items: center;
   gap: 0.35rem 0.5rem;
   margin-top: 6px;
+}
+.status-line + .error-clip {
+  margin: 4px 0 0;
+}
+.cluster-card-head .actions {
+  flex-shrink: 0;
+  margin-top: 0;
 }
 .cluster-card-head .btn {
   flex-shrink: 0;

@@ -38,6 +38,7 @@ type ProbeResult struct {
 	Namespaces []string
 	Status     string
 	LastError  string
+	FrontProxy string // ingress-nginx | nginx | rancher | apiserver | empty
 }
 
 type Pool struct {
@@ -145,7 +146,13 @@ func Probe(ctx context.Context, kubeconfigYAML string, hosts *HostsResolver) Pro
 	}
 	res.Server = c.Server
 
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	parent := ctx
+	frontCh := make(chan string, 1)
+	go func() {
+		frontCh <- DetectFrontProxy(parent, kubeconfigYAML, hosts)
+	}()
+
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
 
 	nsList, err := listViaWatchCache(500, func(opts metav1.ListOptions) (*corev1.NamespaceList, error) {
@@ -153,6 +160,11 @@ func Probe(ctx context.Context, kubeconfigYAML string, hosts *HostsResolver) Pro
 	})
 	if err != nil {
 		res.LastError = FriendlyConnectivityError(err)
+		if kind := waitFront(frontCh); kind != "" {
+			res.FrontProxy = kind
+		} else {
+			res.FrontProxy = classifyFrontFromErr(err)
+		}
 		return res
 	}
 	if nsList != nil {
@@ -171,7 +183,17 @@ func Probe(ctx context.Context, kubeconfigYAML string, hosts *HostsResolver) Pro
 	}
 	res.Status = "ok"
 	res.LastError = ""
+	res.FrontProxy = waitFront(frontCh)
 	return res
+}
+
+func waitFront(ch <-chan string) string {
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(frontProbeTimeout + 500*time.Millisecond):
+		return ""
+	}
 }
 
 // SuggestServerFromKubeconfig returns the current-context cluster server URL.
@@ -273,7 +295,16 @@ func FriendlyConnectivityError(err error) string {
 	}
 	var ge *gatewayHTTPError
 	if errors.As(err, &ge) {
-		return ge.Error() + "\n提示：请求打到了前端网关（常见为 nginx HTML 页），没有到达 Kubernetes/Rancher API。请确认 Hosts 指向 Rancher 入口，且 nginx 已把 /k8s/clusters/...（或 /api）反代到后端。"
+		kind := ClassifyFrontProxy(ge.StatusCode, ge.Server, ge.ContentType, ge.Body)
+		base := ge.Error()
+		switch kind {
+		case FrontIngressNginx:
+			return base + "\n提示：打到了 ingress-nginx 默认后端（default backend），kubeconfig 的路径没有对应 Ingress，或 Host/SNI 不匹配。"
+		case FrontNginx:
+			return base + "\n提示：打到了外置 nginx 默认页，没有到达 Kubernetes/Rancher API。请确认 Hosts 与 server 域名，以及 nginx 是否把 /k8s/clusters/...（或 /api）反代到后端。"
+		default:
+			return base + "\n提示：请求打到了前端网关（常见为 nginx HTML 页），没有到达 Kubernetes/Rancher API。请确认 Hosts 指向 Rancher 入口，且 nginx 已把 /k8s/clusters/...（或 /api）反代到后端。"
+		}
 	}
 	msg := err.Error()
 	switch {

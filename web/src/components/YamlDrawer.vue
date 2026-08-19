@@ -1,7 +1,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { readApi, writeApi } from '../api'
-import { errMessage } from '../utils/safe'
+import { createSeq, errMessage } from '../utils/safe'
 import { copyText } from '../utils/clipboard'
 
 const props = defineProps({
@@ -12,7 +12,10 @@ const props = defineProps({
 
 const emit = defineEmits(['saved', 'error'])
 
+const openSeq = createSeq()
 const open = ref(false)
+const loading = ref(false)
+const loadError = ref('')
 const kind = ref('')
 const name = ref('')
 const activeNs = ref('')
@@ -30,21 +33,36 @@ watch(
 
 async function openEditor(resourceKind, resourceName, resourceNs) {
   const ns = resourceNs || props.ns
+  const seq = openSeq.next()
+  kind.value = resourceKind
+  name.value = resourceName
+  activeNs.value = ns
+  yaml.value = ''
+  loadError.value = ''
+  loading.value = true
+  busy.value = false
+  open.value = true
   try {
     const r = await readApi.getYAML(props.clusterId, ns, resourceKind, resourceName)
-    kind.value = resourceKind
-    name.value = resourceName
-    activeNs.value = ns
-    yaml.value = r?.yaml || ''
-    open.value = true
+    if (!openSeq.is(seq)) return
+    yaml.value = r?.yaml ?? ''
+    if (r?.yaml == null && yaml.value === '') loadError.value = '未读到 YAML 内容'
   } catch (e) {
-    emit('error', errMessage(e))
+    if (!openSeq.is(seq)) return
+    loadError.value = errMessage(e)
+    emit('error', loadError.value)
+  } finally {
+    if (openSeq.is(seq)) loading.value = false
   }
 }
 
 function close() {
+  openSeq.bump()
   open.value = false
+  loading.value = false
+  loadError.value = ''
   activeNs.value = ''
+  yaml.value = ''
 }
 
 async function save() {
@@ -52,7 +70,7 @@ async function save() {
   busy.value = true
   try {
     await writeApi.applyYAML(props.clusterId, activeNs.value || props.ns, kind.value, name.value, yaml.value)
-    open.value = false
+    close()
     emit('saved')
   } catch (e) {
     emit('error', errMessage(e))
@@ -86,7 +104,7 @@ defineExpose({ open: openEditor, close })
         <button
           v-if="!readOnly"
           class="btn btn-primary btn-sm"
-          :disabled="busy"
+          :disabled="busy || loading || !!loadError"
           @click="save"
         >
           {{ busy ? '应用中…' : '应用' }}
@@ -94,7 +112,9 @@ defineExpose({ open: openEditor, close })
         <button class="btn btn-sm" @click="close">关闭</button>
       </div>
     </div>
-    <div class="field-copy-wrap">
+    <p v-if="loading" class="muted">正在加载 YAML…</p>
+    <p v-else-if="loadError" class="error">{{ loadError }}</p>
+    <div v-else class="field-copy-wrap">
       <textarea v-model="yaml" class="cm-yaml" :readonly="readOnly"></textarea>
       <button
         type="button"

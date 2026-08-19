@@ -16,6 +16,7 @@ type gatewayHTTPError struct {
 	Server      string
 	URL         string
 	ContentType string
+	Body        string
 }
 
 func (e *gatewayHTTPError) Error() string {
@@ -58,7 +59,7 @@ func (t *gatewayAwareTransport) RoundTrip(req *http.Request) (*http.Response, er
 	if !looksLikeGatewayPage(resp) {
 		return resp, nil
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 	_ = resp.Body.Close()
 	url := ""
 	if req != nil && req.URL != nil {
@@ -69,6 +70,7 @@ func (t *gatewayAwareTransport) RoundTrip(req *http.Request) (*http.Response, er
 		Server:      resp.Header.Get("Server"),
 		URL:         url,
 		ContentType: resp.Header.Get("Content-Type"),
+		Body:        string(body),
 	}
 }
 

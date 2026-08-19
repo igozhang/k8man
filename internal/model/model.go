@@ -12,6 +12,7 @@ type Cluster struct {
 	Server      string    `json:"server"`
 	Status      string    `json:"status"` // ok | error
 	LastError   string    `json:"lastError,omitempty"`
+	FrontProxy  string    `json:"frontProxy,omitempty"` // ingress-nginx | nginx | rancher | apiserver
 	InsecureSkipTLS bool  `json:"insecureSkipTLS,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`

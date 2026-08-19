@@ -54,7 +54,7 @@ func (h *Handler) ListClusters(c *gin.Context) {
 }
 
 func (h *Handler) GetCluster(c *gin.Context) {
-	cl, err := h.Store.GetCluster(c.Param("id"), false)
+	cl, err := h.Store.GetCluster(c.Param("id"), true)
 	if err != nil {
 		respond.Internal(c, err.Error())
 		return
