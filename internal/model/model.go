@@ -33,6 +33,13 @@ type ClusterUpdate struct {
 	InsecureSkipTLS *bool   `json:"insecureSkipTLS"`
 }
 
+// ClusterProbeInput tests connectivity of a kubeconfig without saving.
+type ClusterProbeInput struct {
+	Kubeconfig      string `json:"kubeconfig" binding:"required"`
+	ServerOverride  string `json:"serverOverride"`
+	InsecureSkipTLS bool   `json:"insecureSkipTLS"`
+}
+
 type Doc struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`

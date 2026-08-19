@@ -115,6 +115,7 @@ func NewRouter(d Deps) *gin.Engine {
 	writeGroup.Use(middleware.AuthWrite())
 	{
 		writeGroup.POST("/clusters", wh.CreateCluster)
+		writeGroup.POST("/clusters/probe", wh.ProbeCluster)
 		writeGroup.PUT("/clusters/:id", wh.UpdateCluster)
 		writeGroup.DELETE("/clusters/:id", wh.DeleteCluster)
 		writeGroup.POST("/clusters/:id/test", wh.TestCluster)

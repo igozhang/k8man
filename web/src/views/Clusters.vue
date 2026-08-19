@@ -21,6 +21,7 @@ const uploadFileName = ref('')
 const fileInput = ref(null)
 const notice = ref('')
 const testingId = ref('')
+const formTesting = ref(false)
 
 const hosts = ref([])
 const hostsPath = ref('')
@@ -243,11 +244,7 @@ async function save() {
     closeForm()
     if (saved?.id) invalidateClusterLists(saved.id)
     await load({ force: true })
-    if (saved?.status === 'error' && saved?.lastError) {
-      notice.value = `已保存，但连通性检测失败：${saved.lastError}`
-    } else {
-      notice.value = '已保存'
-    }
+    notice.value = '已保存'
   } catch (e) {
     error.value = errMessage(e)
   } finally {
@@ -288,6 +285,37 @@ async function testClusterConn(c) {
     error.value = errMessage(e)
   } finally {
     testingId.value = ''
+  }
+}
+
+async function testForm() {
+  const kubeconfig = form.value.kubeconfig.trim()
+  if (formMode.value === 'edit' && !kubeconfig) {
+    await testCurrent()
+    return
+  }
+  if (!kubeconfig) {
+    error.value = '请粘贴或上传 kubeconfig'
+    return
+  }
+  formTesting.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const r = await writeApi.probeCluster({
+      kubeconfig,
+      serverOverride: form.value.serverOverride.trim() || undefined,
+      insecureSkipTLS: !!form.value.insecureSkipTLS
+    })
+    if (r.status === 'ok') {
+      notice.value = `测试通过：${permTypeLabel(r.permType)} · ${r.server}`
+    } else {
+      error.value = `测试失败：${r.lastError || r.status}`
+    }
+  } catch (e) {
+    error.value = errMessage(e)
+  } finally {
+    formTesting.value = false
   }
 }
 
@@ -396,14 +424,13 @@ onMounted(() => {
       </div>
 
       <div class="actions">
-        <button class="btn btn-primary" :disabled="busy" @click="save">保存</button>
+        <button class="btn btn-primary" :disabled="busy || formTesting || !!testingId" @click="save">保存</button>
         <button
-          v-if="formMode === 'edit'"
           class="btn"
-          :disabled="!!testingId || busy"
-          @click="testCurrent"
-        >{{ testingId === editingId ? '测试中…' : '测试连接' }}</button>
-        <button class="btn" @click="closeForm">取消</button>
+          :disabled="busy || formTesting || !!testingId"
+          @click="testForm"
+        >{{ formTesting || testingId === editingId ? '测试中…' : '测试' }}</button>
+        <button class="btn" :disabled="busy || formTesting" @click="closeForm">取消</button>
       </div>
     </div>
 
@@ -443,7 +470,7 @@ onMounted(() => {
             >{{ c.id === currentClusterId ? '已选用' : '选用' }}</button>
             <button
               class="btn btn-sm"
-              :disabled="!!testingId"
+              :disabled="!!testingId || formTesting || busy"
               @click="testClusterConn(c)"
             >{{ testingId === c.id ? '测试中…' : '测试' }}</button>
             <button

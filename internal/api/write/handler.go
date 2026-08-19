@@ -55,6 +55,39 @@ func (h *Handler) syncHosts() {
 	_, _ = h.Hosts.SyncIfChanged()
 }
 
+// applyKubeconfigOptions rewrites server / TLS flags. Does not contact the cluster.
+func applyKubeconfigOptions(raw, serverOverride string, insecureSkipTLS *bool) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("kubeconfig required")
+	}
+	if ov := strings.TrimSpace(serverOverride); ov != "" {
+		rewritten, err := kube.OverrideKubeconfigServer(raw, ov)
+		if err != nil {
+			return "", err
+		}
+		raw = rewritten
+	}
+	if insecureSkipTLS != nil {
+		rewritten, err := kube.SetKubeconfigInsecureSkipTLS(raw, *insecureSkipTLS)
+		if err != nil {
+			return "", err
+		}
+		raw = rewritten
+	}
+	return raw, nil
+}
+
+func probeResponse(probe kube.ProbeResult) gin.H {
+	return gin.H{
+		"server":     probe.Server,
+		"permType":   probe.PermType,
+		"namespaces": probe.Namespaces,
+		"status":     probe.Status,
+		"lastError":  probe.LastError,
+	}
+}
+
 func (h *Handler) CreateCluster(c *gin.Context) {
 	var in model.ClusterInput
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -62,11 +95,13 @@ func (h *Handler) CreateCluster(c *gin.Context) {
 		return
 	}
 	in.Name = strings.TrimSpace(in.Name)
-	in.Kubeconfig = strings.TrimSpace(in.Kubeconfig)
-	if in.Kubeconfig == "" {
-		respond.BadRequest(c, "kubeconfig required")
+	skipTLS := in.InsecureSkipTLS
+	prepared, err := applyKubeconfigOptions(in.Kubeconfig, in.ServerOverride, &skipTLS)
+	if err != nil {
+		respond.BadRequest(c, err.Error())
 		return
 	}
+	in.Kubeconfig = prepared
 	if in.Name == "" {
 		in.Name = kube.SuggestNameFromKubeconfig(in.Kubeconfig)
 	}
@@ -74,37 +109,16 @@ func (h *Handler) CreateCluster(c *gin.Context) {
 		respond.BadRequest(c, "name required (or provide a kubeconfig with current-context)")
 		return
 	}
-	if ov := strings.TrimSpace(in.ServerOverride); ov != "" {
-		rewritten, err := kube.OverrideKubeconfigServer(in.Kubeconfig, ov)
-		if err != nil {
-			respond.BadRequest(c, err.Error())
-			return
-		}
-		in.Kubeconfig = rewritten
-	}
-	if in.InsecureSkipTLS {
-		rewritten, err := kube.SetKubeconfigInsecureSkipTLS(in.Kubeconfig, true)
-		if err != nil {
-			respond.BadRequest(c, err.Error())
-			return
-		}
-		in.Kubeconfig = rewritten
-	}
-	h.syncHosts()
-	ctx, cancel := h.ctx(c)
-	defer cancel()
-	probe := kube.Probe(ctx, in.Kubeconfig, h.Pool.Hosts())
 	now := time.Now().UTC()
 	cl := &model.Cluster{
 		ID:          uuid.NewString(),
 		Name:        in.Name,
 		Description: in.Description,
 		Kubeconfig:  in.Kubeconfig,
-		PermType:    probe.PermType,
-		Namespaces:  probe.Namespaces,
-		Server:      probe.Server,
-		Status:      probe.Status,
-		LastError:   probe.LastError,
+		PermType:    "unknown",
+		Namespaces:  []string{},
+		Server:      kube.SuggestServerFromKubeconfig(in.Kubeconfig),
+		Status:      "unknown",
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -148,10 +162,10 @@ func (h *Handler) UpdateCluster(c *gin.Context) {
 	if in.Description != nil {
 		existing.Description = *in.Description
 	}
-	needProbe := false
+	needRewrite := false
 	if in.Kubeconfig != nil {
 		existing.Kubeconfig = strings.TrimSpace(*in.Kubeconfig)
-		needProbe = true
+		needRewrite = true
 	}
 	if in.ServerOverride != nil {
 		ov := strings.TrimSpace(*in.ServerOverride)
@@ -162,28 +176,27 @@ func (h *Handler) UpdateCluster(c *gin.Context) {
 				return
 			}
 			existing.Kubeconfig = rewritten
-			needProbe = true
+			needRewrite = true
 		}
 	}
 	if in.InsecureSkipTLS != nil {
-		rewritten, err := kube.SetKubeconfigInsecureSkipTLS(existing.Kubeconfig, *in.InsecureSkipTLS)
-		if err != nil {
-			respond.BadRequest(c, err.Error())
-			return
+		currentSkip := kube.KubeconfigInsecureSkipTLS(existing.Kubeconfig)
+		if currentSkip != *in.InsecureSkipTLS {
+			rewritten, err := kube.SetKubeconfigInsecureSkipTLS(existing.Kubeconfig, *in.InsecureSkipTLS)
+			if err != nil {
+				respond.BadRequest(c, err.Error())
+				return
+			}
+			existing.Kubeconfig = rewritten
+			needRewrite = true
 		}
-		existing.Kubeconfig = rewritten
-		needProbe = true
 	}
-	if needProbe {
-		h.syncHosts()
-		ctx, cancel := h.ctx(c)
-		defer cancel()
-		probe := kube.Probe(ctx, existing.Kubeconfig, h.Pool.Hosts())
-		existing.PermType = probe.PermType
-		existing.Namespaces = probe.Namespaces
-		existing.Server = probe.Server
-		existing.Status = probe.Status
-		existing.LastError = probe.LastError
+	if needRewrite {
+		existing.Server = kube.SuggestServerFromKubeconfig(existing.Kubeconfig)
+		existing.PermType = "unknown"
+		existing.Namespaces = []string{}
+		existing.Status = "unknown"
+		existing.LastError = ""
 		h.Pool.Invalidate(id)
 	}
 	existing.UpdatedAt = time.Now().UTC()
@@ -198,6 +211,25 @@ func (h *Handler) UpdateCluster(c *gin.Context) {
 	existing.InsecureSkipTLS = kube.KubeconfigInsecureSkipTLS(existing.Kubeconfig)
 	existing.Kubeconfig = ""
 	respond.OK(c, existing)
+}
+
+func (h *Handler) ProbeCluster(c *gin.Context) {
+	var in model.ClusterProbeInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	skipTLS := in.InsecureSkipTLS
+	prepared, err := applyKubeconfigOptions(in.Kubeconfig, in.ServerOverride, &skipTLS)
+	if err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	h.syncHosts()
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	probe := kube.Probe(ctx, prepared, h.Pool.Hosts())
+	respond.OK(c, probeResponse(probe))
 }
 
 func (h *Handler) TestCluster(c *gin.Context) {
@@ -224,13 +256,7 @@ func (h *Handler) TestCluster(c *gin.Context) {
 		respond.Internal(c, err.Error())
 		return
 	}
-	respond.OK(c, gin.H{
-		"server":     probe.Server,
-		"permType":   probe.PermType,
-		"namespaces": probe.Namespaces,
-		"status":     probe.Status,
-		"lastError":  probe.LastError,
-	})
+	respond.OK(c, probeResponse(probe))
 }
 
 func (h *Handler) DeleteCluster(c *gin.Context) {
