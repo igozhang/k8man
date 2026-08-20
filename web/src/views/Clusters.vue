@@ -50,6 +50,7 @@ const formHostLine = ref('')
 const formHostError = ref('')
 const formHostAutoLine = ref('')
 const formHostDetectedHostname = ref('')
+const formProbeOkKey = ref('')
 let formHostSuggestTimer = null
 
 const formHostPlaceholder = computed(() => {
@@ -98,6 +99,28 @@ watch(
   },
   { flush: 'post' }
 )
+
+watch(
+  () => [form.value.kubeconfig, form.value.serverOverride, form.value.insecureSkipTLS],
+  () => {
+    if (!formProbeOkKey.value) return
+    if (formProbeFingerprint() !== formProbeOkKey.value) formProbeOkKey.value = ''
+  }
+)
+
+function formProbeFingerprint() {
+  const kubeconfig = form.value.kubeconfig.trim()
+  if (!kubeconfig) return ''
+  return [
+    kubeconfig,
+    form.value.serverOverride.trim(),
+    form.value.insecureSkipTLS ? '1' : '0'
+  ].join('\n---\n')
+}
+
+function clearFormProbeOk() {
+  formProbeOkKey.value = ''
+}
 
 /** 从 kubeconfig 提取 API 域名，预填「10.10.10.10 域名」供手动改 IP */
 function refreshFormHostSuggest() {
@@ -366,6 +389,7 @@ function closeForm() {
   formHostLine.value = ''
   formHostError.value = ''
   resetFormHostSuggest()
+  clearFormProbeOk()
   snapshotOriginal()
 }
 
@@ -392,6 +416,7 @@ function openCreate() {
   formHostLine.value = ''
   formHostError.value = ''
   resetFormHostSuggest()
+  clearFormProbeOk()
   showForm.value = true
   nextTick(() => yamlInput.value?.focus())
 }
@@ -428,6 +453,7 @@ async function openEdit(c) {
   formHostLine.value = ''
   formHostError.value = ''
   resetFormHostSuggest()
+  clearFormProbeOk()
   formLoading.value = true
   formTesting.value = false
   showForm.value = true
@@ -535,6 +561,7 @@ async function save() {
         : '请填写标题'
       return
     }
+    const shouldSyncProbe = !!formProbeOkKey.value && formProbeFingerprint() === formProbeOkKey.value
     let saved = null
     if (formMode.value === 'edit') {
       const payload = {
@@ -559,13 +586,28 @@ async function save() {
       })
     }
     const wasCreate = formMode.value === 'create'
-    const savedId = saved?.id
+    const savedId = saved?.id || (formMode.value === 'edit' ? editingId.value : '')
     closeForm()
     if (savedId) invalidateClusterLists(savedId)
     await load({ force: true })
-    notice.value = wasCreate
-      ? '已导入。可用「测试」检查连通，再用「选用」切到该集群。'
-      : '已保存'
+    if (shouldSyncProbe && savedId) {
+      try {
+        await writeApi.testCluster(savedId)
+        invalidateClusterLists(savedId)
+        await load({ force: true })
+        notice.value = wasCreate
+          ? '已导入，抽屉内测试结果已写入列表。'
+          : '已保存，抽屉内测试结果已写入列表。'
+      } catch (e) {
+        notice.value = wasCreate
+          ? `已导入，但写入测试结果失败：${errMessage(e)}`
+          : `已保存，但写入测试结果失败：${errMessage(e)}`
+      }
+    } else {
+      notice.value = wasCreate
+        ? '已导入。可用「测试」检查连通，再用「选用」切到该集群。'
+        : '已保存'
+    }
     if (savedId && !currentClusterId.value) setCurrentClusterId(savedId)
   } catch (e) {
     formError.value = errMessage(e)
@@ -673,11 +715,14 @@ async function testForm() {
     })
     const unsaved = isDirty()
     if (r.status === 'ok') {
+      formProbeOkKey.value = formProbeFingerprint()
       formNotice.value = `测试通过${unsaved ? '（未保存，这是当前编辑内容）' : ''}：${permTypeLabel(r.permType)} · ${r.server}${frontProxyHint(r.frontProxy)}`
     } else {
+      clearFormProbeOk()
       formError.value = `测试失败${unsaved ? '（未保存，这是当前编辑内容）' : ''}：${r.lastError || r.status}`
     }
   } catch (e) {
+    clearFormProbeOk()
     formError.value = errMessage(e)
   } finally {
     formTesting.value = false
