@@ -117,7 +117,7 @@ func TestAttachRestartHistoryReadyWorkloadRestarts(t *testing.T) {
 	if got == nil {
 		t.Fatalf("want workload Restarts, got %+v", out)
 	}
-	if got.Severity != "warning" || !strings.Contains(got.Message, "OOMKilled") || !strings.Contains(got.Message, "2026-08-18 17:59:00") {
+	if got.Severity != "warning" || !strings.Contains(got.Message, "负载累计重启 12 次") || !strings.Contains(got.Message, "OOMKilled") || !strings.Contains(got.Message, "exit=137") || !strings.Contains(got.Message, "2026-08-18 17:59:00") {
 		t.Fatalf("message: %+v", got)
 	}
 	if !hasEvidence(got.Evidence, "restart[1]") || !hasEvidence(got.Evidence, "selector=app=web") {
@@ -151,7 +151,7 @@ func TestAttachRestartHistoryReadyWorkloadHistoricalRestarts(t *testing.T) {
 	if got == nil {
 		t.Fatalf("want workload Restarts, got %+v", out)
 	}
-	if !strings.Contains(got.Message, "近 2h 内无重启") || !strings.Contains(got.Message, "来自 Pod web-7d9f") || !strings.Contains(got.Message, "2026-08-18 15:00:00") {
+	if !strings.Contains(got.Message, "负载累计重启 8 次") || !strings.Contains(got.Message, "近 2h 内无重启") || !strings.Contains(got.Message, "来自 Pod web-7d9f") || !strings.Contains(got.Message, "2026-08-18 15:00:00") {
 		t.Fatalf("message: %+v", got)
 	}
 	restartLines := 0
@@ -362,7 +362,7 @@ func TestFormatPodRestartMessage(t *testing.T) {
 		},
 	}}
 	msg := formatPodRestartMessage(p, 16, since, now)
-	if !strings.Contains(msg, "近 2h 内累计重启 16 次") || !strings.Contains(msg, "OOMKilled") || !strings.Contains(msg, "1h ago") || !strings.Contains(msg, "2026-08-20 19:00:00") {
+	if !strings.Contains(msg, "近 2h 内有重启") || !strings.Contains(msg, "累计重启 16 次") || !strings.Contains(msg, "OOMKilled") || !strings.Contains(msg, "exit=137") || !strings.Contains(msg, "1h ago") || !strings.Contains(msg, "2026-08-20 19:00:00") {
 		t.Fatalf("msg: %q", msg)
 	}
 	got := diagnosePod(p, now)
@@ -389,7 +389,7 @@ func TestFormatPodRestartMessageHistorical(t *testing.T) {
 		},
 	}}
 	msg := formatPodRestartMessage(p, 50, last, now)
-	if !strings.Contains(msg, "近 2h 内无重启") || !strings.Contains(msg, "Completed") || !strings.Contains(msg, "60d ago") || !strings.Contains(msg, "2026-06-21 20:00:00") {
+	if !strings.Contains(msg, "近 2h 内无重启") || !strings.Contains(msg, "累计重启 50 次") || !strings.Contains(msg, "Completed") || !strings.Contains(msg, "60d ago") || !strings.Contains(msg, "2026-06-21 20:00:00") {
 		t.Fatalf("msg: %q", msg)
 	}
 	got := diagnosePod(p, now)

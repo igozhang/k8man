@@ -137,7 +137,9 @@ func newWorkloadRestartsIssue(w workloadRef, owned []corev1.Pod, recent []restar
 	if nPods == 0 && hasLatest {
 		nPods = restartPodCount([]restartHit{latest})
 	}
-	msg := fmt.Sprintf("下属 %d 个 Pod 近 2h 重启", nPods)
+	totalRestarts := workloadRestartCount(owned)
+	// totalRestarts 是生命周期 RestartCount 合计，不是 2h 窗口内次数，措辞必须分开写。
+	msg := fmt.Sprintf("负载累计重启 %d 次", totalRestarts)
 	evidenceHits := recent
 	if len(evidenceHits) == 0 && hasLatest {
 		evidenceHits = []restartHit{latest}
@@ -147,19 +149,15 @@ func newWorkloadRestartsIssue(w workloadRef, owned []corev1.Pod, recent []restar
 		hasLatest = true
 	}
 	if hasLatest && !latest.When.IsZero() && now.Sub(latest.When) <= diagnoseRestartRecent {
-		if latest.Reason != "" {
-			msg = fmt.Sprintf("下属 %d 个 Pod 近 2h 重启 · 最近 %s %s ago（%s）", nPods, latest.Reason, formatAgeAt(latest.When, now), formatExactTime(latest.When))
-		} else {
-			msg = fmt.Sprintf("下属 %d 个 Pod 近 2h 重启 · 最近 %s ago（%s）", nPods, formatAgeAt(latest.When, now), formatExactTime(latest.When))
-		}
+		msg = fmt.Sprintf("近 2h 内有 %d 个 Pod 重启 · 负载累计重启 %d 次 · 最近 %s", nPods, totalRestarts, formatRestartMoment(latest, now))
 	} else if hasLatest && !latest.When.IsZero() {
-		if latest.Reason != "" {
-			msg = fmt.Sprintf("下属 %d 个 Pod 近 2h 内无重启 · 最近一次来自 Pod %s：%s %s ago（%s）", nPods, latest.Pod, latest.Reason, formatAgeAt(latest.When, now), formatExactTime(latest.When))
-		} else {
-			msg = fmt.Sprintf("下属 %d 个 Pod 近 2h 内无重启 · 最近一次来自 Pod %s：%s ago（%s）", nPods, latest.Pod, formatAgeAt(latest.When, now), formatExactTime(latest.When))
+		from := latest.Pod
+		if from == "" {
+			from = "下属 Pod"
 		}
+		msg = fmt.Sprintf("近 2h 内无重启 · 负载累计重启 %d 次 · 最近一次来自 Pod %s：%s", totalRestarts, from, formatRestartMoment(latest, now))
 	} else {
-		msg = fmt.Sprintf("下属 %d 个 Pod 最近一次精确重启时间缺失（仅拿到聚合重启迹象）", nPods)
+		msg = fmt.Sprintf("负载累计重启 %d 次，但最近一次精确重启时间缺失（仅拿到聚合重启迹象）", totalRestarts)
 	}
 	age := w.Created
 	if age.IsZero() && len(owned) > 0 {
@@ -183,25 +181,34 @@ func newWorkloadRestartsIssue(w workloadRef, owned []corev1.Pod, recent []restar
 	}
 }
 
+func workloadRestartCount(pods []corev1.Pod) int32 {
+	var total int32
+	for _, p := range pods {
+		for _, cs := range p.Status.InitContainerStatuses {
+			total += cs.RestartCount
+		}
+		for _, cs := range p.Status.ContainerStatuses {
+			total += cs.RestartCount
+		}
+	}
+	return total
+}
+
 // formatPodRestartMessage 汇总 Pod 级 Restarts 摘要。
-// 近期有重启时突出当前窗口；若只拿得到更早历史，则只补最近一次时间，避免文案冗长。
+// restarts 是生命周期累计次数；是否“近 2h 有重启”只由 last 相对 now 判断，二者不可混写成“近 2h 累计”。
 func formatPodRestartMessage(p corev1.Pod, restarts int32, last, now time.Time) string {
 	reason := lastRestartReason(p)
+	exit, hasExit := lastRestartExit(p)
 	age := formatAgeAt(last, now)
+	moment := formatRestartMomentParts(reason, exit, hasExit, age, last)
 	if !last.IsZero() && now.Sub(last) <= diagnoseRestartRecent {
-		if reason != "" && age != "" {
-			return fmt.Sprintf("近 2h 内累计重启 %d 次 · 最近 %s %s ago（%s）", restarts, reason, age, formatExactTime(last))
+		if moment != "" {
+			return fmt.Sprintf("近 2h 内有重启 · 累计重启 %d 次 · 最近 %s", restarts, moment)
 		}
-		if age != "" {
-			return fmt.Sprintf("近 2h 内累计重启 %d 次 · 最近 %s ago（%s）", restarts, age, formatExactTime(last))
-		}
-		return fmt.Sprintf("近 2h 内累计重启 %d 次 · 最近一次精确时间缺失（仅拿到累计次数）", restarts)
+		return fmt.Sprintf("近 2h 内有重启 · 累计重启 %d 次 · 最近一次精确时间缺失（仅拿到累计次数）", restarts)
 	}
-	if reason != "" && age != "" {
-		return fmt.Sprintf("近 2h 内无重启 · 最近一次 %s %s ago（%s）", reason, age, formatExactTime(last))
-	}
-	if age != "" {
-		return fmt.Sprintf("近 2h 内无重启 · 最近一次 %s ago（%s）", age, formatExactTime(last))
+	if moment != "" {
+		return fmt.Sprintf("近 2h 内无重启 · 累计重启 %d 次 · 最近一次 %s", restarts, moment)
 	}
 	if restarts > 0 {
 		return fmt.Sprintf("累计重启 %d 次，但最近一次精确时间缺失（Pod status / Warning 事件未保留）", restarts)
@@ -226,6 +233,57 @@ func lastRestartReason(p corev1.Pod) string {
 		consider(cs.LastTerminationState.Terminated)
 	}
 	return reason
+}
+
+func lastRestartExit(p corev1.Pod) (int32, bool) {
+	var latest time.Time
+	var exit int32
+	var ok bool
+	consider := func(t *corev1.ContainerStateTerminated) {
+		if t == nil || t.FinishedAt.IsZero() {
+			return
+		}
+		if t.FinishedAt.After(latest) {
+			latest = t.FinishedAt.Time
+			exit = t.ExitCode
+			ok = true
+		}
+	}
+	for _, cs := range append(append([]corev1.ContainerStatus{}, p.Status.InitContainerStatuses...), p.Status.ContainerStatuses...) {
+		consider(cs.State.Terminated)
+		consider(cs.LastTerminationState.Terminated)
+	}
+	return exit, ok
+}
+
+func formatRestartMoment(h restartHit, now time.Time) string {
+	return formatRestartMomentParts(h.Reason, h.Exit, h.hasExit, formatAgeAt(h.When, now), h.When)
+}
+
+func formatRestartMomentParts(reason string, exit int32, hasExit bool, age string, when time.Time) string {
+	var b strings.Builder
+	if reason != "" {
+		b.WriteString(reason)
+	}
+	if hasExit {
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "exit=%d", exit)
+	}
+	if age != "" {
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(age)
+		b.WriteString(" ago")
+	}
+	if !when.IsZero() {
+		b.WriteString("（")
+		b.WriteString(formatExactTime(when))
+		b.WriteString("）")
+	}
+	return b.String()
 }
 
 func restartPodCount(hits []restartHit) int {
