@@ -8,6 +8,7 @@ import { cacheGet, cacheKey, invalidateClusterLists } from '../utils/resourceCac
 import { permTypeLabel, clusterStatusLabel, clusterStatusClass, frontProxyLabel, frontProxyClass } from '../utils/labels'
 import { copyText } from '../utils/clipboard'
 import { suggestHostsHostname } from '../utils/kubeconfig'
+import { canWrite } from '../stores/opsAuth'
 
 const FORM_HOST_DEFAULT_IP = '10.10.10.10'
 
@@ -107,6 +108,12 @@ watch(
     if (formProbeFingerprint() !== formProbeOkKey.value) formProbeOkKey.value = ''
   }
 )
+
+watch(canWrite, (ok) => {
+  if (ok) return
+  if (showForm.value) closeForm()
+  resetHostEdit()
+})
 
 function formProbeFingerprint() {
   const kubeconfig = form.value.kubeconfig.trim()
@@ -313,6 +320,7 @@ async function addFormHost() {
 
 /** 测试/导入前：若填写了 hosts 行则先写入（未点「添加」也生效） */
 async function ensureFormHostApplied() {
+  if (!canWrite.value) return true
   if (!formHostLine.value.trim()) return true
   if (isFormHostPlaceholderLine(formHostLine.value)) {
     formHostError.value = formHostPlaceholderError()
@@ -337,6 +345,7 @@ async function ensureFormHostApplied() {
 }
 
 async function saveHost({ fromEdit = false } = {}) {
+  if (!canWrite.value) return
   hostBusy.value = true
   hostError.value = ''
   try {
@@ -367,6 +376,7 @@ async function saveHost({ fromEdit = false } = {}) {
 }
 
 async function removeHost(h) {
+  if (!canWrite.value) return
   if (!confirm(`删除 hosts 记录「${h.hostname}」？`)) return
   try {
     await writeApi.deleteHost(h.id)
@@ -399,6 +409,7 @@ function requestClose() {
 }
 
 function openCreate() {
+  if (!canWrite.value) return
   if (showForm.value && !confirmDiscard()) return
   editSeq.bump()
   editingId.value = ''
@@ -422,6 +433,7 @@ function openCreate() {
 }
 
 async function openEdit(c) {
+  if (!canWrite.value) return
   if (showForm.value && formMode.value === 'edit' && editingId.value === c.id && !formLoading.value) {
     requestClose()
     return
@@ -538,7 +550,7 @@ function clearUpload() {
 }
 
 async function save() {
-  if (formLoading.value) return
+  if (!canWrite.value || formLoading.value) return
   busy.value = true
   formError.value = ''
   formNotice.value = ''
@@ -617,6 +629,7 @@ async function save() {
 }
 
 async function remove(c) {
+  if (!canWrite.value) return
   const hint = c.id === currentClusterId.value ? '（当前选用集群）' : ''
   if (!confirm(`删除集群配置「${c.name}」${hint}？`)) return
   try {
@@ -659,7 +672,7 @@ function applyProbeResult(r, { name = '', inForm = false } = {}) {
 }
 
 async function testClusterConn(c) {
-  if (!c?.id) return
+  if (!canWrite.value || !c?.id) return
   testingId.value = c.id
   const inForm = showForm.value && editingId.value === c.id
   if (inForm) {
@@ -697,6 +710,7 @@ async function testClusterConn(c) {
 }
 
 async function testForm() {
+  if (!canWrite.value) return
   const kubeconfig = form.value.kubeconfig.trim()
   if (formMode.value === 'edit' && !kubeconfig) {
     const cur = list.value.find((x) => x.id === editingId.value)
@@ -749,7 +763,7 @@ onMounted(async () => {
   loadHosts()
   window.addEventListener('keydown', onEscape)
   const editId = String(route.query.edit || '')
-  if (editId) {
+  if (editId && canWrite.value) {
     const c = list.value.find((x) => x.id === editId)
     if (c) openEdit(c)
     router.replace({ path: '/clusters' })
@@ -770,7 +784,7 @@ onUnmounted(() => {
         <h1>KubeConfig 管理</h1>
         <p class="page-desc">导入 Rancher 集群管理员或 Project kubeconfig。点「测试」会探测入口是 Rancher 还是非 Rancher（外置 nginx / F5 / 其它转发），结果写在状态列。后台约 2 小时也会巡检并回写状态；改 YAML / API Server / TLS 会清空入口标签与巡检快照。</p>
       </div>
-      <button class="btn btn-primary" @click="openCreate">导入 kubeconfig</button>
+      <button v-if="canWrite" class="btn btn-primary" @click="openCreate">导入 kubeconfig</button>
     </div>
     <p v-if="error" class="error" style="white-space: pre-wrap">{{ error }}</p>
     <p v-if="notice" class="notice" style="white-space: pre-wrap">{{ notice }}</p>
@@ -829,11 +843,13 @@ onUnmounted(() => {
             <button
               class="btn btn-sm"
               :disabled="!!testingId || formTesting || busy"
+              v-if="canWrite"
               @click="testClusterConn(c)"
             >{{ testingId === c.id ? '测试中…' : '测试' }}</button>
             <button
               type="button"
               class="btn btn-sm"
+              v-if="canWrite"
               :class="{ 'is-current': showForm && formMode === 'edit' && editingId === c.id }"
               @click="openEdit(c)"
             >{{
@@ -841,12 +857,12 @@ onUnmounted(() => {
                 ? (formLoading ? '加载中…' : '收起')
                 : '编辑'
             }}</button>
-            <button class="btn btn-sm btn-danger" @click="remove(c)">删除</button>
+            <button v-if="canWrite" class="btn btn-sm btn-danger" @click="remove(c)">删除</button>
           </td>
         </tr>
       </tbody>
     </table>
-    <div v-else class="empty">暂无集群配置，请导入 kubeconfig。</div>
+    <div v-else class="empty">{{ canWrite ? '暂无集群配置，请导入 kubeconfig。' : '暂无集群配置。' }}</div>
 
     <section class="hosts-section">
       <div class="toolbar">
@@ -861,7 +877,7 @@ onUnmounted(() => {
       </div>
       <p v-if="hostError" class="error">{{ hostError }}</p>
 
-      <div class="toolbar toolbar-start host-add-bar">
+      <div v-if="canWrite" class="toolbar toolbar-start host-add-bar">
         <input
           v-model="hostAddLine"
           type="text"
@@ -877,7 +893,7 @@ onUnmounted(() => {
         <thead>
           <tr>
             <th>hosts</th>
-            <th>操作</th>
+            <th v-if="canWrite">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -895,7 +911,7 @@ onUnmounted(() => {
               />
               <code v-else class="host-line-cell">{{ formatHostLine(h) }}</code>
             </td>
-            <td class="actions">
+            <td v-if="canWrite" class="actions">
               <template v-if="hostEditingId === h.id">
                 <button class="btn btn-sm btn-primary" :disabled="hostBusy" @click="saveHost({ fromEdit: true })">保存</button>
                 <button class="btn btn-sm" @click="resetHostEdit">取消</button>
@@ -912,7 +928,7 @@ onUnmounted(() => {
           </tr>
         </tbody>
       </table>
-      <div v-else class="empty">暂无 hosts 记录。DNS 无法解析时在此添加映射。</div>
+      <div v-else class="empty">{{ canWrite ? '暂无 hosts 记录。DNS 无法解析时在此添加映射。' : '暂无 hosts 记录。' }}</div>
     </section>
 
     <div v-if="showForm" class="drawer-backdrop" @click="requestClose"></div>

@@ -22,7 +22,10 @@ const {
   refreshClusters
 } = useClusterStore()
 const route = useRoute()
-const showClusterBar = computed(() => !String(route.path || '').startsWith('/docs'))
+const showClusterBar = computed(() => {
+  const p = String(route.path || '')
+  return p !== '/ops' && p !== '/igokey' && !p.startsWith('/docs')
+})
 
 const inspectItems = ref([])
 

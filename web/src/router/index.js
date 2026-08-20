@@ -48,6 +48,16 @@ const router = createRouter({
           path: 'docs/:id',
           name: 'doc-detail',
           component: () => import('../views/DocDetail.vue')
+        },
+        {
+          path: 'ops',
+          name: 'ops',
+          component: () => import('../views/Ops.vue')
+        },
+        {
+          path: 'igokey',
+          name: 'igokey',
+          component: () => import('../views/IgoKey.vue')
         }
       ]
     }

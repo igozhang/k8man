@@ -39,4 +39,5 @@ curl -sS http://k8man.igozhang.cn/api/health
 - 入口探测（ingress-nginx / 外置 nginx / Rancher）对 kubeconfig host 的 origin 发 GET，无需额外部署；点页面「测试」或后台巡检后写入状态列
 - 巡检：进程内对每个 kubeconfig 约 2 小时一轮（错开、串行），结果在「监控」页底部；无需额外部署或 Sidecar。快照在 SQLite（`cluster_inspections`）
 - 环境变量：`K8MAN_ADDR` / `K8MAN_DATA_DIR` / `K8MAN_DB_PATH` / `K8MAN_ETC_DIR` / `TZ`
-- 无登录鉴权；保留 PVC 升级
+- 无登录即可只读浏览；写操作须 `/ops` 验证 igokey（`/igokey` 取钥）
+- 保留 PVC 升级

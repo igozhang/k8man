@@ -11,7 +11,7 @@
 - 节点与基础监控（依赖目标集群 metrics-server）；后台约 2 小时巡检全部 kubeconfig 有效性与集群异常，监控页底部摘要；可在监控页选择配置后一键巡检（先展示缓存再实时更新）
 - 产品内运维文档（Markdown）
 - 内置 SQLite + PVC 持久化，无独立数据库
-- API 读写分离：`/api/v1/read` 与 `/api/v1/write`（写组预留 `AuthWrite` 鉴权位）
+- API 读写分离：`/api/v1/read` 只读；`/api/v1/write` 须在 `/ops` 用 igokey 验证后携带 `X-Igo-Token`
 
 ## 快速开始（本地）
 
@@ -90,7 +90,7 @@ docs/deploy.md       部署说明
 etc/README.md        etc 目录与内置 conf 说明
 ```
 
-读写分离扩展点：在 `internal/api/middleware/auth.go` 的 `AuthWrite` 中实现鉴权即可约束写操作。
+读写分离：默认只读。访问 `/igokey` 取得 8 位字母密钥（约 1 小时有效），在 `/ops` 验证后本会话可写；写接口校验 `X-Igo-Token`。刷新页面需重新验证。
 
 ## 文档
 

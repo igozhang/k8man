@@ -31,3 +31,7 @@ func Internal(c *gin.Context, msg string) {
 func Forbidden(c *gin.Context, msg string) {
 	Fail(c, http.StatusForbidden, 403, msg)
 }
+
+func Unauthorized(c *gin.Context, msg string) {
+	Fail(c, http.StatusUnauthorized, 401, msg)
+}

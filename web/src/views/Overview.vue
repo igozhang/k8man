@@ -18,6 +18,7 @@ import {
 } from '../utils/resourceCache'
 import { permTypeLabel, clusterStatusLabel, clusterStatusClass, frontProxyLabel, frontProxyClass, severityLabel, issueReasonDisplay } from '../utils/labels'
 import { formatIssueMessage, issueMessageSuffix } from '../utils/inspect'
+import { canWrite } from '../stores/opsAuth'
 
 /** 选用集群：巡检缓存超过此时长则自动实时刷一次 Pods */
 const PODS_INSPECT_STALE_MS = 10 * 60 * 1000
@@ -284,7 +285,7 @@ function mergeInspectIntoCard(id, insp) {
 
 /** 实时巡检并写回 Pods / 异常 Pod；先保留缓存数字 */
 async function refreshPodsInspect(clusterId, { autoKey = '' } = {}) {
-  if (!clusterId) return
+  if (!canWrite.value || !clusterId) return
   if (cardOf(clusterId).podsRefreshing) return
   const seq = podsRefreshSeqFor(clusterId).next()
   patchCard(clusterId, { podsRefreshing: true, podsRefreshError: '' })
@@ -311,6 +312,7 @@ async function refreshPodsInspect(clusterId, { autoKey = '' } = {}) {
 }
 
 function maybeAutoRefreshPods(clusterId, insp) {
+  if (!canWrite.value) return
   if (!clusterId || !podsInspectStale(insp)) return
   const key = autoPodsRefreshKey(clusterId, insp)
   if (autoPodsRefreshKeys.has(key)) return
@@ -319,7 +321,7 @@ function maybeAutoRefreshPods(clusterId, insp) {
 }
 
 function manualRefreshPods(cluster) {
-  if (!cluster?.id) return
+  if (!canWrite.value || !cluster?.id) return
   if (cluster.id !== currentClusterId.value) setCurrentClusterId(cluster.id)
   void refreshPodsInspect(cluster.id)
 }
@@ -607,8 +609,8 @@ onUnmounted(() => {
 <template>
   <div>
     <h1>概览</h1>
-    <p class="page-desc">查看已导入的全部 kubeconfig。点「选用」会设为顶部当前集群，供工作负载、监控、诊断使用。Pods / 异常 Pod 优先展示巡检缓存；当前选用集群缓存超过 10 分钟会自动实时巡检一次，也可点「刷新 Pods」立即更新。尚未巡检时才退回命名空间抽样。全部配置的定时巡检摘要在「监控」页底部。</p>
-    <div v-if="!clusters.length" class="empty">请先在「KubeConfig」导入集群。</div>
+    <p class="page-desc">查看已导入的全部 kubeconfig。点「选用」会设为顶部当前集群，供工作负载、监控、诊断使用。Pods / 异常 Pod 优先展示巡检缓存<template v-if="canWrite">；当前选用集群缓存超过 10 分钟会自动实时巡检一次，也可点「刷新 Pods」立即更新</template>。尚未巡检时才退回命名空间抽样。全部配置的定时巡检摘要在「监控」页底部。</p>
+    <div v-if="!clusters.length" class="empty">{{ canWrite ? '请先在「KubeConfig」导入集群。' : '暂无集群配置。' }}</div>
     <div v-else class="cluster-list">
       <div
         v-for="c in sortedClusters"
@@ -649,6 +651,7 @@ onUnmounted(() => {
           </div>
           <div class="actions">
             <button
+              v-if="canWrite"
               type="button"
               class="btn btn-sm"
               :disabled="cardOf(c.id).podsRefreshing"
@@ -656,6 +659,7 @@ onUnmounted(() => {
               @click="manualRefreshPods(c)"
             >{{ cardOf(c.id).podsRefreshing ? '刷新中…' : '刷新 Pods' }}</button>
             <RouterLink
+              v-if="canWrite"
               class="btn btn-sm"
               :to="{ path: '/clusters', query: { edit: c.id } }"
             >编辑</RouterLink>

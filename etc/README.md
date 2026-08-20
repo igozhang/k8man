@@ -8,5 +8,6 @@
 | `banner.jpg` 等 | **可选**自有头部 banner（jpg/png/webp/gif）。有则使用，无则默认面板风格。 |
 
 巡检快照不在 etc，而在 SQLite（`<data_dir>/k8man.db` 的 `cluster_inspections`）。
+写操作 igokey 活跃密钥在 `<data_dir>/igokey-active.json`（不在 etc）。
 
 不依赖外部站点图片；样式仅参考同类站点的浅青配色与圆角 banner 布局。

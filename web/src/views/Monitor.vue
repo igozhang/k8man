@@ -21,6 +21,7 @@ import {
 } from '../utils/resourceCache'
 import InspectionDrawer from '../components/InspectionDrawer.vue'
 import FilterSelect from '../components/FilterSelect.vue'
+import { canWrite } from '../stores/opsAuth'
 
 const INSPECT_KEY = cacheKey('inspections', 'local')
 const BLOCK_LINES = 3
@@ -228,7 +229,7 @@ function clusterLabel(clusterId) {
 }
 
 async function runLiveInspect(clusterId, { openDrawer = true } = {}) {
-  if (!clusterId) return
+  if (!canWrite.value || !clusterId) return
   if (inspectingId.value) {
     inspectError.value = '已有巡检进行中，请稍候'
     return
@@ -291,7 +292,27 @@ async function runLiveInspect(clusterId, { openDrawer = true } = {}) {
 
 async function openInspectDetail(clusterId) {
   if (!clusterId) return
-  await runLiveInspect(clusterId, { openDrawer: true })
+  if (canWrite.value) {
+    await runLiveInspect(clusterId, { openDrawer: true })
+    return
+  }
+  const item = inspectItems.value.find((it) => it.clusterId === clusterId)
+  inspectDrawer.value?.open(detailFromListItem(item, clusterId, clusterLabel(clusterId)), {
+    source: item?.checkedAt ? 'cache' : 'none',
+    running: false
+  })
+  try {
+    const data = await readApi.getInspection(clusterId)
+    inspectDrawer.value?.open(
+      {
+        ...data,
+        issues: asArray(data?.issues).length ? data.issues : asArray(data?.preview)
+      },
+      { source: 'cache', running: false }
+    )
+  } catch {
+    /* 无缓存时抽屉已展示空快照 */
+  }
 }
 
 async function runInspect() {
@@ -641,7 +662,7 @@ onMounted(enterPage)
         </div>
       </div>
       <p class="inspect-intro muted">
-        对每个 kubeconfig 约 2 小时一轮、错开串行：先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。下方按集群分块展示异常摘要（每块最多 3 条，带缓存时间）；点击块在右侧抽屉查看该配置详情并触发实时巡检。
+        对每个 kubeconfig 约 2 小时一轮、错开串行：先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。下方按集群分块展示异常摘要（每块最多 3 条，带缓存时间）；点击块在右侧抽屉查看该配置详情<template v-if="canWrite">并触发实时巡检</template>。
       </p>
       <div class="toolbar toolbar-start inspect-actions">
         <select v-model="inspectTargetId" aria-label="巡检目标 kubeconfig">
@@ -652,6 +673,7 @@ onMounted(enterPage)
         </select>
         <div class="actions">
           <button
+            v-if="canWrite"
             class="btn btn-sm"
             type="button"
             :disabled="!inspectTargetId || inspecting"
@@ -670,7 +692,7 @@ onMounted(enterPage)
       <p v-if="inspectLoading && !inspectItems.length" class="muted">加载巡检结果…</p>
       <div v-else-if="!inspectItems.length && !inspectError" class="muted">暂无已导入的 kubeconfig。</div>
       <div v-else-if="!inspectIssueBlocks.length && inspectItems.length" class="muted">
-        {{ inspectHasRun ? '全部配置巡检正常。' : '尚未巡检。后台约两小时一轮，也可选择配置后一键巡检。' }}
+        {{ inspectHasRun ? '全部配置巡检正常。' : (canWrite ? '尚未巡检。后台约两小时一轮，也可选择配置后一键巡检。' : '尚未巡检。后台约两小时一轮。') }}
       </div>
       <div v-else-if="inspectIssueBlocks.length" class="inspect-cluster-blocks">
         <article

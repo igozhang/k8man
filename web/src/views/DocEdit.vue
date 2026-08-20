@@ -4,6 +4,7 @@ import { useRoute, useRouter, RouterLink, onBeforeRouteLeave } from 'vue-router'
 import { readApi, writeApi } from '../api'
 import { asArray, errMessage } from '../utils/safe'
 import { TTL, cacheGet, cacheKey, cacheLoad, invalidateDocs } from '../utils/resourceCache'
+import { canWrite } from '../stores/opsAuth'
 
 const route = useRoute()
 const router = useRouter()
@@ -70,6 +71,7 @@ onBeforeRouteLeave(() => {
 })
 
 async function save() {
+  if (!canWrite.value) return
   error.value = ''
   const payload = {
     title: form.value.title,
@@ -109,26 +111,27 @@ async function save() {
         <RouterLink class="btn" to="/docs">返回列表</RouterLink>
       </div>
     </div>
+    <p v-if="!canWrite" class="error">当前为只读，无法保存文档。</p>
     <p v-if="loading" class="muted">正在加载文档内容…</p>
     <p v-if="error" class="error">{{ error }}</p>
     <div class="panel">
-      <div class="form-row"><label>标题</label><input v-model="form.title" type="text" :disabled="loading" /></div>
-      <div class="form-row"><label>Slug（可选）</label><input v-model="form.slug" type="text" :disabled="loading" /></div>
+      <div class="form-row"><label>标题</label><input v-model="form.title" type="text" :disabled="loading || !canWrite" /></div>
+      <div class="form-row"><label>Slug（可选）</label><input v-model="form.slug" type="text" :disabled="loading || !canWrite" /></div>
       <div class="form-row">
         <label>分类</label>
-        <select v-model="form.category" :disabled="loading">
+        <select v-model="form.category" :disabled="loading || !canWrite">
           <option value="general">general</option>
           <option value="k8s">k8s</option>
           <option value="devops">devops</option>
           <option value="monitoring">monitoring</option>
         </select>
       </div>
-      <div class="form-row"><label>标签（逗号分隔）</label><input v-model="form.tags" type="text" :disabled="loading" /></div>
-      <div class="form-row"><label>摘要</label><input v-model="form.summary" type="text" :disabled="loading" /></div>
-      <div class="form-row"><label>正文 Markdown</label><textarea v-model="form.content" style="min-height:320px" :disabled="loading" :placeholder="loading ? '正在加载正文…' : ''"></textarea></div>
-      <div class="form-row"><label><input v-model="form.pinned" type="checkbox" /> 置顶</label></div>
+      <div class="form-row"><label>标签（逗号分隔）</label><input v-model="form.tags" type="text" :disabled="loading || !canWrite" /></div>
+      <div class="form-row"><label>摘要</label><input v-model="form.summary" type="text" :disabled="loading || !canWrite" /></div>
+      <div class="form-row"><label>正文 Markdown</label><textarea v-model="form.content" style="min-height:320px" :disabled="loading || !canWrite" :placeholder="loading ? '正在加载正文…' : ''"></textarea></div>
+      <div class="form-row"><label><input v-model="form.pinned" type="checkbox" :disabled="!canWrite" /> 置顶</label></div>
       <div class="actions">
-        <button class="btn btn-primary" :disabled="loading" @click="save">保存</button>
+        <button v-if="canWrite" class="btn btn-primary" :disabled="loading" @click="save">保存</button>
         <RouterLink v-if="isEdit" class="btn" :to="`/docs/${route.params.id}`">取消</RouterLink>
         <RouterLink v-else class="btn" to="/docs">取消</RouterLink>
       </div>

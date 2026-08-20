@@ -19,6 +19,7 @@ import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import ConfigMapEditor from '../components/ConfigMapEditor.vue'
 import FilterSelect from '../components/FilterSelect.vue'
+import { canWrite } from '../stores/opsAuth'
 
 const { currentClusterId } = useClusterStore()
 const namespaces = ref([])
@@ -277,6 +278,7 @@ function afterWrite() {
 }
 
 async function restart(pod) {
+  if (!canWrite.value) return
   if (!confirm(`重启 Pod ${pod.name}？（删除后由控制器重建）`)) return
   error.value = ''
   notice.value = ''
@@ -317,6 +319,7 @@ function closeAllEditors() {
 }
 
 function openScale(row) {
+  if (!canWrite.value) return
   scaleForm.value = {
     open: true,
     kind: row.kind.toLowerCase(),
@@ -326,6 +329,7 @@ function openScale(row) {
 }
 
 async function doScale() {
+  if (!canWrite.value) return
   try {
     const replicas = Number(scaleForm.value.replicas)
     if (scaleForm.value.kind === 'statefulset') {
@@ -379,6 +383,7 @@ function applyContainerToForm(ctr) {
 }
 
 async function openSpecEdit(row) {
+  if (!canWrite.value) return
   const kind = yamlKind(row.kind)
   const seq = specSeq.next()
   specEditor.value = {
@@ -462,6 +467,7 @@ function envFromNameOptions(row) {
 }
 
 async function saveSpecEdit() {
+  if (!canWrite.value) return
   specEditor.value.error = ''
   if (!specEditor.value.selected) {
     specEditor.value.error = '请选择容器'
@@ -508,6 +514,12 @@ async function saveSpecEdit() {
 function onChildError(msg) {
   error.value = msg
 }
+
+watch(canWrite, (ok) => {
+  if (ok) return
+  scaleForm.value.open = false
+  if (specEditor.value.open) closeSpecEdit()
+})
 
 watch(currentClusterId, async () => {
   closeAllEditors()
@@ -598,7 +610,7 @@ watch([ns, tab], () => {
               <td class="actions">
                 <button class="btn btn-sm" @click="showLogs(p)">日志</button>
                 <button class="btn btn-sm" @click="openYAML('pod', p.name)">YAML</button>
-                <button class="btn btn-sm btn-danger" @click="restart(p)">重启</button>
+                <button v-if="canWrite" class="btn btn-sm btn-danger" @click="restart(p)">重启</button>
               </td>
             </tr>
           </tbody>
@@ -625,11 +637,11 @@ watch([ns, tab], () => {
               <td class="muted">{{ r.extra }}</td>
               <td class="actions">
                 <button
-                  v-if="r.canScale"
+                  v-if="canWrite && r.canScale"
                   class="btn btn-sm"
                   @click="openScale(r)"
                 >扩缩容</button>
-                <button class="btn btn-sm" @click="openSpecEdit(r)">常用编辑</button>
+                <button v-if="canWrite" class="btn btn-sm" @click="openSpecEdit(r)">常用编辑</button>
                 <button
                   class="btn btn-sm"
                   @click="openYAML(yamlKind(r.kind), r.name)"
@@ -677,7 +689,7 @@ watch([ns, tab], () => {
               <td>{{ cm.keyCount }}</td>
               <td>{{ cm.age }}</td>
               <td class="actions">
-                <button class="btn btn-sm" @click="openConfigMap(cm.name)">编辑</button>
+                <button class="btn btn-sm" @click="openConfigMap(cm.name)">{{ canWrite ? '编辑' : '查看' }}</button>
                 <button class="btn btn-sm" @click="openYAML('configmap', cm.name)">YAML</button>
               </td>
             </tr>
@@ -717,6 +729,7 @@ watch([ns, tab], () => {
       ref="yamlDrawer"
       :cluster-id="currentClusterId"
       :ns="ns"
+      :read-only="!canWrite"
       @saved="afterWrite"
       @error="onChildError"
     />
@@ -724,6 +737,7 @@ watch([ns, tab], () => {
       ref="cmEditor"
       :cluster-id="currentClusterId"
       :ns="ns"
+      :read-only="!canWrite"
       @saved="afterWrite"
       @error="onChildError"
     />
@@ -741,7 +755,7 @@ watch([ns, tab], () => {
         <input v-model.number="scaleForm.replicas" type="number" min="0" />
       </div>
       <div class="actions">
-        <button class="btn btn-primary" @click="doScale">确定</button>
+        <button v-if="canWrite" class="btn btn-primary" @click="doScale">确定</button>
         <button class="btn" @click="scaleForm.open = false">取消</button>
       </div>
     </div>
@@ -752,7 +766,7 @@ watch([ns, tab], () => {
       <div class="toolbar">
         <strong>常用编辑 · {{ specEditor.kind }}/{{ specEditor.name }}</strong>
         <div class="actions">
-          <button class="btn btn-primary btn-sm" :disabled="specEditor.busy || specEditor.loading" @click="saveSpecEdit">
+          <button v-if="canWrite" class="btn btn-primary btn-sm" :disabled="specEditor.busy || specEditor.loading" @click="saveSpecEdit">
             {{ specEditor.busy ? '保存中…' : '保存' }}
           </button>
           <button class="btn btn-sm" @click="closeSpecEdit">关闭</button>

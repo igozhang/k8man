@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gitee.com/k8man/internal/api"
+	"gitee.com/k8man/internal/auth"
 	"gitee.com/k8man/internal/config"
 	"gitee.com/k8man/internal/hostsfile"
 	"gitee.com/k8man/internal/inspect"
@@ -69,6 +70,7 @@ func main() {
 		Pool:    pool,
 		Hosts:   hostsFile,
 		Inspect: inspector,
+		Auth:    auth.New(cfg.DataDir),
 		WebFS:   webFS,
 		Version: version,
 		UI: api.UIConfig{

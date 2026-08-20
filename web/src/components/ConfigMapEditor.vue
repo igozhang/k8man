@@ -6,7 +6,8 @@ import { copyText } from '../utils/clipboard'
 
 const props = defineProps({
   clusterId: { type: String, default: '' },
-  ns: { type: String, default: '' }
+  ns: { type: String, default: '' },
+  readOnly: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['saved', 'error'])
@@ -186,6 +187,7 @@ async function switchMode(next) {
 }
 
 async function save() {
+  if (props.readOnly) return
   localError.value = ''
   busy.value = true
   try {
@@ -234,7 +236,12 @@ defineExpose({ open: openEditor, close })
             @click="switchMode('yaml')"
           >YAML</button>
         </div>
-        <button class="btn btn-primary btn-sm" :disabled="busy || loading" @click="save">
+        <button
+          v-if="!readOnly"
+          class="btn btn-primary btn-sm"
+          :disabled="busy || loading"
+          @click="save"
+        >
           {{ busy ? '保存中…' : '保存' }}
         </button>
         <button class="btn btn-sm" @click="close">关闭</button>
@@ -248,9 +255,9 @@ defineExpose({ open: openEditor, close })
     <template v-if="!loading && mode === 'kv'">
       <div class="kv-list cm-kv-list">
         <div v-for="(e, i) in entries" :key="i" class="kv-row cm-kv-row">
-          <input v-model="e.key" placeholder="key" class="kv-key" />
+          <input v-model="e.key" placeholder="key" class="kv-key" :readonly="readOnly" />
           <div class="cm-kv-actions">
-            <button class="btn btn-sm btn-danger" @click="removeEntry(i)">删</button>
+            <button v-if="!readOnly" class="btn btn-sm btn-danger" @click="removeEntry(i)">删</button>
           </div>
           <div class="cm-kv-val-wrap field-copy-wrap">
             <textarea
@@ -258,6 +265,7 @@ defineExpose({ open: openEditor, close })
               placeholder="value"
               class="kv-val"
               rows="4"
+              :readonly="readOnly"
               @input="fitCmValue($event.target)"
             ></textarea>
             <button
@@ -269,10 +277,10 @@ defineExpose({ open: openEditor, close })
           </div>
         </div>
       </div>
-      <button class="btn btn-sm" @click="addEntry">添加键</button>
+      <button v-if="!readOnly" class="btn btn-sm" @click="addEntry">添加键</button>
     </template>
     <div v-else-if="!loading && mode === 'yaml'" class="field-copy-wrap">
-      <textarea v-model="yaml" class="cm-yaml"></textarea>
+      <textarea v-model="yaml" class="cm-yaml" :readonly="readOnly"></textarea>
       <button
         type="button"
         class="field-copy"

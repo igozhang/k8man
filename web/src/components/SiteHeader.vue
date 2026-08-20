@@ -1,6 +1,7 @@
 <script setup>
 import { RouterLink } from 'vue-router'
 import { useSiteUI } from '../composables/useSiteUI'
+import { canWrite } from '../stores/opsAuth'
 
 const { ui, iconSrc, bannerStyle } = useSiteUI()
 </script>
@@ -26,6 +27,7 @@ const { ui, iconSrc, bannerStyle } = useSiteUI()
           <RouterLink to="/monitor">监控</RouterLink>
           <RouterLink to="/diagnose">诊断</RouterLink>
           <RouterLink to="/docs">运维文档</RouterLink>
+          <span class="nav-perm" :class="{ 'is-write': canWrite }">{{ canWrite ? '可操作' : '只读' }}</span>
         </nav>
       </div>
     </div>

@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 import { readApi, writeApi } from '../api'
 import { asArray, errMessage } from '../utils/safe'
 import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad, invalidateDocs } from '../utils/resourceCache'
+import { canWrite } from '../stores/opsAuth'
 
 const list = ref([])
 const q = ref('')
@@ -42,6 +43,7 @@ async function load({ force = false } = {}) {
 }
 
 async function remove(d) {
+  if (!canWrite.value) return
   if (!confirm(`删除文档「${d.title}」？`)) return
   try {
     await writeApi.deleteDoc(d.id)
@@ -71,7 +73,7 @@ onUnmounted(() => {
         <h1>运维文档</h1>
         <p class="page-desc">记录故障处理、迁移步骤与值班笔记。</p>
       </div>
-      <RouterLink class="btn btn-primary" to="/docs/edit">新建文档</RouterLink>
+      <RouterLink v-if="canWrite" class="btn btn-primary" to="/docs/edit">新建文档</RouterLink>
     </div>
     <div class="toolbar toolbar-start">
       <input v-model="q" type="text" placeholder="搜索标题/摘要" @keyup.enter="load" @input="scheduleSearch" />
@@ -96,7 +98,7 @@ onUnmounted(() => {
         </span>
       </div>
       <p class="doc-capsule-excerpt">{{ d.summary || '（无摘要）' }}</p>
-      <div class="actions">
+      <div v-if="canWrite" class="actions">
         <RouterLink class="btn btn-sm" :to="`/docs/edit/${d.id}`">编辑</RouterLink>
         <button class="btn btn-sm btn-danger" @click="remove(d)">删除</button>
       </div>

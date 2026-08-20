@@ -11,6 +11,7 @@ import (
 	"gitee.com/k8man/internal/api/read"
 	"gitee.com/k8man/internal/api/respond"
 	"gitee.com/k8man/internal/api/write"
+	"gitee.com/k8man/internal/auth"
 	"gitee.com/k8man/internal/config"
 	"gitee.com/k8man/internal/hostsfile"
 	"gitee.com/k8man/internal/inspect"
@@ -27,6 +28,7 @@ type Deps struct {
 	Pool    *kube.Pool
 	Hosts   *hostsfile.File
 	Inspect *inspect.Worker
+	Auth    *auth.Service
 	WebFS   fs.FS // optional embedded web/dist
 	Version string
 	UI      UIConfig
@@ -35,8 +37,11 @@ type Deps struct {
 func NewRouter(d Deps) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.Logger())
+	if d.Auth == nil {
+		d.Auth = auth.New("")
+	}
 
-	rh := &read.Handler{Store: d.Store, Pool: d.Pool, Hosts: d.Hosts, Inspect: d.Inspect}
+	rh := &read.Handler{Store: d.Store, Pool: d.Pool, Hosts: d.Hosts, Inspect: d.Inspect, Auth: d.Auth}
 	wh := &write.Handler{Store: d.Store, Pool: d.Pool, Hosts: d.Hosts, Inspect: d.Inspect}
 
 	r.GET("/api/health", func(c *gin.Context) {
@@ -88,6 +93,13 @@ func NewRouter(d Deps) *gin.Engine {
 	r.GET("/icon", serveIcon)
 	r.GET("/favicon.ico", serveIcon)
 
+	authGroup := r.Group("/api/v1/auth")
+	{
+		authGroup.GET("/igokey", d.Auth.HandleIgoKey)
+		authGroup.POST("/login", d.Auth.HandleLogin)
+		authGroup.POST("/session", d.Auth.HandleSession)
+	}
+
 	readGroup := r.Group("/api/v1/read")
 	{
 		readGroup.GET("/clusters", rh.ListClusters)
@@ -116,7 +128,7 @@ func NewRouter(d Deps) *gin.Engine {
 	}
 
 	writeGroup := r.Group("/api/v1/write")
-	writeGroup.Use(middleware.AuthWrite())
+	writeGroup.Use(middleware.AuthWrite(d.Auth))
 	{
 		writeGroup.POST("/clusters", wh.CreateCluster)
 		writeGroup.POST("/clusters/probe", wh.ProbeCluster)

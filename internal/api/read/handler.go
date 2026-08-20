@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"gitee.com/k8man/internal/api/respond"
+	"gitee.com/k8man/internal/auth"
 	"gitee.com/k8man/internal/hostsfile"
 	"gitee.com/k8man/internal/inspect"
 	"gitee.com/k8man/internal/kube"
@@ -22,6 +23,7 @@ type Handler struct {
 	Pool    *kube.Pool
 	Hosts   *hostsfile.File
 	Inspect *inspect.Worker
+	Auth    *auth.Service
 }
 
 func (h *Handler) clients(c *gin.Context) (*kube.Clients, bool) {
@@ -57,7 +59,8 @@ func (h *Handler) ListClusters(c *gin.Context) {
 }
 
 func (h *Handler) GetCluster(c *gin.Context) {
-	cl, err := h.Store.GetCluster(c.Param("id"), true)
+	withKubeconfig := h.Auth != nil && h.Auth.TokenOK(auth.TokenFromRequest(c))
+	cl, err := h.Store.GetCluster(c.Param("id"), withKubeconfig)
 	if err != nil {
 		respond.Internal(c, err.Error())
 		return

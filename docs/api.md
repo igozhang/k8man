@@ -2,7 +2,7 @@
 
 统一响应：`{ "code": 0, "message": "ok", "data": ... }`。`code != 0` 表示失败。
 
-写操作统一挂载 `AuthWrite` 中间件（首版透传），路径前缀 `/api/v1/write`。只读前缀 `/api/v1/read`。
+写操作统一挂载 `AuthWrite` 中间件：须在 `/ops` 用当前 igokey 验证，请求带 `X-Igo-Token`（或 `?token=`）。只读前缀 `/api/v1/read` 无需 token。默认只读。
 
 ## Health
 
@@ -21,7 +21,7 @@
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/clusters` | 集群列表（**不含** kubeconfig 原文） |
-| GET | `/clusters/:id` | 集群详情（**含** kubeconfig 原文，供编辑回填） |
+| GET | `/clusters/:id` | 集群详情；**含** kubeconfig 原文仅当请求带有效写 token，否则省略（供编辑回填） |
 | GET | `/clusters/:id/namespaces` | Namespace 列表（List 首页 `resourceVersion=0` 走 API Server watch cache） |
 | GET | `/clusters/:id/nodes` | 节点列表（project 返回 403；同样走 watch cache） |
 | GET | `/clusters/:id/diagnose?namespace=` | 诊断扫描，只返回异常项（见下方） |
@@ -220,6 +220,20 @@
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/hosts` | `{path, items}`；`items` 为 `{id,hostname,ip}` |
+
+## 鉴权 `/api/v1/auth`
+
+方案与站点 igokey 相同：8 位字母、约 1 小时有效；剩余 **>15 分钟** 刷新复用，不足 15 分钟或 `renew=1` 签发新密钥并作废旧密钥与已登录会话。活跃密钥落在 `<data_dir>/igokey-active.json`。同一 IP 1 分钟内登录失败 5 次锁定 1 分钟。
+
+页面：`/igokey` 取钥，`/ops` 输入 key。token **仅存浏览器内存**，刷新页面须重新验证。写请求头 `X-Igo-Token`。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/igokey?renew=` | 签发或复用当前密钥，`data`: `{key, expiresAt, expiresInSec}` |
+| POST | `/login` | body `{key}`；成功 `data`: `{token, expiresAt, expiresInSec}`；错误 401；过频 429 |
+| POST | `/session` | body `{token}`；成功 `data`: `{expiresInSec}`；失效 401 |
+
+写接口未带有效 token 时 HTTP **401**，`message` 为「未认证，请先验证 key」/「旧 key 不可用…」/「key 已过期…」。
 
 ## 写操作 `/api/v1/write`
 

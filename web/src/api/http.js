@@ -5,11 +5,40 @@ const http = axios.create({
   timeout: 60000
 })
 
+let writeToken = ''
+let onWriteUnauthorized = () => {}
+
+export function setWriteToken(token) {
+  writeToken = typeof token === 'string' ? token : ''
+}
+
+export function onWriteAuthLost(fn) {
+  onWriteUnauthorized = typeof fn === 'function' ? fn : () => {}
+}
+
 function apiError(message, code) {
   const e = new Error(typeof message === 'string' && message ? message : 'request failed')
   if (code != null) e.code = code
   return e
 }
+
+function isWriteURL(url) {
+  const u = String(url || '')
+  return u.includes('/write/') || u.endsWith('/write') || u.startsWith('/write')
+}
+
+function isKubeconfigURL(config) {
+  const u = String(config?.url || '')
+  return /\/read\/clusters\/[^/?]+$/.test(u.split('?')[0])
+}
+
+http.interceptors.request.use((config) => {
+  if (writeToken && (isWriteURL(config.url) || isKubeconfigURL(config))) {
+    config.headers = config.headers || {}
+    config.headers['X-Igo-Token'] = writeToken
+  }
+  return config
+})
 
 http.interceptors.response.use(
   (res) => {
@@ -36,6 +65,9 @@ http.interceptors.response.use(
       }
     }
     const code = typeof data?.code === 'number' ? data.code : err.response?.status
+    if (code === 401 && isWriteURL(err.config?.url)) {
+      onWriteUnauthorized(msg)
+    }
     return Promise.reject(apiError(msg, code))
   }
 )

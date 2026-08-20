@@ -54,6 +54,10 @@ tagline=practice makes perfect
 # | banner    | （仅 conf）      | （自动探测）            | etc 下图片文件名 |
 # | hosts     | （文件）         | <etc>/hosts             | 私有解析，格式：IP hostname |
 #
+# 写操作鉴权（igokey，与站点方案相同）：
+#   访问 /igokey 取得 8 位字母密钥（约 1 小时；剩余 >15 分钟刷新复用）。
+#   在 /ops 验证后本会话可写；刷新页面须重新验证。密钥落在 <data_dir>/igokey-active.json。
+#
 # 站点 icon（可选）：
 #   将 icon.jpg / icon.png 放到 etc 即作为 favicon 与页眉图标；
 #   无文件则使用内置马里奥风格（红白蓝）数字 8。
