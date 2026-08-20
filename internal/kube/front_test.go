@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestClassifyFrontProxy(t *testing.T) {
@@ -38,6 +39,14 @@ func TestClassifyFrontProxy(t *testing.T) {
 			srv:  "nginx",
 			ct:   "text/html",
 			body: "<h1>Welcome to nginx!</h1>",
+			want: FrontNginx,
+		},
+		{
+			name: "nginx 302 to dashboard",
+			code: 302,
+			srv:  "nginx/1.18.0",
+			ct:   "text/html",
+			body: "",
 			want: FrontNginx,
 		},
 		{
@@ -107,12 +116,23 @@ func TestDetectFrontProxyIngressVsNginx(t *testing.T) {
 	}))
 	t.Cleanup(stock.Close)
 
-	rancher := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// 外置 nginx 反代 Rancher：/ping=pong，未知路径仍是 nginx 404
+	behindNginx := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ping" {
 			_, _ = w.Write([]byte("pong"))
 			return
 		}
 		writeNginx404(w)
+	}))
+	t.Cleanup(behindNginx.Close)
+
+	rancher := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ping" {
+			_, _ = w.Write([]byte("pong"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><body>Rancher ember-app</body></html>`))
 	}))
 	t.Cleanup(rancher.Close)
 
@@ -123,7 +143,63 @@ func TestDetectFrontProxyIngressVsNginx(t *testing.T) {
 	if got := DetectFrontProxy(ctx, kubeconfigYAML(stock.URL+"/k8s/clusters/local"), nil); got != FrontNginx {
 		t.Fatalf("stock nginx: got %q", got)
 	}
+	if got := DetectFrontProxy(ctx, kubeconfigYAML(behindNginx.URL+"/k8s/clusters/local"), nil); got != FrontNginx {
+		t.Fatalf("rancher behind nginx: got %q want nginx", got)
+	}
 	if got := DetectFrontProxy(ctx, kubeconfigYAML(rancher.URL+"/k8s/clusters/local"), nil); got != FrontRancher {
 		t.Fatalf("rancher: got %q", got)
+	}
+}
+
+func TestDetectFrontProxyWaitsForSlowNginxProbe(t *testing.T) {
+	front := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ping" {
+			_, _ = w.Write([]byte("pong"))
+			return
+		}
+		time.Sleep(1200 * time.Millisecond)
+		writeNginx404(w)
+	}))
+	t.Cleanup(front.Close)
+
+	ctx := context.Background()
+	if got := DetectFrontProxy(ctx, kubeconfigYAML(front.URL+"/k8s/clusters/local"), nil); got != FrontNginx {
+		t.Fatalf("slow nginx 404 after pong: got %q want nginx", got)
+	}
+}
+
+func TestDetectFrontProxyNginxRedirect(t *testing.T) {
+	front := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ping" {
+			_, _ = w.Write([]byte("pong"))
+			return
+		}
+		w.Header().Set("Server", "nginx/1.18.0")
+		w.Header().Set("Location", "/dashboard/")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(front.Close)
+
+	ctx := context.Background()
+	if got := DetectFrontProxy(ctx, kubeconfigYAML(front.URL+"/k8s/clusters/local"), nil); got != FrontNginx {
+		t.Fatalf("nginx 302: got %q want nginx", got)
+	}
+}
+
+func TestPickFrontKind(t *testing.T) {
+	tests := []struct {
+		ping, probe, want string
+	}{
+		{FrontRancher, FrontNginx, FrontNginx},
+		{FrontRancher, FrontIngressNginx, FrontIngressNginx},
+		{FrontRancher, "", FrontRancher},
+		{FrontRancher, FrontRancher, FrontRancher},
+		{"", FrontNginx, FrontNginx},
+		{"", FrontIngressNginx, FrontIngressNginx},
+	}
+	for _, tt := range tests {
+		if got := pickFrontKind(tt.ping, tt.probe); got != tt.want {
+			t.Fatalf("ping=%q probe=%q got %q want %q", tt.ping, tt.probe, got, tt.want)
+		}
 	}
 }

@@ -53,7 +53,8 @@ const specEditor = ref({
   envFrom: [],
   resources: { requestsCpu: '', requestsMemory: '', limitsCpu: '', limitsMemory: '' },
   busy: false,
-  loading: false
+  loading: false,
+  error: ''
 })
 const specSeq = createSeq()
 
@@ -377,7 +378,6 @@ function applyContainerToForm(ctr) {
 }
 
 async function openSpecEdit(row) {
-  error.value = ''
   const kind = yamlKind(row.kind)
   const seq = specSeq.next()
   specEditor.value = {
@@ -393,7 +393,8 @@ async function openSpecEdit(row) {
     envFrom: [],
     resources: { requestsCpu: '', requestsMemory: '', limitsCpu: '', limitsMemory: '' },
     busy: false,
-    loading: true
+    loading: true,
+    error: ''
   }
   try {
     const data = await readApi.getWorkloadSpecEdit(
@@ -409,11 +410,11 @@ async function openSpecEdit(row) {
     specEditor.value.secrets = asArray(data?.secrets)
     specEditor.value.loading = false
     if (containers.length) applyContainerToForm(containers[0])
-    else error.value = `未读到 ${kind}/${row.name} 的容器规格`
+    else specEditor.value.error = `未读到 ${kind}/${row.name} 的容器规格`
   } catch (e) {
     if (!specSeq.is(seq)) return
     specEditor.value.loading = false
-    error.value = errMessage(e)
+    specEditor.value.error = errMessage(e)
   }
 }
 
@@ -460,13 +461,13 @@ function envFromNameOptions(row) {
 }
 
 async function saveSpecEdit() {
-  error.value = ''
+  specEditor.value.error = ''
   if (!specEditor.value.selected) {
-    error.value = '请选择容器'
+    specEditor.value.error = '请选择容器'
     return
   }
   if (!String(specEditor.value.image || '').trim()) {
-    error.value = '镜像不能为空'
+    specEditor.value.error = '镜像不能为空'
     return
   }
   specEditor.value.busy = true
@@ -497,7 +498,7 @@ async function saveSpecEdit() {
     specEditor.value.loading = false
     await afterWrite()
   } catch (e) {
-    error.value = errMessage(e)
+    specEditor.value.error = errMessage(e)
   } finally {
     specEditor.value.busy = false
   }
@@ -755,7 +756,7 @@ watch([ns, tab], () => {
       </div>
       <p class="muted">仅改镜像、环境变量、envFrom、资源；复杂变更请用 YAML。</p>
       <p v-if="specEditor.loading" class="muted">正在加载当前规格…</p>
-      <p v-if="error" class="error">{{ error }}</p>
+      <p v-if="specEditor.error" class="error">{{ specEditor.error }}</p>
 
       <template v-if="!specEditor.loading && specEditor.containers.length">
       <div class="form-row">

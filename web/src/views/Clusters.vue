@@ -444,10 +444,14 @@ function applyProbeResult(r, { name = '', inForm = false } = {}) {
 async function testClusterConn(c) {
   if (!c?.id) return
   testingId.value = c.id
-  error.value = ''
-  notice.value = ''
-  formError.value = ''
-  formNotice.value = ''
+  const inForm = showForm.value && editingId.value === c.id
+  if (inForm) {
+    formError.value = ''
+    formNotice.value = ''
+  } else {
+    error.value = ''
+    notice.value = ''
+  }
   try {
     const r = await writeApi.testCluster(c.id)
     invalidateClusterLists(c.id)

@@ -90,7 +90,7 @@ func TestProbeNginxHTML404IsGatewayError(t *testing.T) {
 	}
 }
 
-func TestProbePrefersOriginRancherPing(t *testing.T) {
+func TestProbeNginxInFrontOfRancherPing(t *testing.T) {
 	front := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ping" {
 			_, _ = w.Write([]byte("pong"))
@@ -104,8 +104,8 @@ func TestProbePrefersOriginRancherPing(t *testing.T) {
 	if res.Status != "error" {
 		t.Fatalf("want error, got %+v", res)
 	}
-	if res.FrontProxy != FrontRancher {
-		t.Fatalf("frontProxy=%q want rancher from origin /ping", res.FrontProxy)
+	if res.FrontProxy != FrontNginx {
+		t.Fatalf("frontProxy=%q want nginx (unknown path), not rancher from /ping", res.FrontProxy)
 	}
 }
 

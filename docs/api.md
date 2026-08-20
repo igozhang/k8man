@@ -40,17 +40,17 @@
 
 #### `frontProxy`（入口探测）
 
-`POST /clusters/probe` 与 `POST /clusters/:id/test` 在探测 API 的同时，对 kubeconfig **host 的 origin**（不是 `/k8s/clusters/...` 等 API path）并行 GET `/ping` 和 `/k8man-front-probe`（约 2 秒超时）。启发式分类，不确定则空：
+`POST /clusters/probe` 与 `POST /clusters/:id/test` 在探测 API 的同时，对 kubeconfig **host 的 origin**（不是 `/k8s/clusters/...` 等 API path）并行 GET `/ping` 和 `/k8man-front-probe`（约 2 秒超时，**等两次都返回**）。不跟随跳转，以免 302 进 Rancher 页面后误标。看的是 **最前面那一层**：未知路径的 nginx / ingress-nginx 指纹优先于 `/ping=pong`。外置 nginx 把 `/ping` 和 `/k8s/...` 反代到 Rancher、其它路径仍是 nginx 404/302 时，标为 `nginx`（外置 nginx）。启发式分类，不确定则空：
 
 | 值 | 页面标签 | 典型依据 |
 |------|------|------|
-| `ingress-nginx` | ingress-nginx | `default backend - 404`，或 `Server: nginx` + `text/plain` 404 |
-| `nginx` | 外置 nginx | HTML 404 / Welcome to nginx / `<center>nginx</center>` |
-| `rancher` | Rancher | `/ping` 返回 `pong`（优先于 nginx 指纹） |
+| `ingress-nginx` | ingress-nginx | 未知路径 `default backend - 404`，或 `Server: nginx` + `text/plain` 404 |
+| `nginx` | 外置 nginx | 未知路径 HTML 404 / Welcome to nginx / `<center>nginx</center>` |
+| `rancher` | Rancher | `/ping` 返回 `pong`，且未知路径也不是 nginx/ingress-nginx（流量直接进 Rancher） |
 | `apiserver` | （不展示） | JSON `Status` |
 | 空 | （不展示） | 不确定 |
 
-改 kubeconfig / API Server / TLS 选项后该字段清空，需再测。Rancher 经 ingress-nginx 暴露且 `/ping` 可达时标为 `rancher`。
+改 kubeconfig / API Server / TLS 选项后该字段清空，需再测。已保存的旧结果需再点「测试」才会按新规则更新。
 
 ### 诊断
 

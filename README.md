@@ -58,7 +58,7 @@ npm run dev   # Vite 代理 /api -> :8080
 3. 可选：改 API Server、勾选「跳过 TLS 证书校验」（内网 / 自签证书）
 4. 点「测试」探测连通、权限与入口；**保存不会自动探测**，导入后状态为「未测试」
    - 能 List Node → `cluster`，否则 → `project`（仅其可访问 Namespace）
-   - 入口（启发式，写在状态列）：`ingress-nginx` / 外置 nginx / Rancher
+   - 入口（启发式，写在状态列）：看最前面那一层。外置 nginx 反代 Rancher 时显示「外置 nginx」，不会因为 `/ping=pong` 标成 Rancher
 5. 域名解析不到时，在同页 Hosts 按系统 hosts 格式添加 `IP hostname`，约 2 秒后再生效，再测
 6. 「选用」后到工作负载 / 监控 / 诊断
 

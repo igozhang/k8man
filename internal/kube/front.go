@@ -50,11 +50,9 @@ func DetectFrontProxy(ctx context.Context, kubeconfigYAML string, hosts *HostsRe
 	client := &http.Client{
 		Transport: rt,
 		Timeout:   frontProbeTimeout,
-		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
-			if len(via) >= 2 {
-				return http.ErrUseLastResponse
-			}
-			return nil
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			// Classify the front's own response (nginx 302/404), not the upstream Rancher UI.
+			return http.ErrUseLastResponse
 		},
 	}
 
@@ -63,18 +61,17 @@ func DetectFrontProxy(ctx context.Context, kubeconfigYAML string, hosts *HostsRe
 	go func() { pingCh <- fetchFrontKind(ctx, client, origin+"/ping") }()
 	go func() { probeCh <- fetchFrontKind(ctx, client, origin+frontProbePath) }()
 
-	var pingKind, probeKind string
-	for got := 0; got < 2; {
-		select {
-		case pingKind = <-pingCh:
-			pingCh = nil
-			got++
-		case probeKind = <-probeCh:
-			probeCh = nil
-			got++
-		case <-ctx.Done():
-			got = 2
-		}
+	// Wait for both samples. Aborting on ctx.Done after /ping=pong would
+	// label 外置 nginx as Rancher when the unknown-path 404 is only a bit slower.
+	return pickFrontKind(<-pingCh, <-probeCh)
+}
+
+// pickFrontKind prefers the unknown-path fingerprint (ingress-nginx vs 外置 nginx).
+// /ping=pong only means Rancher is reachable behind that front — typical 外置 nginx
+// reverse-proxies /ping and /k8s/clusters/... while other paths still hit nginx 404.
+func pickFrontKind(pingKind, probeKind string) string {
+	if probeKind == FrontIngressNginx || probeKind == FrontNginx {
+		return probeKind
 	}
 	if pingKind == FrontRancher {
 		return FrontRancher
@@ -134,6 +131,11 @@ func ClassifyFrontProxy(status int, server, contentType, body string) string {
 	}
 	if strings.Contains(bl, "welcome to nginx") || strings.Contains(bl, "<center>nginx</center>") {
 		return FrontNginx
+	}
+	if status >= 300 && status < 400 {
+		if strings.Contains(srv, "nginx") || strings.Contains(srv, "openresty") {
+			return FrontNginx
+		}
 	}
 	if strings.Contains(ct, "json") && (strings.Contains(bl, `"kind"`) || strings.Contains(bl, "kubernetes")) {
 		return FrontAPIServer
