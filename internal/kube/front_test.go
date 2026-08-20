@@ -71,7 +71,15 @@ func TestClassifyFrontProxy(t *testing.T) {
 			srv:  "nginx",
 			ct:   "text/plain",
 			body: "404",
-			want: FrontIngressNginx,
+			want: FrontNginx,
+		},
+		{
+			name: "nginx return 404 empty body",
+			code: 404,
+			srv:  "nginx",
+			ct:   "text/plain; charset=utf-8",
+			body: "",
+			want: FrontNginx,
 		},
 		{
 			name: "unknown",

@@ -67,6 +67,14 @@ tagline=practice makes perfect
 #   10.10.10.10 igozhang.cn
 #   可直接编辑该文件，或在页面 Hosts 管理中修改。
 #
+# 巡检（进程内，无独立配置项，约 2 小时一轮）：
+#   对每个已保存 kubeconfig 独立计时（完成后 ±6 分钟抖动），串行执行
+#   （同时只跑 1 个，间隔约 15 秒）。先 Probe（与页面「测试」相同并回写状态），
+#   成功再跑 Diagnose（节点/负载/Pod/事件；project 跳过节点）。
+#   进程退出或请求取消时不落库，避免把关机写成 kubeconfig 无效。
+#   结果在「监控」页底部摘要；「一键巡检」只跑当前选用集群。
+#   改 kubeconfig / API Server / TLS 会丢掉该配置的旧巡检快照。
+#
 # ----- 示例 -----
 # db_path=./data/k8man.db
 # tagline=practice makes perfect

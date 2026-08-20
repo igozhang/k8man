@@ -545,7 +545,7 @@ onUnmounted(() => {
     <div class="toolbar">
       <div>
         <h1>KubeConfig 管理</h1>
-        <p class="page-desc">导入 Rancher 集群管理员或 Project kubeconfig。点「测试」会探测入口是 ingress-nginx 还是外置 nginx，结果写在状态列。</p>
+        <p class="page-desc">导入 Rancher 集群管理员或 Project kubeconfig。点「测试」会探测入口是 ingress-nginx 还是外置 nginx，结果写在状态列。后台约 2 小时也会巡检并回写状态；改 YAML / API Server / TLS 会清空入口标签与巡检快照。</p>
       </div>
       <button class="btn btn-primary" @click="openCreate">导入 kubeconfig</button>
     </div>

@@ -25,6 +25,7 @@ export const TTL = {
   podMetrics: 15_000,
   overview: 45_000,
   diagnose: 90_000,
+  inspections: 60_000,
   docs: 60_000,
   ui: 5 * 60_000
 }
@@ -233,6 +234,7 @@ export function invalidateClusterLists(clusterId) {
   const id = String(clusterId || '')
   if (!id) return
   cacheInvalidateWhere((k) => k.split('::')[1] === id)
+  cacheInvalidate(cacheKey('inspections', 'local'))
 }
 
 export function invalidateDocs(docId) {

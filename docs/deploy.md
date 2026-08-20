@@ -36,6 +36,7 @@ curl -sS http://k8man.igozhang.cn/api/health
 - 滚动更新：`RollingUpdate`（`maxUnavailable: 0`），新 Pod Ready 后再下旧 Pod，避免短暂不可访问
 - PVC：`local-path` RWO → `/data`；滚动时依赖同节点挂载（已配置 podAffinity 优先同节点）。若新 Pod 一直 Pending，检查是否被调度到其他节点
 - Hosts：`/data/etc/hosts`；格式 `IP hostname`；页面与直接改文件均可。kubeconfig 域名解析不到时在「KubeConfig」页添加，约 2 秒生效
-- 入口探测（ingress-nginx / 外置 nginx / Rancher）对 kubeconfig host 的 origin 发 GET，无需额外部署；点页面「测试」后写入状态列
+- 入口探测（ingress-nginx / 外置 nginx / Rancher）对 kubeconfig host 的 origin 发 GET，无需额外部署；点页面「测试」或后台巡检后写入状态列
+- 巡检：进程内对每个 kubeconfig 约 2 小时一轮（错开、串行），结果在「监控」页底部；无需额外部署或 Sidecar。快照在 SQLite（`cluster_inspections`）
 - 环境变量：`K8MAN_ADDR` / `K8MAN_DATA_DIR` / `K8MAN_DB_PATH` / `K8MAN_ETC_DIR` / `TZ`
 - 无登录鉴权；保留 PVC 升级

@@ -1,10 +1,11 @@
 <script setup>
 import { ref, watch, onMounted, computed } from 'vue'
-import { readApi } from '../api'
+import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory, fmtTime, mergeNodeUsage } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
 import { asArray, createSeq, errMessage } from '../utils/safe'
+import { severityLabel, issueCategoryLabel } from '../utils/labels'
 import {
   TTL,
   cacheFresh,
@@ -12,11 +13,16 @@ import {
   cacheKey,
   cacheLoad,
   cacheSet,
+  cacheInvalidate,
   getViewPref,
   setViewPref
 } from '../utils/resourceCache'
+import InspectionDrawer from '../components/InspectionDrawer.vue'
 
-const { currentClusterId, currentCluster } = useClusterStore()
+const INSPECT_KEY = cacheKey('inspections', 'local')
+const PREVIEW_LINES = 8
+
+const { currentClusterId, currentCluster, refreshClusters } = useClusterStore()
 const namespaces = ref([])
 const ns = ref('')
 /** '' | nodes | pods */
@@ -32,13 +38,197 @@ const podLoading = ref(false)
 const podRefreshing = ref(false)
 const nsLoading = ref(false)
 
+const inspectItems = ref(asArray(cacheGet(INSPECT_KEY)?.data?.items))
+const inspectLoading = ref(false)
+const inspectError = ref('')
+const inspecting = ref(false)
+const inspectDrawer = ref(null)
+
 const nodesSeq = createSeq()
 const podsSeq = createSeq()
+const inspectSeq = createSeq()
+const inspectRunSeq = createSeq()
 
 const isProject = computed(() => currentCluster.value?.permType === 'project')
 const showNodesTab = computed(() => !isProject.value)
 
+const inspectLines = computed(() => {
+  const rows = []
+  for (const it of inspectItems.value) {
+    for (const iss of asArray(it.preview)) {
+      rows.push({
+        ...iss,
+        clusterId: it.clusterId,
+        clusterName: it.clusterName
+      })
+    }
+  }
+  const rank = (s) => (s === 'critical' ? 0 : s === 'warning' ? 1 : 2)
+  rows.sort((a, b) => {
+    const d = rank(a.severity) - rank(b.severity)
+    if (d) return d
+    return String(a.clusterName || '').localeCompare(String(b.clusterName || ''), 'zh')
+  })
+  return rows
+})
+
+const inspectVisible = computed(() => inspectLines.value.slice(0, PREVIEW_LINES))
+const inspectMore = computed(() => {
+  const total = inspectItems.value.reduce((n, it) => n + (Number(it.critical) || 0) + (Number(it.warning) || 0), 0)
+  return Math.max(0, total - inspectVisible.value.length)
+})
+const inspectCounts = computed(() => {
+  let critical = 0
+  let warning = 0
+  for (const it of inspectItems.value) {
+    critical += Number(it.critical) || 0
+    warning += Number(it.warning) || 0
+  }
+  return { critical, warning }
+})
+const inspectHasRun = computed(() => inspectItems.value.some((it) => !!it.checkedAt))
+const inspectMeta = computed(() => {
+  const items = inspectItems.value
+  const n = items.length
+  if (!n) return '暂无 kubeconfig'
+  let last = null
+  let next = null
+  for (const it of items) {
+    if (it.checkedAt) {
+      const t = new Date(it.checkedAt)
+      if (!Number.isNaN(t.getTime()) && (!last || t > last)) last = t
+    }
+    if (it.nextDue) {
+      const t = new Date(it.nextDue)
+      if (!Number.isNaN(t.getTime()) && (!next || t < next)) next = t
+    }
+  }
+  const parts = [`${n} 个配置`]
+  if (last) parts.push(`上次 ${fmtInspectTime(last)}`)
+  if (next) parts.push(`下次 ${fmtInspectTime(next)}`)
+  const { critical, warning } = inspectCounts.value
+  if (critical || warning) {
+    const bits = []
+    if (critical) bits.push(`${critical} 严重`)
+    if (warning) bits.push(`${warning} 警告`)
+    parts.push(bits.join(' / '))
+  } else if (last) {
+    parts.push('全部正常')
+  } else {
+    parts.push('尚未巡检')
+  }
+  return parts.join(' · ')
+})
+
+function fmtInspectTime(t) {
+  const d = t instanceof Date ? t : new Date(t)
+  if (Number.isNaN(d.getTime())) return '—'
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function issueLine(row) {
+  const cat = issueCategoryLabel(row.category)
+  const where = row.namespace ? `${row.namespace}/${row.name}` : row.name
+  const reason = row.reason || ''
+  return `${row.clusterName} · ${cat} ${where}${reason ? `：${reason}` : ''}`
+}
+
+function applyInspectList(data) {
+  inspectItems.value = asArray(data?.items)
+}
+
+async function loadInspections({ force = false } = {}) {
+  const seq = inspectSeq.next()
+  inspectError.value = ''
+  const hit = cacheGet(INSPECT_KEY)
+  if (hit?.data) applyInspectList(hit.data)
+  if (!force && cacheFresh(INSPECT_KEY, TTL.inspections)) {
+    inspectLoading.value = false
+    return
+  }
+  inspectLoading.value = !inspectItems.value.length
+  try {
+    const data = await cacheLoad(INSPECT_KEY, TTL.inspections, () => readApi.listInspections(), { force })
+    if (!inspectSeq.is(seq)) return
+    applyInspectList(data)
+  } catch (e) {
+    if (!inspectSeq.is(seq)) return
+    inspectError.value = errMessage(e)
+    if (!hit) inspectItems.value = []
+  } finally {
+    if (inspectSeq.is(seq)) inspectLoading.value = false
+  }
+}
+
+async function openInspectDetail(clusterId) {
+  if (!clusterId) return
+  const item = inspectItems.value.find((it) => it.clusterId === clusterId)
+  inspectDrawer.value?.open({
+    clusterId,
+    clusterName: item?.clusterName || currentCluster.value?.name || '',
+    checkedAt: item?.checkedAt,
+    summary: item?.summary || '加载中…',
+    probeStatus: item?.probeStatus,
+    probeError: item?.probeError,
+    issues: asArray(item?.preview),
+    elapsedMs: item?.elapsedMs
+  })
+  try {
+    const data = await readApi.getInspection(clusterId)
+    inspectDrawer.value?.update(data)
+  } catch (e) {
+    inspectDrawer.value?.update({
+      clusterId,
+      clusterName: item?.clusterName || currentCluster.value?.name || '',
+      checkedAt: item?.checkedAt,
+      summary: errMessage(e, '尚未巡检'),
+      probeStatus: item?.probeStatus,
+      probeError: item?.probeError || errMessage(e),
+      issues: []
+    })
+  }
+}
+
+async function runInspect() {
+  if (!currentClusterId.value || inspecting.value) return
+  const seq = inspectRunSeq.next()
+  inspecting.value = true
+  inspectError.value = ''
+  try {
+    const data = await writeApi.inspectCluster(currentClusterId.value)
+    if (!inspectRunSeq.is(seq)) return
+    cacheInvalidate(INSPECT_KEY)
+    inspectDrawer.value?.open(data)
+    await Promise.all([
+      loadInspections({ force: true }),
+      refreshClusters(() => readApi.listClusters(), { force: true }).catch(() => {})
+    ])
+  } catch (e) {
+    if (!inspectRunSeq.is(seq)) return
+    inspectError.value = errMessage(e)
+  } finally {
+    if (inspectRunSeq.is(seq)) inspecting.value = false
+  }
+}
+
 function resetView() {
+  nodesSeq.bump()
+  podsSeq.bump()
+  nodeRows.value = []
+  podMetrics.value = []
+  nodeTip.value = ''
+  podTip.value = ''
+  nodeLoading.value = false
+  nodeRefreshing.value = false
+  podLoading.value = false
+  podRefreshing.value = false
+  nsLoading.value = false
+  namespaces.value = []
+  ns.value = ''
+  tab.value = ''
+  error.value = ''
+}
   nodesSeq.bump()
   podsSeq.bump()
   nodeRows.value = []
@@ -201,6 +391,7 @@ function selectTab(next) {
 
 function enterPage() {
   error.value = ''
+  loadInspections()
   if (!currentClusterId.value) {
     resetView()
     return
@@ -265,7 +456,7 @@ onMounted(enterPage)
   <div>
     <h1>监控</h1>
     <p class="page-desc">
-      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。当前选用集群在 TTL 内复用并合并重复请求；过期后后台更新，不先清空。Pod 指标需选择命名空间。未安装或权限不足时降级提示。
+      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。当前选用集群在 TTL 内复用并合并重复请求；过期后后台更新，不先清空。Pod 指标需选择命名空间。未安装或权限不足时降级提示。页底为全部 kubeconfig 的巡检摘要（约两小时一轮、错开执行）；「一键巡检」只跑当前选用的集群。
     </p>
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
@@ -360,5 +551,54 @@ onMounted(enterPage)
         </template>
       </template>
     </template>
+
+    <section class="panel inspect-box">
+      <div class="toolbar">
+        <div class="inspect-head">
+          <strong>巡检</strong>
+          <span class="muted inspect-meta">{{ inspectMeta }}</span>
+        </div>
+        <div class="actions">
+          <button
+            class="btn btn-sm"
+            type="button"
+            :disabled="!currentClusterId || inspecting"
+            :title="currentClusterId ? '对当前选用集群立即巡检' : '请先选择集群'"
+            @click="runInspect"
+          >{{ inspecting ? '巡检中…' : '一键巡检' }}</button>
+          <button
+            class="btn btn-sm"
+            type="button"
+            :disabled="!currentClusterId && !inspectLines.length"
+            @click="openInspectDetail(currentClusterId || inspectVisible[0]?.clusterId)"
+          >详情</button>
+        </div>
+      </div>
+      <p v-if="inspectError" class="error">{{ inspectError }}</p>
+      <p v-if="inspectLoading && !inspectItems.length" class="muted">加载巡检结果…</p>
+      <div v-else-if="!inspectItems.length && !inspectError" class="muted">暂无已导入的 kubeconfig。</div>
+      <div v-else-if="!inspectLines.length && inspectItems.length" class="muted">
+        {{ inspectHasRun ? '全部配置巡检正常。' : '尚未巡检。后台约两小时一轮，也可对当前集群一键巡检。' }}
+      </div>
+      <template v-else-if="inspectLines.length">
+        <ul class="inspect-lines">
+          <li v-for="(row, idx) in inspectVisible" :key="(row.clusterId || '') + '/' + idx">
+            <button class="inspect-line" type="button" @click="openInspectDetail(row.clusterId)">
+              <span class="tag" :class="row.severity === 'critical' ? 'sev-critical' : 'sev-warning'">
+                {{ severityLabel(row.severity) }}
+              </span>
+              <span class="inspect-line-text">{{ issueLine(row) }}</span>
+            </button>
+          </li>
+        </ul>
+        <button
+          v-if="inspectMore > 0"
+          class="inspect-more"
+          type="button"
+          @click="openInspectDetail(inspectLines[PREVIEW_LINES]?.clusterId || inspectVisible[0]?.clusterId)"
+        >还有 {{ inspectMore }} 项，点击查看详情</button>
+      </template>
+    </section>
+    <InspectionDrawer ref="inspectDrawer" />
   </div>
 </template>

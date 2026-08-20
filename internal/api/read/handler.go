@@ -2,6 +2,7 @@ package read
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,14 +12,16 @@ import (
 
 	"gitee.com/k8man/internal/api/respond"
 	"gitee.com/k8man/internal/hostsfile"
+	"gitee.com/k8man/internal/inspect"
 	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/store"
 )
 
 type Handler struct {
-	Store *store.Store
-	Pool  *kube.Pool
-	Hosts *hostsfile.File
+	Store   *store.Store
+	Pool    *kube.Pool
+	Hosts   *hostsfile.File
+	Inspect *inspect.Worker
 }
 
 func (h *Handler) clients(c *gin.Context) (*kube.Clients, bool) {
@@ -185,6 +188,36 @@ func (h *Handler) Diagnose(c *gin.Context) {
 		return
 	}
 	respond.OK(c, rep)
+}
+
+func (h *Handler) ListInspections(c *gin.Context) {
+	if h.Inspect == nil {
+		respond.OK(c, inspect.ListResult{Items: []inspect.ListItem{}})
+		return
+	}
+	out, err := h.Inspect.List()
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, out)
+}
+
+func (h *Handler) GetInspection(c *gin.Context) {
+	if h.Inspect == nil {
+		respond.Internal(c, "inspect worker not configured")
+		return
+	}
+	out, err := h.Inspect.Get(c.Param("clusterId"))
+	if err != nil {
+		if errors.Is(err, inspect.ErrNotFound) {
+			respond.NotFound(c, "inspection not found")
+			return
+		}
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, out)
 }
 
 func (h *Handler) ListPods(c *gin.Context) {

@@ -14,15 +14,17 @@ import (
 
 	"gitee.com/k8man/internal/api/respond"
 	"gitee.com/k8man/internal/hostsfile"
+	"gitee.com/k8man/internal/inspect"
 	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/model"
 	"gitee.com/k8man/internal/store"
 )
 
 type Handler struct {
-	Store *store.Store
-	Pool  *kube.Pool
-	Hosts *hostsfile.File
+	Store   *store.Store
+	Pool    *kube.Pool
+	Hosts   *hostsfile.File
+	Inspect *inspect.Worker
 }
 
 func (h *Handler) clients(c *gin.Context) (*kube.Clients, bool) {
@@ -200,6 +202,7 @@ func (h *Handler) UpdateCluster(c *gin.Context) {
 		existing.LastError = ""
 		existing.FrontProxy = ""
 		h.Pool.Invalidate(id)
+		_ = h.Store.DeleteInspection(id)
 	}
 	existing.UpdatedAt = time.Now().UTC()
 	if err := h.Store.UpdateCluster(existing); err != nil {
@@ -262,8 +265,32 @@ func (h *Handler) TestCluster(c *gin.Context) {
 	respond.OK(c, probeResponse(probe))
 }
 
+func (h *Handler) InspectCluster(c *gin.Context) {
+	if h.Inspect == nil {
+		respond.Internal(c, "inspect worker not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+	defer cancel()
+	out, err := h.Inspect.RunCluster(ctx, c.Param("id"), true)
+	if err != nil {
+		if errors.Is(err, inspect.ErrNotFound) {
+			respond.NotFound(c, "cluster not found")
+			return
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			respond.Fail(c, http.StatusGatewayTimeout, 504, "巡检超时")
+			return
+		}
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	respond.OK(c, out)
+}
+
 func (h *Handler) DeleteCluster(c *gin.Context) {
 	id := c.Param("id")
+	_ = h.Store.DeleteInspection(id)
 	if err := h.Store.DeleteCluster(id); err != nil {
 		if err == sql.ErrNoRows {
 			respond.NotFound(c, "cluster not found")

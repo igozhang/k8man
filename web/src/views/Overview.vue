@@ -373,7 +373,7 @@ onUnmounted(() => {
 <template>
   <div>
     <h1>概览</h1>
-    <p class="page-desc">查看已导入的全部 kubeconfig。点「选用」会设为顶部当前集群，供工作负载、监控、诊断使用。选用集群按较短间隔更新；其余集群沿用缓存，刷新不必勤。</p>
+    <p class="page-desc">查看已导入的全部 kubeconfig。点「选用」会设为顶部当前集群，供工作负载、监控、诊断使用。选用集群按较短间隔更新；其余集群沿用缓存，刷新不必勤。全部配置的定时巡检摘要在「监控」页底部。</p>
     <div v-if="!clusters.length" class="empty">请先在「KubeConfig」导入集群。</div>
     <div v-else class="cluster-list">
       <div

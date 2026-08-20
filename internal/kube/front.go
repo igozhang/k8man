@@ -146,13 +146,10 @@ func ClassifyFrontProxy(status int, server, contentType, body string) string {
 	if strings.Contains(srv, "openresty") && status == http.StatusNotFound && strings.Contains(ct, "html") {
 		return FrontNginx
 	}
-	if strings.Contains(srv, "nginx") && status == http.StatusNotFound {
-		if strings.Contains(ct, "html") {
-			return FrontNginx
-		}
-		if strings.Contains(ct, "text/plain") {
-			return FrontIngressNginx
-		}
+	// ingress-nginx default backend is already matched above by body text.
+	// Stock nginx `return 404;` is often text/plain + Server: nginx — that is 外置 nginx.
+	if (strings.Contains(srv, "nginx") || strings.Contains(srv, "openresty")) && status == http.StatusNotFound {
+		return FrontNginx
 	}
 	return ""
 }

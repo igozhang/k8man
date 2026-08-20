@@ -84,7 +84,21 @@ CREATE TABLE IF NOT EXISTS host_aliases (
 		return err
 	}
 	_, _ = s.db.Exec(`ALTER TABLE clusters ADD COLUMN front_proxy TEXT NOT NULL DEFAULT ''`)
-	return nil
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS cluster_inspections (
+  cluster_id TEXT PRIMARY KEY,
+  checked_at TEXT NOT NULL DEFAULT '',
+  next_due TEXT NOT NULL DEFAULT '',
+  elapsed_ms INTEGER NOT NULL DEFAULT 0,
+  probe_status TEXT NOT NULL DEFAULT '',
+  probe_error TEXT NOT NULL DEFAULT '',
+  critical INTEGER NOT NULL DEFAULT 0,
+  warning INTEGER NOT NULL DEFAULT 0,
+  summary TEXT NOT NULL DEFAULT '',
+  report_json TEXT NOT NULL DEFAULT ''
+);
+`)
+	return err
 }
 
 func encodeStrings(v []string) string {

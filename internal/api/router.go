@@ -13,6 +13,7 @@ import (
 	"gitee.com/k8man/internal/api/write"
 	"gitee.com/k8man/internal/config"
 	"gitee.com/k8man/internal/hostsfile"
+	"gitee.com/k8man/internal/inspect"
 	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/store"
 )
@@ -25,6 +26,7 @@ type Deps struct {
 	Store   *store.Store
 	Pool    *kube.Pool
 	Hosts   *hostsfile.File
+	Inspect *inspect.Worker
 	WebFS   fs.FS // optional embedded web/dist
 	Version string
 	UI      UIConfig
@@ -34,8 +36,8 @@ func NewRouter(d Deps) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.Logger())
 
-	rh := &read.Handler{Store: d.Store, Pool: d.Pool, Hosts: d.Hosts}
-	wh := &write.Handler{Store: d.Store, Pool: d.Pool, Hosts: d.Hosts}
+	rh := &read.Handler{Store: d.Store, Pool: d.Pool, Hosts: d.Hosts, Inspect: d.Inspect}
+	wh := &write.Handler{Store: d.Store, Pool: d.Pool, Hosts: d.Hosts, Inspect: d.Inspect}
 
 	r.GET("/api/health", func(c *gin.Context) {
 		if d.Store != nil {
@@ -93,6 +95,8 @@ func NewRouter(d Deps) *gin.Engine {
 		readGroup.GET("/clusters/:id/namespaces", rh.ListNamespaces)
 		readGroup.GET("/clusters/:id/nodes", rh.ListNodes)
 		readGroup.GET("/clusters/:id/diagnose", rh.Diagnose)
+		readGroup.GET("/inspections", rh.ListInspections)
+		readGroup.GET("/inspections/:clusterId", rh.GetInspection)
 		readGroup.GET("/clusters/:id/namespaces/:ns/pods", rh.ListPods)
 		readGroup.GET("/clusters/:id/namespaces/:ns/pods/:name", rh.GetPod)
 		readGroup.GET("/clusters/:id/namespaces/:ns/pods/:name/logs", rh.PodLogs)
@@ -119,6 +123,7 @@ func NewRouter(d Deps) *gin.Engine {
 		writeGroup.PUT("/clusters/:id", wh.UpdateCluster)
 		writeGroup.DELETE("/clusters/:id", wh.DeleteCluster)
 		writeGroup.POST("/clusters/:id/test", wh.TestCluster)
+		writeGroup.POST("/clusters/:id/inspect", wh.InspectCluster)
 		writeGroup.POST("/clusters/:id/namespaces/:ns/pods/:name/restart", wh.RestartPod)
 		writeGroup.PATCH("/clusters/:id/namespaces/:ns/deployments/:name/scale", wh.ScaleDeployment)
 		writeGroup.PATCH("/clusters/:id/namespaces/:ns/statefulsets/:name/scale", wh.ScaleStatefulSet)

@@ -25,6 +25,8 @@
 | GET | `/clusters/:id/namespaces` | Namespace 列表（List 首页 `resourceVersion=0` 走 API Server watch cache） |
 | GET | `/clusters/:id/nodes` | 节点列表（project 返回 403；同样走 watch cache） |
 | GET | `/clusters/:id/diagnose?namespace=` | 诊断扫描，只返回异常项（见下方） |
+| GET | `/inspections` | 全部集群最新巡检摘要（见「巡检」） |
+| GET | `/inspections/:clusterId` | 该集群本轮完整巡检报告 |
 
 集群对象常用字段：
 
@@ -44,8 +46,8 @@
 
 | 值 | 页面标签 | 典型依据 |
 |------|------|------|
-| `ingress-nginx` | ingress-nginx | 未知路径 `default backend - 404`，或 `Server: nginx` + `text/plain` 404 |
-| `nginx` | 外置 nginx | 未知路径 HTML 404 / Welcome to nginx / `<center>nginx</center>` |
+| `ingress-nginx` | ingress-nginx | 未知路径正文含 `default backend`（ingress-nginx 默认后端） |
+| `nginx` | 外置 nginx | HTML 404 / Welcome to nginx / `Server: nginx` 的 404 或 302（**不含** default backend 字样） |
 | `rancher` | Rancher | `/ping` 返回 `pong`，且未知路径也不是 nginx/ingress-nginx（流量直接进 Rancher） |
 | `apiserver` | （不展示） | JSON `Status` |
 | 空 | （不展示） | 不确定 |
@@ -157,6 +159,53 @@
 
 `project` kubeconfig 调用节点指标返回 403；Pod 指标仍可按命名空间读取（在有权时）。
 
+### 巡检
+
+进程内后台对每个已保存 kubeconfig **独立计时**：约 **2 小时** 一轮（完成后再加 ±6 分钟抖动），**串行**执行（同时只跑 1 个，间隔约 15 秒），避免同时打满 API Server。距上次完成不足约 1 小时 50 分则跳过。从未巡检的配置启动后按 id 哈希顺序补跑。周期写死在进程内，**不是** `k8man.conf` 配置项（说明见 conf 尾部注释）。
+
+每轮复用现有逻辑：先 `Probe`（与「测试」相同，并回写 `status` / `permType` / `namespaces` / `server` / `lastError` / `frontProxy`）；失败则记 kubeconfig 无效，不再跑诊断。成功则跑 `Diagnose`（节点/负载/Pod/事件，含节点 CPU/内存 ≥90%；project 跳过节点）。每集群只保留最近一轮。进程退出或请求取消时不落库。改 kubeconfig / API Server / TLS 会删除该集群巡检记录，按尚未巡检重新排队。
+
+监控页底部展示全部配置的摘要（每集群最多 8 条预览）；「一键巡检」对应 `POST /clusters/:id/inspect`，只跑路径里的那一个集群。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/inspections` | 全部集群最新巡检摘要（含尚未巡检的配置） |
+| GET | `/inspections/:clusterId` | 该集群本轮完整报告（尚未巡检为 404） |
+
+`GET /inspections` 的 `data`：
+
+```json
+{
+  "intervalSeconds": 7200,
+  "items": [
+    {
+      "clusterId": "...",
+      "clusterName": "prod",
+      "checkedAt": "2026-08-20T00:00:00Z",
+      "nextDue": "2026-08-20T02:03:00Z",
+      "elapsedMs": 900,
+      "probeStatus": "ok",
+      "critical": 1,
+      "warning": 2,
+      "summary": "1 严重 / 2 警告",
+      "preview": [
+        {
+          "severity": "critical",
+          "category": "pod",
+          "kind": "Pod",
+          "namespace": "default",
+          "name": "web-0",
+          "reason": "CrashLoopBackOff",
+          "message": "back-off restarting"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`preview` 为该集群按严重度排序后的最多 8 条。详情接口另含 `probe`、`diagnose`（完整诊断报告）与 `issues`（本轮全部异常；kubeconfig 失败时为一条 `category=kubeconfig`）。
+
 ### 文档
 
 | 方法 | 路径 | 说明 |
@@ -180,9 +229,10 @@
 |------|------|------|
 | POST | `/clusters` | 导入。不自动探测，`status` 为 `unknown` |
 | POST | `/clusters/probe` | **不落库**，测当前编辑内容（抽屉里「测试」） |
-| PUT | `/clusters/:id` | 更新；改 kubeconfig / server / TLS 会清空探测结果并丢弃该集群的客户端缓存 |
-| DELETE | `/clusters/:id` | 删除 |
+| PUT | `/clusters/:id` | 更新；改 kubeconfig / server / TLS 会清空探测结果、丢弃该集群的客户端缓存，并删除其巡检快照 |
+| DELETE | `/clusters/:id` | 删除（同时删除该集群巡检记录） |
 | POST | `/clusters/:id/test` | 连通、权限与入口重探测，并回写 `status` / `permType` / `namespaces` / `server` / `lastError` / `frontProxy` |
+| POST | `/clusters/:id/inspect` | 对**该**集群立即巡检（Probe + 诊断），重置其 2 小时计时；与后台巡检串行，超时约 90 秒 |
 
 导入 body：`{name, description, kubeconfig, serverOverride?, insecureSkipTLS?}`。`name` 可空，取 kubeconfig 的 `current-context`。`serverOverride` 会改写 kubeconfig 内 cluster.server。
 

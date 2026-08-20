@@ -8,7 +8,7 @@
 - 轻量入口探测：ingress-nginx / 外置 nginx / Rancher（点「测试」后写在状态列）
 - 页面 Hosts（`IP hostname`）：kubeconfig 域名解析不到时用，约 2 秒生效
 - 工作负载查看与运维：Pod 日志/重启、Deployment/StatefulSet 扩缩容、ConfigMap 键值编辑、控制器常用字段（镜像/环境变量/资源）编辑、受限 YAML 查看与应用
-- 节点与基础监控（依赖目标集群 metrics-server）
+- 节点与基础监控（依赖目标集群 metrics-server）；后台约 2 小时巡检全部 kubeconfig 有效性与集群异常，监控页底部摘要，可对当前选用集群一键巡检
 - 产品内运维文档（Markdown）
 - 内置 SQLite + PVC 持久化，无独立数据库
 - API 读写分离：`/api/v1/read` 与 `/api/v1/write`（写组预留 `AuthWrite` 鉴权位）
@@ -33,7 +33,7 @@ go run ./cmd/server
 | `K8MAN_DB_PATH` | `$DATA_DIR/k8man.db` | SQLite 路径 |
 | `K8MAN_ETC_DIR` | `./etc` | 配置与可选自有 icon / banner 目录（容器内 `/etc/k8man`） |
 
-`etc/k8man.conf`：头部为生效配置，尾部为说明与示例；缺失或无效时启动自动生成。`title` / `tagline` 分别为页眉左侧品牌名（兼浏览器标签页标题）与站名下方 slogan（默认 `practice makes perfect`）。将自有 `icon.jpg` / `icon.png` 放入 `etc` 即作为 favicon 与页眉图标；无文件则使用内置马里奥风格（红白蓝）数字 8。将自有 `banner.jpg`（或 png/webp/gif）放入 `etc` 即启用头部 banner；无文件则默认浅青面板风格（配色/布局参考同类站点，不使用外部 banner 图）。
+`etc/k8man.conf`：头部为生效配置，尾部为说明与示例（含巡检行为）；缺失或无效时启动自动生成。`title` / `tagline` 分别为页眉左侧品牌名（兼浏览器标签页标题）与站名下方 slogan（默认 `practice makes perfect`）。将自有 `icon.jpg` / `icon.png` 放入 `etc` 即作为 favicon 与页眉图标；无文件则使用内置马里奥风格（红白蓝）数字 8。将自有 `banner.jpg`（或 png/webp/gif）放入 `etc` 即启用头部 banner；无文件则默认浅青面板风格（配色/布局参考同类站点，不使用外部 banner 图）。
 
 ### 前端（开发）
 
@@ -62,9 +62,17 @@ npm run dev   # Vite 代理 /api -> :8080
 5. 域名解析不到时，在同页 Hosts 按系统 hosts 格式添加 `IP hostname`，约 2 秒后再生效，再测
 6. 「选用」后到工作负载 / 监控 / 诊断
 
-点「编辑」会打开抽屉并加载已保存的 kubeconfig；未保存关闭会确认。改 YAML 或 API Server 后入口标签会清空，需再测。
+点「编辑」会打开抽屉并加载已保存的 kubeconfig；未保存关闭会确认。改 YAML 或 API Server 后入口标签会清空，需再测；该配置的巡检快照也会丢掉，由后台重新排队。
 
 能力边界完全由导入的 kubeconfig 决定。详情见 [API](docs/api.md)。
+
+## 巡检
+
+进程内对每个已保存 kubeconfig **独立计时**，约 **2 小时** 一轮（完成后 ±6 分钟抖动），**串行**执行，避免同时打满 API Server。无独立配置项，说明写在 `etc/k8man.conf` 注释里。
+
+每轮先做与页面「测试」相同的 Probe（并回写状态），成功再跑诊断扫描（节点/负载/Pod/事件；project 凭证跳过节点）。进程退出或请求取消时不落库。
+
+「监控」页底部展示全部配置的问题摘要（最多约 8 行，详情在右侧抽屉）。**一键巡检**只跑顶部当前选用的那一个集群。
 
 ## 目录说明
 
@@ -72,12 +80,14 @@ npm run dev   # Vite 代理 /api -> :8080
 cmd/server/          入口与嵌入前端
 etc/                 k8man.conf、可选 icon / banner 图片
 internal/api/read|write  读写 API 分包
+internal/inspect     后台巡检（2h 错开）
 internal/kube        client-go 封装
 internal/store       SQLite
 web/                 Vue3 前端
 deploy/              Dockerfile 与 K8s 清单
 docs/api.md          API 一览
 docs/deploy.md       部署说明
+etc/README.md        etc 目录与内置 conf 说明
 ```
 
 读写分离扩展点：在 `internal/api/middleware/auth.go` 的 `AuthWrite` 中实现鉴权即可约束写操作。

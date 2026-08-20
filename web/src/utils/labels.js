@@ -33,3 +33,11 @@ export function clusterStatusClass(status) {
   if (status === 'error') return 'error'
   return ''
 }
+
+export function severityLabel(s) {
+  return s === 'critical' ? '严重' : '警告'
+}
+
+export function issueCategoryLabel(c) {
+  return { kubeconfig: '配置', node: '节点', workload: '负载', pod: 'Pod', event: '事件' }[c] || c || ''
+}

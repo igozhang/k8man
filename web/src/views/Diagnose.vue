@@ -695,7 +695,7 @@ onUnmounted(() => {
 <template>
   <div>
     <h1>诊断</h1>
-    <p class="page-desc">只列出当前不健康的对象。历史累计重启、滚动发布中的副本缺口、探针未达阈值的 Warning 不计入。同一会话内 90 秒内再次打开沿用上次扫描；需要最新结果时点「刷新」。判定规则见页底。</p>
+    <p class="page-desc">只列出当前不健康的对象。历史累计重启、滚动发布中的副本缺口、探针未达阈值的 Warning 不计入。同一会话内 90 秒内再次打开沿用上次扫描；需要最新结果时点「刷新」。判定规则见页底。全配置约 2 小时一轮的定时巡检在「监控」页底部，不替代本页即时扫描。</p>
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
       <div class="panel stats-strip">

@@ -33,12 +33,12 @@ type Clients struct {
 }
 
 type ProbeResult struct {
-	Server     string
-	PermType   string // cluster | project | unknown
-	Namespaces []string
-	Status     string
-	LastError  string
-	FrontProxy string // ingress-nginx | nginx | rancher | apiserver | empty
+	Server     string   `json:"server"`
+	PermType   string   `json:"permType"` // cluster | project | unknown
+	Namespaces []string `json:"namespaces"`
+	Status     string   `json:"status"`
+	LastError  string   `json:"lastError"`
+	FrontProxy string   `json:"frontProxy"` // ingress-nginx | nginx | rancher | apiserver | empty
 }
 
 type Pool struct {

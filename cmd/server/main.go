@@ -14,6 +14,7 @@ import (
 	"gitee.com/k8man/internal/api"
 	"gitee.com/k8man/internal/config"
 	"gitee.com/k8man/internal/hostsfile"
+	"gitee.com/k8man/internal/inspect"
 	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/store"
 )
@@ -51,6 +52,9 @@ func main() {
 	defer rootCancel()
 	go hostsFile.Watch(rootCtx, 2*time.Second)
 
+	inspector := inspect.New(st, pool, hostsFile)
+	go inspector.Loop(rootCtx)
+
 	var webFS fs.FS
 	sub, err := fs.Sub(webEmbed, "webdist")
 	if err == nil {
@@ -64,6 +68,7 @@ func main() {
 		Store:   st,
 		Pool:    pool,
 		Hosts:   hostsFile,
+		Inspect: inspector,
 		WebFS:   webFS,
 		Version: version,
 		UI: api.UIConfig{
