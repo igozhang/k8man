@@ -302,8 +302,9 @@ func TestDiagnosePod(t *testing.T) {
 			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, FinishedAt: metav1.NewTime(now.Add(-3 * time.Hour))},
 		},
 	}}
-	if got = diagnosePod(cooled, now); got != nil {
-		t.Fatalf("last restart >2h should ignore: %+v", got)
+	got = diagnosePod(cooled, now)
+	if len(got) != 1 || got[0].Reason != "Restarts" || !strings.Contains(got[0].Message, "近 2h 内无重启") || !strings.Contains(got[0].Message, "3h ago") || !strings.Contains(got[0].Message, "2026-08-18 15:00:00") {
+		t.Fatalf("last restart within 60d should keep exact time: %+v", got)
 	}
 
 	stale := podAt("old-rst", corev1.PodRunning, now.Add(-128*24*time.Hour))
@@ -314,8 +315,33 @@ func TestDiagnosePod(t *testing.T) {
 			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, FinishedAt: metav1.NewTime(now.Add(-28 * 24 * time.Hour))},
 		},
 	}}
-	if got = diagnosePod(stale, now); got != nil {
-		t.Fatalf("stale lifetime restarts should be ignored: %+v", got)
+	got = diagnosePod(stale, now)
+	if len(got) != 1 || got[0].Reason != "Restarts" || !strings.Contains(got[0].Message, "28d ago") || !strings.Contains(got[0].Message, "2026-07-21 18:00:00") {
+		t.Fatalf("stale lifetime restarts within 60d should keep exact time: %+v", got)
+	}
+
+	ancient := podAt("ancient-rst", corev1.PodRunning, now.Add(-240*24*time.Hour))
+	ancient.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app", Ready: true, RestartCount: 99,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-61 * 24 * time.Hour))}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1, FinishedAt: metav1.NewTime(now.Add(-61 * 24 * time.Hour))},
+		},
+	}}
+	if got = diagnosePod(ancient, now); got != nil {
+		t.Fatalf("last restart >60d should be ignored: %+v", got)
+	}
+
+	missing := podAt("missing-rst", corev1.PodRunning, now.Add(-time.Hour))
+	missing.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:         "app",
+		Ready:        true,
+		RestartCount: 6,
+		State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}}
+	got = diagnosePod(missing, now)
+	if len(got) != 1 || got[0].Reason != "Restarts" || !strings.Contains(got[0].Message, "最近一次精确时间缺失") {
+		t.Fatalf("missing restart time should explain cause: %+v", got)
 	}
 }
 

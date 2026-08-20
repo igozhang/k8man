@@ -2,6 +2,7 @@
 import { ref, computed, onUnmounted } from 'vue'
 import { asArray } from '../utils/safe'
 import { severityLabel, issueCategoryLabel } from '../utils/labels'
+import { issueMessageSuffix } from '../utils/inspect'
 import { fmtTime } from '../utils/quantity'
 
 const open = ref(false)
@@ -137,7 +138,7 @@ defineExpose({ open: show, close, update: show, updateLive, setRunning })
         <p v-if="row.reason || row.message" class="inspect-issue-msg">
           <template v-if="row.reason">{{ row.reason }}</template>
           <template v-if="row.reason && row.message">：</template>
-          {{ row.message }}
+          {{ row.message }}<span v-if="issueMessageSuffix(row)" class="muted">{{ issueMessageSuffix(row) }}</span>
         </p>
         <ul v-if="asArray(row.evidence).length" class="inspect-evidence">
           <li v-for="(ev, i) in asArray(row.evidence)" :key="i">{{ ev }}</li>

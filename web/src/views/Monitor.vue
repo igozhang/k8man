@@ -6,6 +6,7 @@ import { fmtCPU, fmtMemory, fmtTime, mergeNodeUsage } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
 import { asArray, createSeq, errMessage } from '../utils/safe'
 import { severityLabel, issueCategoryLabel } from '../utils/labels'
+import { issueInspectBrief } from '../utils/inspect'
 import {
   TTL,
   cacheFresh,
@@ -167,10 +168,7 @@ function fmtInspectTime(t) {
 }
 
 function issueLineBrief(row) {
-  const cat = issueCategoryLabel(row.category)
-  const where = row.namespace ? `${row.namespace}/${row.name}` : row.name
-  const reason = row.reason || ''
-  return `${cat} ${where}${reason ? `：${reason}` : ''}`
+  return issueInspectBrief(row)
 }
 
 function blockCacheTag(block) {

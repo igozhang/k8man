@@ -141,6 +141,7 @@ func previewOf(issues []kube.Issue, n int) []PreviewIssue {
 			Name:      it.Name,
 			Reason:    it.Reason,
 			Message:   clipRunes(it.Message, PreviewClip),
+			Since:     it.Since,
 		})
 	}
 	return out

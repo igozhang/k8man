@@ -117,11 +117,51 @@ func TestAttachRestartHistoryReadyWorkloadRestarts(t *testing.T) {
 	if got == nil {
 		t.Fatalf("want workload Restarts, got %+v", out)
 	}
-	if got.Severity != "warning" || !strings.Contains(got.Message, "OOMKilled") {
+	if got.Severity != "warning" || !strings.Contains(got.Message, "OOMKilled") || !strings.Contains(got.Message, "2026-08-18 17:59:00") {
 		t.Fatalf("message: %+v", got)
 	}
 	if !hasEvidence(got.Evidence, "restart[1]") || !hasEvidence(got.Evidence, "selector=app=web") {
 		t.Fatalf("evidence: %v", got.Evidence)
+	}
+}
+
+func TestAttachRestartHistoryReadyWorkloadHistoricalRestarts(t *testing.T) {
+	now := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	p := podAt("web-7d9f", corev1.PodRunning, now.Add(-time.Hour))
+	p.Labels = map[string]string{"app": "web"}
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:         "app",
+		Ready:        true,
+		RestartCount: 8,
+		State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-2 * time.Hour))}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{
+				Reason:     "OOMKilled",
+				ExitCode:   137,
+				FinishedAt: metav1.NewTime(now.Add(-3 * time.Hour)),
+			},
+		},
+	}}
+	ref, ok := newWorkloadRef("Deployment", "default", "web", now.Add(-time.Hour), &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}})
+	if !ok {
+		t.Fatal("selector")
+	}
+	out := attachRestartHistory(nil, []corev1.Pod{p}, []workloadRef{ref}, nil, now)
+	got := findIssue(out, "workload", "Restarts")
+	if got == nil {
+		t.Fatalf("want workload Restarts, got %+v", out)
+	}
+	if !strings.Contains(got.Message, "近 2h 内无重启") || !strings.Contains(got.Message, "来自 Pod web-7d9f") || !strings.Contains(got.Message, "2026-08-18 15:00:00") {
+		t.Fatalf("message: %+v", got)
+	}
+	restartLines := 0
+	for _, line := range got.Evidence {
+		if strings.HasPrefix(line, "restart[") {
+			restartLines++
+		}
+	}
+	if restartLines != 1 {
+		t.Fatalf("want one historical evidence line, got %d: %v", restartLines, got.Evidence)
 	}
 }
 
@@ -162,6 +202,55 @@ func TestTopRestartHitsStaleIgnored(t *testing.T) {
 	hits := topRestartHits(collectPodRestartHits(p, nil, now), now)
 	if len(hits) != 0 {
 		t.Fatalf("stale lastState should drop: %+v", hits)
+	}
+}
+
+func TestLatestRestartHitWithinDetailWindow(t *testing.T) {
+	now := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	p := crashPod("web-0", now)
+	p.Status.ContainerStatuses[0].LastTerminationState.Terminated.FinishedAt = metav1.NewTime(now.Add(-3 * time.Hour))
+	hit, ok := latestRestartHit(collectPodRestartHits(p, nil, now), now, diagnoseRestartDetail)
+	if !ok {
+		t.Fatal("want latest historical hit")
+	}
+	if hit.Reason != "OOMKilled" || !hit.When.Equal(now.Add(-3*time.Hour)) {
+		t.Fatalf("unexpected hit: %+v", hit)
+	}
+}
+
+func TestAttachRestartHistoryPodRestartsKeepsLatestHistoricalEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	p := podAt("web-0", corev1.PodRunning, now.Add(-time.Hour))
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:         "app",
+		Ready:        true,
+		RestartCount: 8,
+		State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-2 * time.Hour))}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{
+				Reason:     "OOMKilled",
+				ExitCode:   137,
+				FinishedAt: metav1.NewTime(now.Add(-3 * time.Hour)),
+			},
+		},
+	}}
+	issues := diagnosePod(p, now)
+	out := attachRestartHistory(issues, []corev1.Pod{p}, nil, nil, now)
+	got := findIssue(out, "pod", "Restarts")
+	if got == nil {
+		t.Fatalf("want pod Restarts, got %+v", out)
+	}
+	count := 0
+	for _, line := range got.Evidence {
+		if strings.HasPrefix(line, "restart[") {
+			count++
+			if !strings.Contains(line, "at=2026-08-18 15:00:00") {
+				t.Fatalf("missing exact timestamp: %v", got.Evidence)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("want exactly one restart evidence, got %d: %v", count, got.Evidence)
 	}
 }
 
@@ -253,4 +342,77 @@ func findIssue(items []Issue, category, reason string) *Issue {
 		}
 	}
 	return nil
+}
+
+func TestFormatPodRestartMessage(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	since := now.Add(-time.Hour)
+	p := podAt("rst-msg", corev1.PodRunning, now.Add(-2*time.Hour))
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:         "app",
+		Ready:        true,
+		RestartCount: 16,
+		State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(now.Add(-30 * time.Minute))}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{
+				Reason:     "OOMKilled",
+				ExitCode:   137,
+				FinishedAt: metav1.NewTime(since),
+			},
+		},
+	}}
+	msg := formatPodRestartMessage(p, 16, since, now)
+	if !strings.Contains(msg, "近 2h 内累计重启 16 次") || !strings.Contains(msg, "OOMKilled") || !strings.Contains(msg, "1h ago") || !strings.Contains(msg, "2026-08-20 19:00:00") {
+		t.Fatalf("msg: %q", msg)
+	}
+	got := diagnosePod(p, now)
+	if len(got) != 1 || got[0].Reason != "Restarts" || !strings.Contains(got[0].Message, "1h ago") || !strings.Contains(got[0].Message, "2026-08-20 19:00:00") {
+		t.Fatalf("diagnosePod: %+v", got)
+	}
+}
+
+func TestFormatPodRestartMessageHistorical(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	last := now.Add(-60 * 24 * time.Hour)
+	p := podAt("rst-old", corev1.PodRunning, now.Add(-90*24*time.Hour))
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:         "app",
+		Ready:        true,
+		RestartCount: 50,
+		State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(last.Add(time.Hour))}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{
+				Reason:     "Completed",
+				ExitCode:   0,
+				FinishedAt: metav1.NewTime(last),
+			},
+		},
+	}}
+	msg := formatPodRestartMessage(p, 50, last, now)
+	if !strings.Contains(msg, "近 2h 内无重启") || !strings.Contains(msg, "Completed") || !strings.Contains(msg, "60d ago") || !strings.Contains(msg, "2026-06-21 20:00:00") {
+		t.Fatalf("msg: %q", msg)
+	}
+	got := diagnosePod(p, now)
+	if len(got) != 1 || got[0].Reason != "Restarts" || got[0].Since != "60d" {
+		t.Fatalf("diagnosePod: %+v", got)
+	}
+}
+
+func TestFormatPodRestartMessageMissingTime(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	p := podAt("rst-missing", corev1.PodRunning, now.Add(-24*time.Hour))
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:         "app",
+		Ready:        true,
+		RestartCount: 7,
+		State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}}
+	msg := formatPodRestartMessage(p, 7, time.Time{}, now)
+	if !strings.Contains(msg, "最近一次精确时间缺失") || !strings.Contains(msg, "累计重启 7 次") {
+		t.Fatalf("msg: %q", msg)
+	}
+	got := diagnosePod(p, now)
+	if len(got) != 1 || got[0].Reason != "Restarts" || !strings.Contains(got[0].Message, "最近一次精确时间缺失") {
+		t.Fatalf("diagnosePod: %+v", got)
+	}
 }

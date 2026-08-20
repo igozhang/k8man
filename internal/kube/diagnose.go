@@ -29,6 +29,8 @@ const (
 	diagnoseRestartMax   = 3
 	// 回看窗口：mixin 用 for:15m 防值班误叫；诊断页是复盘，2h 内重启/事件仍要看。
 	diagnoseRestartRecent = 2 * time.Hour
+	// 历史展示窗口：2h 外但 60d 内仍保留最近一次时间，避免把很老的累计重启刷成当前问题。
+	diagnoseRestartDetail = 60 * 24 * time.Hour
 	diagnoseRestartDedup  = 2 * time.Minute
 	diagnoseEventFresh    = 2 * time.Hour
 	// 防误报等待：滚动缺口、普通 Pending 仍用 15m，拉长到 2h 会把卡住的发布瞒掉。
@@ -525,12 +527,12 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 		restarts += cs.RestartCount
 	}
 	if restarts >= diagnoseRestartWarn {
-		since := lastRestartAt(p)
-		// restartCount 是生命周期累计；仅回看窗口内仍在重启才算现时异常。
-		if since.IsZero() || now.Sub(since) > diagnoseRestartRecent {
+		last := lastRestartAt(p)
+		// restartCount 是生命周期累计；超过 60d 的旧重启不再刷成当前问题。
+		if !last.IsZero() && now.Sub(last) > diagnoseRestartDetail {
 			return nil
 		}
-		return issue("warning", "Restarts", fmt.Sprintf("重启 %d 次", restarts), since)
+		return issue("warning", "Restarts", formatPodRestartMessage(p, restarts, last, now), last)
 	}
 	return nil
 }
