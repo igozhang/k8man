@@ -1035,6 +1035,52 @@ body.is-drawer-resizing {
 .inspect-box > .muted {
   margin: 0 0 6px;
 }
+.inspect-list-cache-tag {
+  flex-shrink: 0;
+}
+.inspect-cluster-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.inspect-cluster-block {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.inspect-cluster-block-active {
+  border-color: var(--accent);
+}
+.inspect-cluster-block-hit {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.inspect-cluster-block-hit:hover,
+.inspect-cluster-block-hit:focus-visible {
+  background: rgba(61, 107, 74, 0.04);
+}
+.inspect-cluster-block-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.inspect-cluster-block-head > strong {
+  margin: 0;
+  font-size: var(--ctrl-font);
+  line-height: var(--ctrl-line);
+}
 .inspect-lines {
   list-style: none;
   margin: 0;
@@ -1065,6 +1111,16 @@ body.is-drawer-resizing {
 .inspect-line:focus-visible .inspect-line-text {
   color: var(--accent);
 }
+.inspect-line-static {
+  cursor: inherit;
+}
+.inspect-line-static .inspect-line-text {
+  color: inherit;
+}
+.inspect-cluster-block .inspect-more {
+  margin-top: 4px;
+  pointer-events: none;
+}
 .inspect-line-text {
   min-width: 0;
   overflow: hidden;
@@ -1092,6 +1148,38 @@ body.is-drawer-resizing {
   margin: 0 0 8px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.inspect-status-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.inspect-status-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  line-height: var(--ctrl-line);
+  color: var(--muted);
+}
+.inspect-status-hint.error {
+  color: var(--danger);
+}
+.tag.inspect-cache {
+  background: rgba(100, 100, 100, 0.12);
+  color: var(--muted);
+}
+.tag.inspect-live {
+  background: rgba(47, 107, 69, 0.14);
+  color: var(--ok);
+}
+.tag.inspect-running {
+  background: rgba(61, 107, 74, 0.12);
+  color: var(--accent);
+}
+.inspect-issue-list-dim {
+  opacity: 0.72;
 }
 .inspect-issue-list {
   display: flex;

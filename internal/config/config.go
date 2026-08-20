@@ -72,7 +72,8 @@ tagline=practice makes perfect
 #   （同时只跑 1 个，间隔约 15 秒）。先 Probe（与页面「测试」相同并回写状态），
 #   成功再跑 Diagnose（节点/负载/Pod/事件；project 跳过节点）。
 #   进程退出或请求取消时不落库，避免把关机写成 kubeconfig 无效。
-#   结果在「监控」页底部摘要；「一键巡检」只跑当前选用集群。
+#   结果在「监控」页底部摘要；手动巡检在页内选择 kubeconfig 后点「一键巡检」
+#   （先展示缓存快照，再实时 Probe + 诊断并更新）。
 #   改 kubeconfig / API Server / TLS 会丢掉该配置的旧巡检快照。
 #
 # ----- 示例 -----

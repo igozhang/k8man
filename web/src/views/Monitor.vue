@@ -20,7 +20,7 @@ import {
 import InspectionDrawer from '../components/InspectionDrawer.vue'
 
 const INSPECT_KEY = cacheKey('inspections', 'local')
-const PREVIEW_LINES = 8
+const BLOCK_LINES = 3
 
 const { currentClusterId, currentCluster, refreshClusters } = useClusterStore()
 const namespaces = ref([])
@@ -39,11 +39,14 @@ const podRefreshing = ref(false)
 const nsLoading = ref(false)
 
 const inspectItems = ref(asArray(cacheGet(INSPECT_KEY)?.data?.items))
+const inspectListFetchedAt = ref(cacheGet(INSPECT_KEY)?.at || null)
 const inspectLoading = ref(false)
 const inspectError = ref('')
-const inspecting = ref(false)
+const inspectingId = ref('')
 const inspectTargetId = ref('')
 const inspectDrawer = ref(null)
+
+const inspecting = computed(() => !!inspectingId.value)
 
 const nodesSeq = createSeq()
 const podsSeq = createSeq()
@@ -53,30 +56,61 @@ const inspectRunSeq = createSeq()
 const isProject = computed(() => currentCluster.value?.permType === 'project')
 const showNodesTab = computed(() => !isProject.value)
 
-const inspectLines = computed(() => {
-  const rows = []
-  for (const it of inspectItems.value) {
-    for (const iss of asArray(it.preview)) {
-      rows.push({
-        ...iss,
-        clusterId: it.clusterId,
-        clusterName: it.clusterName
-      })
-    }
-  }
-  const rank = (s) => (s === 'critical' ? 0 : s === 'warning' ? 1 : 2)
-  rows.sort((a, b) => {
-    const d = rank(a.severity) - rank(b.severity)
+function issueRank(severity) {
+  if (severity === 'critical') return 0
+  if (severity === 'warning') return 1
+  return 2
+}
+
+function sortedPreviewIssues(preview) {
+  const rows = asArray(preview)
+  return [...rows].sort((a, b) => {
+    const d = issueRank(a.severity) - issueRank(b.severity)
     if (d) return d
-    return String(a.clusterName || '').localeCompare(String(b.clusterName || ''), 'zh')
+    return String(a.name || '').localeCompare(String(b.name || ''), 'zh')
   })
-  return rows
+}
+
+const inspectIssueBlocks = computed(() => {
+  const blocks = []
+  for (const it of inspectItems.value) {
+    const critical = Number(it.critical) || 0
+    const warning = Number(it.warning) || 0
+    if (!critical && !warning) continue
+    const sorted = sortedPreviewIssues(it.preview)
+    const lines = sorted.slice(0, BLOCK_LINES).map((iss) => ({
+      ...iss,
+      clusterId: it.clusterId,
+      clusterName: it.clusterName
+    }))
+    const total = critical + warning
+    blocks.push({
+      clusterId: it.clusterId,
+      clusterName: it.clusterName || it.clusterId,
+      checkedAt: it.checkedAt,
+      critical,
+      warning,
+      summary: it.summary,
+      lines,
+      more: Math.max(0, total - lines.length),
+      inspecting: inspectingId.value === it.clusterId
+    })
+  }
+  blocks.sort((a, b) => {
+    const ra = a.critical > 0 ? 0 : a.warning > 0 ? 1 : 2
+    const rb = b.critical > 0 ? 0 : b.warning > 0 ? 1 : 2
+    if (ra !== rb) return ra - rb
+    return String(a.clusterName).localeCompare(String(b.clusterName), 'zh')
+  })
+  return blocks
 })
 
-const inspectVisible = computed(() => inspectLines.value.slice(0, PREVIEW_LINES))
-const inspectMore = computed(() => {
-  const total = inspectItems.value.reduce((n, it) => n + (Number(it.critical) || 0) + (Number(it.warning) || 0), 0)
-  return Math.max(0, total - inspectVisible.value.length)
+const inspectListCacheTag = computed(() => {
+  if (!inspectItems.value.length) return ''
+  if (inspectListRefreshing.value) return '摘要刷新中…'
+  const at = inspectListFetchedAt.value
+  if (!at) return ''
+  return `摘要缓存 · ${fmtInspectTime(new Date(at))}`
 })
 const inspectCounts = computed(() => {
   let critical = 0
@@ -88,6 +122,9 @@ const inspectCounts = computed(() => {
   return { critical, warning }
 })
 const inspectHasRun = computed(() => inspectItems.value.some((it) => !!it.checkedAt))
+const inspectListRefreshing = computed(
+  () => inspectLoading.value && inspectItems.value.length > 0
+)
 const inspectMeta = computed(() => {
   const items = inspectItems.value
   const n = items.length
@@ -118,6 +155,7 @@ const inspectMeta = computed(() => {
   } else {
     parts.push('尚未巡检')
   }
+  if (inspectListRefreshing.value) parts.push('刷新中')
   return parts.join(' · ')
 })
 
@@ -128,22 +166,29 @@ function fmtInspectTime(t) {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-function issueLine(row) {
+function issueLineBrief(row) {
   const cat = issueCategoryLabel(row.category)
   const where = row.namespace ? `${row.namespace}/${row.name}` : row.name
   const reason = row.reason || ''
-  return `${row.clusterName} · ${cat} ${where}${reason ? `：${reason}` : ''}`
+  return `${cat} ${where}${reason ? `：${reason}` : ''}`
 }
 
-function applyInspectList(data) {
+function blockCacheTag(block) {
+  if (block.inspecting) return '实时巡检中…'
+  if (block.checkedAt) return `缓存 · ${fmtInspectTime(block.checkedAt)}`
+  return '尚未巡检'
+}
+
+function applyInspectList(data, fetchedAt) {
   inspectItems.value = asArray(data?.items)
+  if (fetchedAt) inspectListFetchedAt.value = fetchedAt
 }
 
 async function loadInspections({ force = false } = {}) {
   const seq = inspectSeq.next()
   inspectError.value = ''
   const hit = cacheGet(INSPECT_KEY)
-  if (hit?.data) applyInspectList(hit.data)
+  if (hit?.data) applyInspectList(hit.data, hit.at)
   if (!force && cacheFresh(INSPECT_KEY, TTL.inspections)) {
     inspectLoading.value = false
     return
@@ -152,7 +197,8 @@ async function loadInspections({ force = false } = {}) {
   try {
     const data = await cacheLoad(INSPECT_KEY, TTL.inspections, () => readApi.listInspections(), { force })
     if (!inspectSeq.is(seq)) return
-    applyInspectList(data)
+    const fresh = cacheGet(INSPECT_KEY)
+    applyInspectList(data, fresh?.at || Date.now())
   } catch (e) {
     if (!inspectSeq.is(seq)) return
     inspectError.value = errMessage(e)
@@ -162,56 +208,95 @@ async function loadInspections({ force = false } = {}) {
   }
 }
 
-async function openInspectDetail(clusterId) {
-  if (!clusterId) return
-  const item = inspectItems.value.find((it) => it.clusterId === clusterId)
-  inspectDrawer.value?.open({
+function detailFromListItem(item, clusterId, clusterName) {
+  return {
     clusterId,
-    clusterName: item?.clusterName || currentCluster.value?.name || '',
+    clusterName: item?.clusterName || clusterName || '',
     checkedAt: item?.checkedAt,
-    summary: item?.summary || '加载中…',
+    summary: item?.summary || '',
     probeStatus: item?.probeStatus,
     probeError: item?.probeError,
     issues: asArray(item?.preview),
     elapsedMs: item?.elapsedMs
-  })
-  try {
-    const data = await readApi.getInspection(clusterId)
-    inspectDrawer.value?.update(data)
-  } catch (e) {
-    inspectDrawer.value?.update({
-      clusterId,
-      clusterName: item?.clusterName || currentCluster.value?.name || '',
-      checkedAt: item?.checkedAt,
-      summary: errMessage(e, '尚未巡检'),
-      probeStatus: item?.probeStatus,
-      probeError: item?.probeError || errMessage(e),
-      issues: []
-    })
   }
 }
 
-async function runInspect() {
-  const targetId = inspectTargetId.value
-  if (!targetId || inspecting.value) return
+function clusterLabel(clusterId) {
+  const item = inspectItems.value.find((it) => it.clusterId === clusterId)
+  return item?.clusterName || currentCluster.value?.name || ''
+}
+
+async function runLiveInspect(clusterId, { openDrawer = true } = {}) {
+  if (!clusterId) return
+  if (inspectingId.value) {
+    inspectError.value = '已有巡检进行中，请稍候'
+    return
+  }
   const seq = inspectRunSeq.next()
-  inspecting.value = true
+  inspectingId.value = clusterId
   inspectError.value = ''
+
+  const item = inspectItems.value.find((it) => it.clusterId === clusterId)
+  const hasCache = !!item?.checkedAt
+  let liveDone = false
+
+  if (openDrawer) {
+    inspectDrawer.value?.open(detailFromListItem(item, clusterId, clusterLabel(clusterId)), {
+      source: hasCache ? 'cache' : 'none',
+      running: true
+    })
+  }
+
+  readApi.getInspection(clusterId).then((data) => {
+    if (!inspectRunSeq.is(seq) || liveDone) return
+    if (openDrawer) {
+      inspectDrawer.value?.open(
+        {
+          ...data,
+          issues: asArray(data?.issues).length ? data.issues : asArray(data?.preview)
+        },
+        { source: 'cache', running: true }
+      )
+    }
+  }).catch(() => {})
+
   try {
-    const data = await writeApi.inspectCluster(targetId)
+    const data = await writeApi.inspectCluster(clusterId)
     if (!inspectRunSeq.is(seq)) return
+    liveDone = true
     cacheInvalidate(INSPECT_KEY)
-    inspectDrawer.value?.open(data)
+    if (openDrawer) {
+      inspectDrawer.value?.updateLive({
+        ...data,
+        issues: asArray(data?.issues).length ? data.issues : asArray(data?.preview)
+      })
+    }
     await Promise.all([
       loadInspections({ force: true }),
       refreshClusters(() => readApi.listClusters(), { force: true }).catch(() => {})
     ])
   } catch (e) {
     if (!inspectRunSeq.is(seq)) return
-    inspectError.value = errMessage(e)
+    liveDone = true
+    const msg = errMessage(e)
+    inspectError.value = msg
+    if (openDrawer) {
+      inspectDrawer.value?.setRunning(false, msg)
+    }
   } finally {
-    if (inspectRunSeq.is(seq)) inspecting.value = false
+    if (inspectRunSeq.is(seq)) inspectingId.value = ''
   }
+}
+
+async function openInspectDetail(clusterId) {
+  if (!clusterId) return
+  await runLiveInspect(clusterId, { openDrawer: true })
+}
+
+async function runInspect() {
+  const targetId = inspectTargetId.value
+  if (!targetId) return
+  await runLiveInspect(targetId, { openDrawer: true })
 }
 
 function resetView() {
@@ -547,11 +632,12 @@ onMounted(enterPage)
       <div class="toolbar">
         <div class="inspect-head">
           <strong>巡检</strong>
+          <span v-if="inspectListCacheTag" class="tag inspect-cache inspect-list-cache-tag">{{ inspectListCacheTag }}</span>
           <span class="muted inspect-meta">{{ inspectMeta }}</span>
         </div>
       </div>
       <p class="inspect-intro muted">
-        对每个 kubeconfig 约 2 小时一轮、错开串行：先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。下方为全部配置摘要（最多 8 条）。改 YAML / API Server / TLS 会清空该配置巡检快照；手动巡检请先选配置再点「一键巡检」。
+        对每个 kubeconfig 约 2 小时一轮、错开串行：先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。下方按集群分块展示异常摘要（每块最多 3 条，带缓存时间）；点击块在右侧抽屉查看该配置详情并触发实时巡检。
       </p>
       <div class="toolbar toolbar-start inspect-actions">
         <select v-model="inspectTargetId" aria-label="巡检目标 kubeconfig">
@@ -565,41 +651,55 @@ onMounted(enterPage)
             class="btn btn-sm"
             type="button"
             :disabled="!inspectTargetId || inspecting"
-            :title="inspectTargetId ? '对所选配置立即巡检' : '请先选择 kubeconfig'"
+            :title="inspectTargetId ? '先展示缓存并立即实时巡检' : '请先选择 kubeconfig'"
             @click="runInspect"
           >{{ inspecting ? '巡检中…' : '一键巡检' }}</button>
           <button
             class="btn btn-sm"
             type="button"
-            :disabled="!inspectTargetId && !inspectLines.length"
-            @click="openInspectDetail(inspectTargetId || inspectVisible[0]?.clusterId)"
+            :disabled="(!inspectTargetId && !inspectIssueBlocks.length) || inspecting"
+            @click="openInspectDetail(inspectTargetId || inspectIssueBlocks[0]?.clusterId)"
           >详情</button>
         </div>
       </div>
       <p v-if="inspectError" class="error">{{ inspectError }}</p>
       <p v-if="inspectLoading && !inspectItems.length" class="muted">加载巡检结果…</p>
       <div v-else-if="!inspectItems.length && !inspectError" class="muted">暂无已导入的 kubeconfig。</div>
-      <div v-else-if="!inspectLines.length && inspectItems.length" class="muted">
+      <div v-else-if="!inspectIssueBlocks.length && inspectItems.length" class="muted">
         {{ inspectHasRun ? '全部配置巡检正常。' : '尚未巡检。后台约两小时一轮，也可选择配置后一键巡检。' }}
       </div>
-      <template v-else-if="inspectLines.length">
-        <ul class="inspect-lines">
-          <li v-for="(row, idx) in inspectVisible" :key="(row.clusterId || '') + '/' + idx">
-            <button class="inspect-line" type="button" @click="openInspectDetail(row.clusterId)">
-              <span class="tag" :class="row.severity === 'critical' ? 'sev-critical' : 'sev-warning'">
-                {{ severityLabel(row.severity) }}
-              </span>
-              <span class="inspect-line-text">{{ issueLine(row) }}</span>
-            </button>
-          </li>
-        </ul>
-        <button
-          v-if="inspectMore > 0"
-          class="inspect-more"
-          type="button"
-          @click="openInspectDetail(inspectLines[PREVIEW_LINES]?.clusterId || inspectVisible[0]?.clusterId)"
-        >还有 {{ inspectMore }} 项，点击查看详情</button>
-      </template>
+      <div v-else-if="inspectIssueBlocks.length" class="inspect-cluster-blocks">
+        <article
+          v-for="block in inspectIssueBlocks"
+          :key="block.clusterId"
+          class="inspect-cluster-block"
+          :class="{ 'inspect-cluster-block-active': block.inspecting }"
+        >
+          <button
+            type="button"
+            class="inspect-cluster-block-hit"
+            @click="openInspectDetail(block.clusterId)"
+          >
+            <div class="inspect-cluster-block-head">
+              <strong>{{ block.clusterName }}</strong>
+              <span class="tag" :class="block.inspecting ? 'inspect-running' : 'inspect-cache'">{{ blockCacheTag(block) }}</span>
+              <span v-if="block.critical" class="tag sev-critical">{{ block.critical }} 严重</span>
+              <span v-if="block.warning" class="tag sev-warning">{{ block.warning }} 警告</span>
+            </div>
+            <ul class="inspect-lines">
+              <li v-for="(row, idx) in block.lines" :key="idx">
+                <div class="inspect-line inspect-line-static">
+                  <span class="tag" :class="row.severity === 'critical' ? 'sev-critical' : 'sev-warning'">
+                    {{ severityLabel(row.severity) }}
+                  </span>
+                  <span class="inspect-line-text">{{ issueLineBrief(row) }}</span>
+                </div>
+              </li>
+            </ul>
+            <span v-if="block.more > 0" class="inspect-more">还有 {{ block.more }} 项，点击查看详情</span>
+          </button>
+        </article>
+      </div>
     </section>
     <InspectionDrawer ref="inspectDrawer" />
   </div>

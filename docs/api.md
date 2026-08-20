@@ -165,7 +165,7 @@
 
 每轮复用现有逻辑：先 `Probe`（与「测试」相同，并回写 `status` / `permType` / `namespaces` / `server` / `lastError` / `frontProxy`）；失败则记 kubeconfig 无效，不再跑诊断。成功则跑 `Diagnose`（节点/负载/Pod/事件，含节点 CPU/内存 ≥90%；project 跳过节点）。每集群只保留最近一轮。进程退出或请求取消时不落库。改 kubeconfig / API Server / TLS 会删除该集群巡检记录，按尚未巡检重新排队。
 
-监控页底部展示全部配置的摘要（每集群最多 8 条预览）；「一键巡检」对应 `POST /clusters/:id/inspect`，只跑路径里的那一个集群。
+监控页底部按集群分块展示异常摘要（每块最多 3 条预览，带缓存时间；点击块打开抽屉）。「一键巡检」与「详情」对路径指定集群执行 `POST /clusters/:id/inspect`（`force`，先可展示 `GET /inspections/:id` 缓存，再实时 Probe + 诊断并更新）。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
