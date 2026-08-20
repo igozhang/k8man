@@ -1,9 +1,48 @@
 <script setup>
+import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useSiteUI } from '../composables/useSiteUI'
-import { canWrite } from '../stores/opsAuth'
+import { canWrite, login, useOpsAuth } from '../stores/opsAuth'
 
 const { ui, iconSrc, bannerStyle } = useSiteUI()
+const { state } = useOpsAuth()
+
+const open = ref(false)
+const key = ref('')
+const keyInput = ref(null)
+
+function close() {
+  open.value = false
+  key.value = ''
+}
+
+function onPermDblclick() {
+  if (canWrite.value) return
+  open.value = true
+  nextTick(() => keyInput.value?.focus())
+}
+
+async function submit() {
+  const k = String(key.value || '').trim()
+  if (!k || state.busy) return
+  try {
+    await login(k)
+    close()
+  } catch {
+    /* 静默：错误密钥不提示 */
+  }
+}
+
+function onEscape(e) {
+  if (e.key === 'Escape' && open.value) close()
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onEscape)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onEscape)
+})
 </script>
 
 <template>
@@ -27,9 +66,25 @@ const { ui, iconSrc, bannerStyle } = useSiteUI()
           <RouterLink to="/monitor">监控</RouterLink>
           <RouterLink to="/diagnose">诊断</RouterLink>
           <RouterLink to="/docs">运维文档</RouterLink>
-          <span class="nav-perm" :class="{ 'is-write': canWrite }">{{ canWrite ? '可操作' : '只读' }}</span>
+          <span class="nav-perm" aria-hidden="true" @dblclick.prevent="onPermDblclick">{{ canWrite ? '可操作' : '只读' }}</span>
         </nav>
       </div>
     </div>
   </header>
+  <div v-if="open" class="drawer-backdrop" @click="close"></div>
+  <div v-if="open" class="drawer" style="width:min(360px,100%)">
+    <div class="toolbar toolbar-start">
+      <input
+        ref="keyInput"
+        v-model="key"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        maxlength="8"
+        @keydown.enter.prevent="submit"
+      />
+      <button type="button" class="btn btn-primary" :disabled="state.busy" @click="submit">验证</button>
+      <button type="button" class="btn" :disabled="state.busy" @click="close">关闭</button>
+    </div>
+  </div>
 </template>

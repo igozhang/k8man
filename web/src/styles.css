@@ -222,17 +222,26 @@ a.brand {
   font-weight: 600;
 }
 .nav-perm {
-  font-size: 0.78rem;
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: inherit;
   color: var(--muted);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0.12rem 0.55rem;
-  line-height: 1.25;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
   white-space: nowrap;
+  cursor: inherit;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
-.nav-perm.is-write {
-  color: var(--ok);
-  border-color: rgba(47, 107, 69, 0.35);
+.nav-perm:hover,
+.nav-perm:active,
+.nav-perm:focus {
+  color: var(--muted);
+  background: transparent;
+  outline: none;
+  box-shadow: none;
 }
 .site-head.has-banner .nav a {
   text-shadow:
@@ -311,6 +320,7 @@ a.brand {
   text-decoration: none;
   cursor: inherit;
   -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
 .foot-igo-hit:hover,
 .foot-igo-hit:active,
@@ -320,35 +330,6 @@ a.brand {
   text-decoration: none;
   outline: none;
   box-shadow: none;
-}
-.toast-wrap {
-  position: fixed;
-  right: 1rem;
-  bottom: 1rem;
-  z-index: 10000;
-  max-width: min(96vw, 22rem);
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  pointer-events: none;
-}
-.toast-wrap .toast {
-  margin: 0;
-  padding: 0.5rem 0.65rem;
-  border-radius: 8px;
-  font-size: 0.86rem;
-  line-height: 1.45;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-}
-.toast-ok {
-  background: rgba(220, 240, 220, 0.95);
-  border: 1px solid var(--line);
-  color: var(--text);
-}
-.toast-err {
-  background: rgba(255, 230, 220, 0.95);
-  border: 1px solid #c9a090;
-  color: #5a2a1a;
 }
 
 h1 {
