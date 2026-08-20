@@ -499,26 +499,6 @@ func (h *Handler) ListHostAliases(c *gin.Context) {
 	})
 }
 
-func (h *Handler) ResolveHost(c *gin.Context) {
-	host := strings.TrimSpace(c.Query("host"))
-	if host == "" {
-		respond.BadRequest(c, "host required")
-		return
-	}
-	ctx, cancel := h.ctx(c)
-	defer cancel()
-	ip, ips, err := kube.LookupHostIP(ctx, host)
-	if err != nil {
-		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
-		return
-	}
-	respond.OK(c, gin.H{
-		"host": host,
-		"ip":   ip,
-		"ips":  ips,
-	})
-}
-
 func (h *Handler) ListConfigMaps(c *gin.Context) {
 	clients, ok := h.clients(c)
 	if !ok {

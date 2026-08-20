@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, nextTick, onUnmounted } from 'vue'
+import { ref, onMounted, nextTick, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
@@ -8,6 +8,8 @@ import { cacheGet, cacheKey, invalidateClusterLists } from '../utils/resourceCac
 import { permTypeLabel, clusterStatusLabel, clusterStatusClass, frontProxyLabel, frontProxyClass } from '../utils/labels'
 import { copyText } from '../utils/clipboard'
 import { suggestHostsHostname } from '../utils/kubeconfig'
+
+const FORM_HOST_DEFAULT_IP = '10.10.10.10'
 
 const { clusters, currentClusterId, refreshClusters, setCurrentClusterId } = useClusterStore()
 const route = useRoute()
@@ -47,10 +49,13 @@ const hostInlineInput = ref(null)
 const formHostLine = ref('')
 const formHostError = ref('')
 const formHostAutoLine = ref('')
-const formHostSuggesting = ref(false)
-const formHostSuggestHint = ref('')
+const formHostDetectedHostname = ref('')
 let formHostSuggestTimer = null
-let formHostSuggestSeq = 0
+
+const formHostPlaceholder = computed(() => {
+  const host = formHostDetectedHostname.value
+  return host ? `${FORM_HOST_DEFAULT_IP} ${host}` : '10.10.10.10 igozhang.cn'
+})
 
 function suggestNameFromKubeconfig(text) {
   if (!text) return ''
@@ -73,8 +78,7 @@ function resetFormHostSuggest() {
   clearTimeout(formHostSuggestTimer)
   formHostSuggestTimer = null
   formHostAutoLine.value = ''
-  formHostSuggestHint.value = ''
-  formHostSuggesting.value = false
+  formHostDetectedHostname.value = ''
 }
 
 function scheduleFormHostSuggest() {
@@ -86,8 +90,8 @@ function scheduleFormHostSuggest() {
   }, 400)
 }
 
-/** 从 kubeconfig / API Server 提取域名，用运行环境 DNS 解析后预填 hosts 行 */
-async function refreshFormHostSuggest() {
+/** 从 kubeconfig 提取 API 域名，预填「10.10.10.10 域名」供手动改 IP */
+function refreshFormHostSuggest() {
   if (!showForm.value) return
 
   const hostname = suggestHostsHostname({
@@ -95,7 +99,7 @@ async function refreshFormHostSuggest() {
     serverOverride: form.value.serverOverride
   })
   if (!hostname) {
-    formHostSuggestHint.value = ''
+    formHostDetectedHostname.value = ''
     if (!formHostLine.value.trim() || formHostLine.value === formHostAutoLine.value) {
       formHostLine.value = ''
       formHostAutoLine.value = ''
@@ -103,36 +107,19 @@ async function refreshFormHostSuggest() {
     return
   }
 
+  formHostDetectedHostname.value = hostname
+
   const current = formHostLine.value.trim()
   if (current && current !== formHostAutoLine.value) return
 
-  const seq = ++formHostSuggestSeq
-  formHostSuggesting.value = true
-  formHostSuggestHint.value = ''
-  try {
-    const data = await readApi.resolveHost(hostname)
-    if (seq !== formHostSuggestSeq || !showForm.value) return
-    const ip = data?.ip || data?.ips?.[0]
-    if (!ip) {
-      formHostSuggestHint.value = `未能解析 ${hostname}`
-      return
-    }
-    const line = `${ip} ${hostname}`
-    formHostAutoLine.value = line
-    formHostLine.value = line
-    formHostSuggestHint.value = `已根据 kubeconfig 域名与运行环境 DNS 填入，可直接点「添加」`
-  } catch (e) {
-    if (seq !== formHostSuggestSeq) return
-    formHostSuggestHint.value = `解析 ${hostname} 失败：${errMessage(e)}`
-  } finally {
-    if (seq === formHostSuggestSeq) formHostSuggesting.value = false
-  }
+  const line = `${FORM_HOST_DEFAULT_IP} ${hostname}`
+  formHostAutoLine.value = line
+  formHostLine.value = line
 }
 
 function onFormHostInput() {
   if (formHostLine.value.trim() !== formHostAutoLine.value) {
     formHostAutoLine.value = ''
-    formHostSuggestHint.value = ''
   }
 }
 
@@ -859,7 +846,7 @@ onUnmounted(() => {
             class="btn btn-sm"
             :disabled="busy || formLoading || formTesting || !!testingId || hostBusy"
             @click="testForm"
-          >{{ formTesting || testingId === editingId ? '测试中…' : '测试' }}</button>
+          >{{ formTesting ? '测试中…' : '测试' }}</button>
           <button class="btn btn-sm" :disabled="busy || formTesting" @click="requestClose">关闭</button>
         </div>
       </div>
@@ -950,28 +937,29 @@ onUnmounted(() => {
       <div class="form-row">
         <label>
           Hosts
-          <span class="muted">（可选；粘贴 kubeconfig 后自动解析 API 域名并填入，也可手动修改）</span>
+          <span class="muted">（可选；粘贴 kubeconfig 后自动填入 <code>10.10.10.10 域名</code>，请改 IP 后添加）</span>
         </label>
+        <div v-if="formHostDetectedHostname" class="muted form-host-detected">
+          识别域名：<code>{{ formHostDetectedHostname }}</code>
+        </div>
         <div class="toolbar toolbar-start host-add-bar form-host-bar">
           <input
             v-model="formHostLine"
             type="text"
             class="host-line-input"
-            placeholder="10.10.10.10 igozhang.cn"
+            :placeholder="formHostPlaceholder"
             spellcheck="false"
-            :disabled="formLoading || hostBusy || formHostSuggesting"
+            :disabled="formLoading || hostBusy"
             @input="onFormHostInput"
             @keydown.enter.prevent="addFormHost"
           />
           <button
             type="button"
             class="btn btn-sm"
-            :disabled="formLoading || hostBusy || formHostSuggesting || !formHostLine.trim()"
+            :disabled="formLoading || hostBusy || !formHostLine.trim()"
             @click="addFormHost"
           >添加</button>
         </div>
-        <p v-if="formHostSuggesting" class="muted">正在解析 API 域名…</p>
-        <p v-else-if="formHostSuggestHint" class="muted">{{ formHostSuggestHint }}</p>
         <p v-if="formHostError" class="error">{{ formHostError }}</p>
       </div>
 
@@ -1060,6 +1048,9 @@ onUnmounted(() => {
 }
 .form-host-bar {
   margin-bottom: 0;
+}
+.form-host-detected {
+  margin-bottom: 6px;
 }
 .host-add-bar .host-line-input {
   flex: 1 1 18rem;

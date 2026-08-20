@@ -113,7 +113,6 @@ func NewRouter(d Deps) *gin.Engine {
 		readGroup.GET("/docs", rh.ListDocs)
 		readGroup.GET("/docs/:docId", rh.GetDoc)
 		readGroup.GET("/hosts", rh.ListHostAliases)
-		readGroup.GET("/dns/resolve", rh.ResolveHost)
 	}
 
 	writeGroup := r.Group("/api/v1/write")

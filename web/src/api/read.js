@@ -35,6 +35,5 @@ export const readApi = {
   getInspection: (clusterId) => http.get(`/read/inspections/${clusterId}`),
   listDocs: (params) => http.get('/read/docs', { params }),
   getDoc: (docId) => http.get(`/read/docs/${docId}`),
-  listHosts: () => http.get('/read/hosts'),
-  resolveHost: (host) => http.get('/read/dns/resolve', { params: { host } })
+  listHosts: () => http.get('/read/hosts')
 }
