@@ -545,6 +545,7 @@ td.actions {
   background: rgba(61, 107, 74, 0.12);
   color: var(--accent);
   vertical-align: middle;
+  white-space: nowrap;
 }
 .tag.project { background: rgba(47, 107, 69, 0.14); color: #1f5a34; }
 .tag.ok { background: rgba(47, 107, 69, 0.14); color: var(--ok); }
@@ -1076,6 +1077,11 @@ body.is-drawer-resizing {
   gap: 8px;
   margin-bottom: 6px;
 }
+.inspect-cluster-block-head .tag,
+.inspect-line .tag,
+.inspect-issue-head .tag {
+  flex-shrink: 0;
+}
 .inspect-cluster-block-head > strong {
   margin: 0;
   font-size: var(--ctrl-font);
@@ -1217,7 +1223,7 @@ body.is-drawer-resizing {
   color: var(--muted);
 }
 .inspect-log {
-  margin: 8px 0 0;
+  margin: 0;
   padding: 8px 10px;
   max-height: 10em;
   overflow: auto;
@@ -1229,6 +1235,23 @@ body.is-drawer-resizing {
   border-radius: 6px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.inspect-log-wrap {
+  margin-top: 8px;
+}
+.inspect-log-meta,
+.inspect-log-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.inspect-log-hint {
+  margin-top: 2px;
+  margin-bottom: 6px;
+}
+.inspect-log-wrap .field-copy-wrap.log-copy-wrap > textarea.inspect-log {
+  min-height: 8.5em;
+  resize: vertical;
 }
 @media (max-width: 720px) {
   .head-mid {

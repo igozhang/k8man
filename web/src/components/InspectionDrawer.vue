@@ -4,6 +4,7 @@ import { asArray } from '../utils/safe'
 import { severityLabel, issueCategoryLabel } from '../utils/labels'
 import { issueMessageSuffix } from '../utils/inspect'
 import { fmtTime } from '../utils/quantity'
+import { copyText } from '../utils/clipboard'
 
 const open = ref(false)
 const detail = ref(null)
@@ -11,6 +12,8 @@ const detail = ref(null)
 const source = ref('none')
 const running = ref(false)
 const runError = ref('')
+const copiedKey = ref('')
+let copiedTimer = 0
 
 const issues = computed(() => asArray(detail.value?.issues))
 const scanErrors = computed(() => {
@@ -56,6 +59,7 @@ function close() {
   source.value = 'none'
   running.value = false
   runError.value = ''
+  copiedKey.value = ''
 }
 
 function show(payload, opts = {}) {
@@ -104,7 +108,49 @@ function emptyHint(d) {
   return d?.summary || '尚无巡检记录；打开后将自动触发实时巡检。'
 }
 
-onUnmounted(close)
+function logSourceSummary(row) {
+  const raw = String(row?.logSource || '').trim()
+  const container = String(row?.container || '').trim()
+  const bits = ['日志摘录']
+  if (raw) {
+    const prev = raw.startsWith('previous')
+    const tail = raw.match(/tail=(\d+)/)?.[1]
+    const name = raw.match(/container=([^\s]+)/)?.[1] || container
+    bits.push(prev ? '上一轮容器日志' : '当前容器日志')
+    if (name) bits.push(`容器 ${name}`)
+    if (tail) bits.push(`近 ${tail} 行`)
+  } else if (container) {
+    bits.push(`容器 ${container}`)
+  }
+  return bits.join(' · ')
+}
+
+function logExcerptPath(row) {
+  const path = String(row?.logPath || '').trim()
+  return path ? `来源文件：${path}` : '来源文件路径未记录'
+}
+
+function logExcerptText(row) {
+  return asArray(row?.logExcerpt).join('\n')
+}
+
+async function copyLogExcerpt(key, row) {
+  try {
+    await copyText(logExcerptText(row))
+    copiedKey.value = key
+    window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => {
+      copiedKey.value = ''
+    }, 1500)
+  } catch {
+    alert('复制失败')
+  }
+}
+
+onUnmounted(() => {
+  close()
+  window.clearTimeout(copiedTimer)
+})
 
 defineExpose({ open: show, close, update: show, updateLive, setRunning })
 </script>
@@ -143,7 +189,24 @@ defineExpose({ open: show, close, update: show, updateLive, setRunning })
         <ul v-if="asArray(row.evidence).length" class="inspect-evidence">
           <li v-for="(ev, i) in asArray(row.evidence)" :key="i">{{ ev }}</li>
         </ul>
-        <pre v-if="asArray(row.logExcerpt).length" class="inspect-log">{{ asArray(row.logExcerpt).join('\n') }}</pre>
+        <div v-if="asArray(row.logExcerpt).length" class="inspect-log-wrap drawer-logs">
+          <p class="inspect-log-meta">{{ logSourceSummary(row) }}</p>
+          <p class="inspect-log-hint muted">{{ logExcerptPath(row) }}</p>
+          <div class="field-copy-wrap log-copy-wrap">
+            <textarea
+              class="log-view inspect-log"
+              readonly
+              spellcheck="false"
+              :value="logExcerptText(row)"
+            ></textarea>
+            <button
+              type="button"
+              class="field-copy"
+              :class="{ 'is-copied': copiedKey === `log-${idx}` }"
+              @click="copyLogExcerpt(`log-${idx}`, row)"
+            >{{ copiedKey === `log-${idx}` ? '已复制' : '复制' }}</button>
+          </div>
+        </div>
       </article>
     </div>
   </div>
