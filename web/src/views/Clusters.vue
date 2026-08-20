@@ -7,6 +7,7 @@ import { asArray, createSeq, errMessage } from '../utils/safe'
 import { cacheGet, cacheKey, invalidateClusterLists } from '../utils/resourceCache'
 import { permTypeLabel, clusterStatusLabel, clusterStatusClass, frontProxyLabel, frontProxyClass } from '../utils/labels'
 import { copyText } from '../utils/clipboard'
+import { suggestHostsHostname } from '../utils/kubeconfig'
 
 const { clusters, currentClusterId, refreshClusters, setCurrentClusterId } = useClusterStore()
 const route = useRoute()
@@ -43,6 +44,13 @@ const hostEditingId = ref('')
 const hostAddLine = ref('')
 const hostEditLine = ref('')
 const hostInlineInput = ref(null)
+const formHostLine = ref('')
+const formHostError = ref('')
+const formHostAutoLine = ref('')
+const formHostSuggesting = ref(false)
+const formHostSuggestHint = ref('')
+let formHostSuggestTimer = null
+let formHostSuggestSeq = 0
 
 function suggestNameFromKubeconfig(text) {
   if (!text) return ''
@@ -58,6 +66,78 @@ function applyKubeconfig(text, { fillName = true } = {}) {
     const suggested = suggestNameFromKubeconfig(text)
     if (suggested) form.value.name = suggested
   }
+  scheduleFormHostSuggest()
+}
+
+function resetFormHostSuggest() {
+  clearTimeout(formHostSuggestTimer)
+  formHostSuggestTimer = null
+  formHostAutoLine.value = ''
+  formHostSuggestHint.value = ''
+  formHostSuggesting.value = false
+}
+
+function scheduleFormHostSuggest() {
+  if (!showForm.value) return
+  clearTimeout(formHostSuggestTimer)
+  formHostSuggestTimer = setTimeout(() => {
+    formHostSuggestTimer = null
+    refreshFormHostSuggest()
+  }, 400)
+}
+
+/** 从 kubeconfig / API Server 提取域名，用运行环境 DNS 解析后预填 hosts 行 */
+async function refreshFormHostSuggest() {
+  if (!showForm.value) return
+
+  const hostname = suggestHostsHostname({
+    kubeconfig: form.value.kubeconfig,
+    serverOverride: form.value.serverOverride
+  })
+  if (!hostname) {
+    formHostSuggestHint.value = ''
+    if (!formHostLine.value.trim() || formHostLine.value === formHostAutoLine.value) {
+      formHostLine.value = ''
+      formHostAutoLine.value = ''
+    }
+    return
+  }
+
+  const current = formHostLine.value.trim()
+  if (current && current !== formHostAutoLine.value) return
+
+  const seq = ++formHostSuggestSeq
+  formHostSuggesting.value = true
+  formHostSuggestHint.value = ''
+  try {
+    const data = await readApi.resolveHost(hostname)
+    if (seq !== formHostSuggestSeq || !showForm.value) return
+    const ip = data?.ip || data?.ips?.[0]
+    if (!ip) {
+      formHostSuggestHint.value = `未能解析 ${hostname}`
+      return
+    }
+    const line = `${ip} ${hostname}`
+    formHostAutoLine.value = line
+    formHostLine.value = line
+    formHostSuggestHint.value = `已根据 kubeconfig 域名与运行环境 DNS 填入，可直接点「添加」`
+  } catch (e) {
+    if (seq !== formHostSuggestSeq) return
+    formHostSuggestHint.value = `解析 ${hostname} 失败：${errMessage(e)}`
+  } finally {
+    if (seq === formHostSuggestSeq) formHostSuggesting.value = false
+  }
+}
+
+function onFormHostInput() {
+  if (formHostLine.value.trim() !== formHostAutoLine.value) {
+    formHostAutoLine.value = ''
+    formHostSuggestHint.value = ''
+  }
+}
+
+function onServerOverrideInput() {
+  scheduleFormHostSuggest()
 }
 
 function emptyForm() {
@@ -162,28 +242,90 @@ function openHostEdit(h) {
   })
 }
 
+/** 写入 hosts 文件；hostname 已存在则同 IP 跳过、不同 IP 则更新 */
+async function persistHostLine(raw, { clearInputRef = null } = {}) {
+  const parsed = parseHostLine(raw)
+  if (!parsed) {
+    return { ok: false, error: '格式应为：IP hostname，例如 10.10.10.10 igozhang.cn（中间一个或多个空格均可）' }
+  }
+  const line = `${parsed.ip} ${parsed.hostname}`
+  const existing = hosts.value.find((h) => h.hostname === parsed.hostname)
+  if (existing) {
+    if (existing.ip === parsed.ip) {
+      if (clearInputRef) clearInputRef.value = line
+      return { ok: true, skipped: true, message: `hosts 已有 ${line}` }
+    }
+    await writeApi.updateHost(existing.id, { hostname: parsed.hostname, ip: parsed.ip })
+  } else {
+    await writeApi.createHost({ hostname: parsed.hostname, ip: parsed.ip })
+  }
+  if (clearInputRef) clearInputRef.value = line
+  await loadHosts()
+  return { ok: true, applied: true, message: `Hosts 已更新：${line}` }
+}
+
+async function addFormHost() {
+  if (!formHostLine.value.trim()) return
+  formHostError.value = ''
+  hostBusy.value = true
+  try {
+    const r = await persistHostLine(formHostLine.value, { clearInputRef: formHostLine })
+    if (!r.ok) {
+      formHostError.value = r.error
+      return
+    }
+    formNotice.value = r.message
+    formError.value = ''
+  } catch (e) {
+    formHostError.value = errMessage(e)
+  } finally {
+    hostBusy.value = false
+  }
+}
+
+/** 测试/导入前：若填写了 hosts 行则先写入（未点「添加」也生效） */
+async function ensureFormHostApplied() {
+  if (!formHostLine.value.trim()) return true
+  formHostError.value = ''
+  hostBusy.value = true
+  try {
+    const r = await persistHostLine(formHostLine.value, { clearInputRef: formHostLine })
+    if (!r.ok) {
+      formHostError.value = r.error
+      return false
+    }
+    if (r.applied) formNotice.value = r.message
+    return true
+  } catch (e) {
+    formHostError.value = errMessage(e)
+    return false
+  } finally {
+    hostBusy.value = false
+  }
+}
+
 async function saveHost({ fromEdit = false } = {}) {
   hostBusy.value = true
   hostError.value = ''
   try {
     const raw = fromEdit ? hostEditLine.value : hostAddLine.value
-    const parsed = parseHostLine(raw)
-    if (!parsed) {
-      hostError.value = '格式应为：IP hostname，例如 10.10.10.10 igozhang.cn（中间一个或多个空格均可）'
-      return
-    }
-    const line = `${parsed.ip} ${parsed.hostname}`
-    if (fromEdit) hostEditLine.value = line
-    else hostAddLine.value = line
-    const { hostname, ip } = parsed
     if (fromEdit && hostEditingId.value) {
-      await writeApi.updateHost(hostEditingId.value, { hostname, ip })
+      const parsed = parseHostLine(raw)
+      if (!parsed) {
+        hostError.value = '格式应为：IP hostname，例如 10.10.10.10 igozhang.cn（中间一个或多个空格均可）'
+        return
+      }
+      const line = `${parsed.ip} ${parsed.hostname}`
+      hostEditLine.value = line
+      await writeApi.updateHost(hostEditingId.value, { hostname: parsed.hostname, ip: parsed.ip })
       resetHostEdit()
     } else {
-      await writeApi.createHost({ hostname, ip })
-      hostAddLine.value = ''
+      const r = await persistHostLine(raw, { clearInputRef: hostAddLine })
+      if (!r.ok) {
+        hostError.value = r.error
+        return
+      }
     }
-    await loadHosts()
     notice.value = 'Hosts 已更新（对后续「测试」与 API 请求立即生效）'
   } catch (e) {
     hostError.value = errMessage(e)
@@ -211,6 +353,9 @@ function closeForm() {
   formLoading.value = false
   formError.value = ''
   formNotice.value = ''
+  formHostLine.value = ''
+  formHostError.value = ''
+  resetFormHostSuggest()
   snapshotOriginal()
 }
 
@@ -233,6 +378,9 @@ function openCreate() {
   formError.value = ''
   formNotice.value = ''
   formLoading.value = false
+  formHostLine.value = ''
+  formHostError.value = ''
+  resetFormHostSuggest()
   showForm.value = true
   nextTick(() => yamlInput.value?.focus())
 }
@@ -266,6 +414,9 @@ async function openEdit(c) {
   error.value = ''
   formError.value = ''
   formNotice.value = ''
+  formHostLine.value = ''
+  formHostError.value = ''
+  resetFormHostSuggest()
   formLoading.value = true
   showForm.value = true
   try {
@@ -292,6 +443,7 @@ async function openEdit(c) {
     }
     await nextTick()
     yamlInput.value?.focus()
+    scheduleFormHostSuggest()
   } catch (e) {
     if (!editSeq.is(seq)) return
     formError.value = `加载 kubeconfig 失败：${errMessage(e)}`
@@ -318,6 +470,7 @@ function onKubeconfigInput() {
     const suggested = suggestNameFromKubeconfig(form.value.kubeconfig)
     if (suggested) form.value.name = suggested
   }
+  scheduleFormHostSuggest()
 }
 
 function onFileChange(e) {
@@ -340,6 +493,7 @@ function clearUpload() {
   uploadFileName.value = ''
   form.value.kubeconfig = formMode.value === 'edit' ? original.value.kubeconfig : ''
   if (fileInput.value) fileInput.value.value = ''
+  scheduleFormHostSuggest()
 }
 
 async function save() {
@@ -350,6 +504,7 @@ async function save() {
   error.value = ''
   notice.value = ''
   try {
+    if (!(await ensureFormHostApplied())) return
     const kubeconfig = form.value.kubeconfig.trim()
     const name = form.value.name.trim() || (
       formMode.value === 'create' ? suggestNameFromKubeconfig(kubeconfig) : ''
@@ -493,7 +648,9 @@ async function testForm() {
   formTesting.value = true
   formError.value = ''
   formNotice.value = ''
+  formHostError.value = ''
   try {
+    if (!(await ensureFormHostApplied())) return
     const r = await writeApi.probeCluster({
       kubeconfig,
       serverOverride: form.value.serverOverride.trim() || undefined,
@@ -536,6 +693,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.clearTimeout(copiedTimer)
+  window.clearTimeout(formHostSuggestTimer)
   window.removeEventListener('keydown', onEscape)
 })
 </script>
@@ -694,12 +852,12 @@ onUnmounted(() => {
         <div class="actions">
           <button
             class="btn btn-primary btn-sm"
-            :disabled="busy || formLoading || formTesting || !!testingId"
+            :disabled="busy || formLoading || formTesting || !!testingId || hostBusy"
             @click="save"
           >{{ busy ? '保存中…' : (formMode === 'create' ? '导入' : '保存') }}</button>
           <button
             class="btn btn-sm"
-            :disabled="busy || formLoading || formTesting || !!testingId"
+            :disabled="busy || formLoading || formTesting || !!testingId || hostBusy"
             @click="testForm"
           >{{ formTesting || testingId === editingId ? '测试中…' : '测试' }}</button>
           <button class="btn btn-sm" :disabled="busy || formTesting" @click="requestClose">关闭</button>
@@ -785,7 +943,36 @@ onUnmounted(() => {
           type="text"
           :placeholder="formMode === 'edit' ? '当前 kubeconfig 内 server' : '留空则使用 kubeconfig 内 server'"
           :disabled="formLoading"
+          @input="onServerOverrideInput"
         />
+      </div>
+
+      <div class="form-row">
+        <label>
+          Hosts
+          <span class="muted">（可选；粘贴 kubeconfig 后自动解析 API 域名并填入，也可手动修改）</span>
+        </label>
+        <div class="toolbar toolbar-start host-add-bar form-host-bar">
+          <input
+            v-model="formHostLine"
+            type="text"
+            class="host-line-input"
+            placeholder="10.10.10.10 igozhang.cn"
+            spellcheck="false"
+            :disabled="formLoading || hostBusy || formHostSuggesting"
+            @input="onFormHostInput"
+            @keydown.enter.prevent="addFormHost"
+          />
+          <button
+            type="button"
+            class="btn btn-sm"
+            :disabled="formLoading || hostBusy || formHostSuggesting || !formHostLine.trim()"
+            @click="addFormHost"
+          >添加</button>
+        </div>
+        <p v-if="formHostSuggesting" class="muted">正在解析 API 域名…</p>
+        <p v-else-if="formHostSuggestHint" class="muted">{{ formHostSuggestHint }}</p>
+        <p v-if="formHostError" class="error">{{ formHostError }}</p>
       </div>
 
       <div class="form-row">
@@ -870,6 +1057,9 @@ onUnmounted(() => {
 }
 .host-add-bar {
   margin-bottom: 12px;
+}
+.form-host-bar {
+  margin-bottom: 0;
 }
 .host-add-bar .host-line-input {
   flex: 1 1 18rem;
