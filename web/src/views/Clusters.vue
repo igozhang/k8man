@@ -635,10 +635,15 @@ function frontProxyHint(kind) {
   return label ? ` · ${label}` : ''
 }
 
+function kubeVersionText(r) {
+  if (!r?.kubeVersion) return ''
+  return r.versionHint ? ` · ${r.kubeVersion}（${r.versionHint}）` : ` · ${r.kubeVersion}`
+}
+
 function applyProbeResult(r, { name = '', inForm = false } = {}) {
   const prefix = name ? `「${name}」` : ''
   if (r.status === 'ok') {
-    const msg = `${prefix}测试通过：${permTypeLabel(r.permType)} · ${r.server}${frontProxyHint(r.frontProxy)}`
+    const msg = `${prefix}测试通过：${permTypeLabel(r.permType)} · ${r.server}${frontProxyHint(r.frontProxy)}${kubeVersionText(r)}`
     if (inForm) {
       formNotice.value = msg
       formError.value = ''
@@ -716,7 +721,7 @@ async function testForm() {
     const unsaved = isDirty()
     if (r.status === 'ok') {
       formProbeOkKey.value = formProbeFingerprint()
-      formNotice.value = `测试通过${unsaved ? '（未保存，这是当前编辑内容）' : ''}：${permTypeLabel(r.permType)} · ${r.server}${frontProxyHint(r.frontProxy)}`
+      formNotice.value = `测试通过${unsaved ? '（未保存，这是当前编辑内容）' : ''}：${permTypeLabel(r.permType)} · ${r.server}${frontProxyHint(r.frontProxy)}${kubeVersionText(r)}`
     } else {
       clearFormProbeOk()
       formError.value = `测试失败${unsaved ? '（未保存，这是当前编辑内容）' : ''}：${r.lastError || r.status}`
@@ -763,7 +768,7 @@ onUnmounted(() => {
     <div class="toolbar">
       <div>
         <h1>KubeConfig 管理</h1>
-        <p class="page-desc">导入 Rancher 集群管理员或 Project kubeconfig。点「测试」会探测入口是 ingress-nginx 还是外置 nginx，结果写在状态列。后台约 2 小时也会巡检并回写状态；改 YAML / API Server / TLS 会清空入口标签与巡检快照。</p>
+        <p class="page-desc">导入 Rancher 集群管理员或 Project kubeconfig。点「测试」会探测入口是 Rancher 还是非 Rancher（外置 nginx / F5 / 其它转发），结果写在状态列。后台约 2 小时也会巡检并回写状态；改 YAML / API Server / TLS 会清空入口标签与巡检快照。</p>
       </div>
       <button class="btn btn-primary" @click="openCreate">导入 kubeconfig</button>
     </div>
@@ -801,6 +806,11 @@ onUnmounted(() => {
                 :class="frontProxyClass(c.frontProxy)"
                 :title="'入口探测：' + frontProxyLabel(c.frontProxy)"
               >{{ frontProxyLabel(c.frontProxy) }}</span>
+              <span
+                v-if="c.kubeVersion"
+                class="tag"
+                :title="c.kubeVersion"
+              >{{ c.kubeVersion }}</span>
             </div>
             <div
               v-if="c.lastError"

@@ -36,6 +36,11 @@ type ListItem struct {
 	Warning     int            `json:"warning"`
 	Summary     string         `json:"summary"`
 	Preview     []PreviewIssue `json:"preview"`
+	// HasScan / ScanPods / PodIssues come from the latest DiagnoseReport (overview cards).
+	HasScan   bool `json:"hasScan"`
+	ScanPods  int  `json:"scanPods"`
+	PodIssues int  `json:"podIssues"`
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // ListResult is GET /inspections.
@@ -60,7 +65,7 @@ func timePtr(t time.Time) *time.Time {
 	return &u
 }
 
-func listItemFromRow(name string, row *store.InspectionRow, issues []kube.Issue) ListItem {
+func listItemFromRow(name string, row *store.InspectionRow, issues []kube.Issue, diag *kube.DiagnoseReport) ListItem {
 	item := ListItem{
 		ClusterName: name,
 		Preview:     []PreviewIssue{},
@@ -85,6 +90,19 @@ func listItemFromRow(name string, row *store.InspectionRow, issues []kube.Issue)
 		sortIssues(copied)
 		item.Preview = previewOf(copied, PreviewMax)
 	}
+	if diag != nil {
+		item.HasScan = true
+		item.ScanPods = diag.Scan.Pods
+		item.PodIssues = diag.Counts.Pods
+		item.Truncated = diag.Truncated
+	} else {
+		// Probe-only / diagnose failed: still surface pod issues from the issue list.
+		for _, it := range issues {
+			if it.Category == "pod" {
+				item.PodIssues++
+			}
+		}
+	}
 	return item
 }
 
@@ -107,7 +125,7 @@ func detailFromRow(name string, row *store.InspectionRow) *Detail {
 		return nil
 	}
 	rep := parseReport(row.ReportJSON)
-	item := listItemFromRow(name, row, rep.Issues)
+	item := listItemFromRow(name, row, rep.Issues, rep.Diagnose)
 	return &Detail{
 		ListItem: item,
 		Probe:    rep.Probe,
@@ -134,11 +152,14 @@ func (w *Worker) List() (*ListResult, error) {
 		row, ok := byID[c.ID]
 		var p *store.InspectionRow
 		var issues []kube.Issue
+		var diag *kube.DiagnoseReport
 		if ok {
 			p = &row
-			issues = parseReport(row.ReportJSON).Issues
+			rep := parseReport(row.ReportJSON)
+			issues = rep.Issues
+			diag = rep.Diagnose
 		}
-		item := listItemFromRow(c.Name, p, issues)
+		item := listItemFromRow(c.Name, p, issues, diag)
 		item.ClusterID = c.ID
 		if item.Summary == "" {
 			item.Summary = "尚未巡检"

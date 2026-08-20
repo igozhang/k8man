@@ -180,6 +180,7 @@ func applyProbe(cl *model.Cluster, probe kube.ProbeResult, now time.Time) {
 	cl.Status = probe.Status
 	cl.LastError = probe.LastError
 	cl.FrontProxy = probe.FrontProxy
+	cl.KubeVersion = probe.KubeVersion
 	cl.UpdatedAt = now.UTC()
 }
 

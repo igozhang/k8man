@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -33,12 +34,14 @@ type Clients struct {
 }
 
 type ProbeResult struct {
-	Server     string   `json:"server"`
-	PermType   string   `json:"permType"` // cluster | project | unknown
-	Namespaces []string `json:"namespaces"`
-	Status     string   `json:"status"`
-	LastError  string   `json:"lastError"`
-	FrontProxy string   `json:"frontProxy"` // ingress-nginx | nginx | rancher | apiserver | empty
+	Server      string   `json:"server"`
+	PermType    string   `json:"permType"` // cluster | project | unknown
+	Namespaces  []string `json:"namespaces"`
+	Status      string   `json:"status"`
+	LastError   string   `json:"lastError"`
+	FrontProxy  string   `json:"frontProxy"`  // rancher | non-rancher | empty
+	KubeVersion string   `json:"kubeVersion"` // e.g. v1.28.5；空表示未取到
+	VersionHint string   `json:"versionHint,omitempty"`
 }
 
 type Pool struct {
@@ -115,11 +118,7 @@ func BuildClients(kubeconfigYAML string, hosts *HostsResolver) (*Clients, error)
 	if err != nil {
 		return nil, fmt.Errorf("parse kubeconfig: %w", err)
 	}
-	cfg.Timeout = 30 * time.Second
-	wrapGatewayAwareTransport(cfg)
-	if hosts != nil {
-		hosts.ApplyDial(cfg)
-	}
+	prepareRESTConfig(cfg, hosts)
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("clientset: %w", err)
@@ -134,6 +133,28 @@ func BuildClients(kubeconfigYAML string, hosts *HostsResolver) (*Clients, error)
 	}
 	server := cfg.Host
 	return &Clients{Config: cfg, Clientset: cs, Dynamic: dyn, Metrics: mc, Server: server}, nil
+}
+
+// prepareRESTConfig applies dial/hosts, disables env HTTP(S)_PROXY for API traffic,
+// and sets QPS / User-Agent. Private Hosts 映射后若仍走代理，域名请求会被代理拦成 Forbidden。
+func prepareRESTConfig(cfg *rest.Config, hosts *HostsResolver) {
+	if cfg == nil {
+		return
+	}
+	cfg.Timeout = 30 * time.Second
+	if cfg.QPS == 0 {
+		cfg.QPS = 30
+	}
+	if cfg.Burst == 0 {
+		cfg.Burst = 60
+	}
+	cfg.UserAgent = "k8man/1.0"
+	// 集群 API / Rancher 入口不应继承进程的 HTTP(S)_PROXY（Hosts 私网解析时尤其如此）。
+	cfg.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
+	wrapGatewayAwareTransport(cfg)
+	if hosts != nil {
+		hosts.ApplyDial(cfg)
+	}
 }
 
 func Probe(ctx context.Context, kubeconfigYAML string, hosts *HostsResolver) ProbeResult {
@@ -159,6 +180,7 @@ func Probe(ctx context.Context, kubeconfigYAML string, hosts *HostsResolver) Pro
 		return c.Clientset.CoreV1().Namespaces().List(ctx, opts)
 	})
 	if err != nil {
+		res.KubeVersion, res.VersionHint = readKubeVersion(ctx, c)
 		res.LastError = FriendlyConnectivityError(err)
 		if kind := waitFront(frontCh); kind != "" {
 			res.FrontProxy = kind
@@ -173,6 +195,8 @@ func Probe(ctx context.Context, kubeconfigYAML string, hosts *HostsResolver) Pro
 		}
 	}
 
+	res.KubeVersion, res.VersionHint = readKubeVersion(ctx, c)
+
 	_, err = listViaWatchCache(1, func(opts metav1.ListOptions) (*corev1.NodeList, error) {
 		return c.Clientset.CoreV1().Nodes().List(ctx, opts)
 	})
@@ -185,6 +209,75 @@ func Probe(ctx context.Context, kubeconfigYAML string, hosts *HostsResolver) Pro
 	res.LastError = ""
 	res.FrontProxy = waitFront(frontCh)
 	return res
+}
+
+// SupportedKubeMinorRange is the practical matrix for Rancher 主流：kubectl/apiserver 约 1.18～1.33。
+const (
+	supportedKubeMinorMin = 18
+	supportedKubeMinorMax = 33
+)
+
+func readKubeVersion(ctx context.Context, c *Clients) (version, hint string) {
+	if c == nil || c.Clientset == nil {
+		return "", ""
+	}
+	info, err := c.Clientset.Discovery().ServerVersion()
+	if err != nil || info == nil {
+		return "", ""
+	}
+	version = strings.TrimSpace(info.GitVersion)
+	if version == "" {
+		version = strings.TrimSpace(info.Major + "." + info.Minor)
+	}
+	hint = kubeVersionHint(version)
+	return version, hint
+}
+
+// kubeVersionHint returns a soft Chinese note when outside the supported minor range.
+func kubeVersionHint(gitVersion string) string {
+	major, minor, ok := parseKubeMajorMinor(gitVersion)
+	if !ok {
+		return ""
+	}
+	if major != 1 {
+		return fmt.Sprintf("当前集群版本 %s 不在常见 Rancher/K8s 1.x 范围，读写行为请以实测为准。", gitVersion)
+	}
+	if minor < supportedKubeMinorMin {
+		return fmt.Sprintf("当前集群 %s 低于常用下限 1.%d，部分新字段写回可能失败。", gitVersion, supportedKubeMinorMin)
+	}
+	if minor > supportedKubeMinorMax {
+		return fmt.Sprintf("当前集群 %s 高于已验证上限 1.%d，建议先做 List/日志/伸缩冒烟。", gitVersion, supportedKubeMinorMax)
+	}
+	return ""
+}
+
+func parseKubeMajorMinor(v string) (major, minor int, ok bool) {
+	s := strings.TrimSpace(strings.TrimPrefix(v, "v"))
+	if s == "" {
+		return 0, 0, false
+	}
+	// 1.28.5+xxx / 1.28+
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	if _, err := fmt.Sscanf(parts[0], "%d", &major); err != nil {
+		return 0, 0, false
+	}
+	minRaw := parts[1]
+	for i, r := range minRaw {
+		if r < '0' || r > '9' {
+			minRaw = minRaw[:i]
+			break
+		}
+	}
+	if minRaw == "" {
+		return 0, 0, false
+	}
+	if _, err := fmt.Sscanf(minRaw, "%d", &minor); err != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
 }
 
 func waitFront(ch <-chan string) string {
@@ -297,13 +390,14 @@ func FriendlyConnectivityError(err error) string {
 	if errors.As(err, &ge) {
 		kind := ClassifyFrontProxy(ge.StatusCode, ge.Server, ge.ContentType, ge.Body)
 		base := ge.Error()
-		switch kind {
-		case FrontIngressNginx:
+		bl := strings.ToLower(ge.Body)
+		switch {
+		case kind == FrontNonRancher && (strings.Contains(bl, "default backend")):
 			return base + "\n提示：打到了 ingress-nginx 默认后端（default backend），kubeconfig 的路径没有对应 Ingress，或 Host/SNI 不匹配。"
-		case FrontNginx:
-			return base + "\n提示：打到了外置 nginx 默认页，没有到达 Kubernetes/Rancher API。请确认 Hosts 与 server 域名，以及 nginx 是否把 /k8s/clusters/...（或 /api）反代到后端。"
+		case kind == FrontNonRancher:
+			return base + "\n提示：打到了非 Rancher 前端网关（外置 nginx / F5 / 其它反代等），没有到达 Kubernetes/Rancher API。请确认 Hosts 与 server 域名，以及网关是否把 /k8s/clusters/...（或 /api）反代到后端。"
 		default:
-			return base + "\n提示：请求打到了前端网关（常见为 nginx HTML 页），没有到达 Kubernetes/Rancher API。请确认 Hosts 指向 Rancher 入口，且 nginx 已把 /k8s/clusters/...（或 /api）反代到后端。"
+			return base + "\n提示：请求打到了前端网关，没有到达 Kubernetes/Rancher API。请确认 Hosts 指向正确入口，且反代已把 /k8s/clusters/...（或 /api）转到后端。"
 		}
 	}
 	msg := err.Error()
@@ -517,6 +611,13 @@ func (c *Clients) ApplyYAML(ctx context.Context, ns, kind, name, yamlBody string
 	if obj.GetName() != name {
 		return fmt.Errorf("yaml name %q does not match path name %q", obj.GetName(), name)
 	}
+	// 写回旧集群时去掉只读/服务端字段，降低 client-go 与 apiserver 版本差带来的 Update 失败。
+	unstructured.RemoveNestedField(obj.Object, "metadata", "managedFields")
+	unstructured.RemoveNestedField(obj.Object, "metadata", "resourceVersion")
+	unstructured.RemoveNestedField(obj.Object, "metadata", "uid")
+	unstructured.RemoveNestedField(obj.Object, "metadata", "creationTimestamp")
+	unstructured.RemoveNestedField(obj.Object, "metadata", "generation")
+	unstructured.RemoveNestedField(obj.Object, "status")
 
 	var existing *unstructured.Unstructured
 	if gvr.Resource == "namespaces" {

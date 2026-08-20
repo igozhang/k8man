@@ -244,16 +244,18 @@ a.brand {
   padding: 0.55rem 0.75rem;
   margin-bottom: 1rem;
 }
-.cluster-label {
-  font-size: 0.84rem;
-  color: var(--muted);
+.cluster-stats {
+  font-size: 0.82rem;
   white-space: nowrap;
 }
+.cluster-stats-bad {
+  color: var(--danger);
+}
 .cluster-select {
-  min-width: 200px;
-  max-width: 100%;
+  min-width: 140px;
+  max-width: 240px;
   width: auto;
-  flex: 1 1 220px;
+  flex: 0 1 auto;
   padding: var(--ctrl-pad-y) var(--ctrl-pad-x);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -555,6 +557,7 @@ td.actions {
   color: #fff;
 }
 .tag.ingress { background: rgba(47, 107, 69, 0.14); color: #1f5a34; }
+.tag.non-rancher { background: rgba(154, 103, 0, 0.14); color: var(--warn); }
 .tag.nginx-front { background: rgba(154, 103, 0, 0.14); color: var(--warn); }
 .tag.rancher { background: rgba(61, 107, 74, 0.12); color: var(--accent); }
 .muted { color: var(--muted); }
@@ -946,6 +949,16 @@ body.is-drawer-resizing {
 .toolbar select {
   flex: 0 0 auto;
 }
+.toolbar .filter-select {
+  flex: 0 1 16rem;
+  max-width: min(18rem, 100%);
+  min-width: 10rem;
+  /* 下拉浮层不被工具栏裁切 */
+  z-index: 5;
+}
+.toolbar .filter-select.open {
+  z-index: 30;
+}
 .toolbar input[type="text"],
 .toolbar input[type="search"],
 .toolbar input[type="number"] {
@@ -1253,6 +1266,108 @@ body.is-drawer-resizing {
   min-height: 8.5em;
   resize: vertical;
 }
+
+/* 可输入筛选的下拉（命名空间等）：高度对齐 select/按钮 */
+.filter-select {
+  position: relative;
+  min-width: 0;
+}
+.filter-select-trigger,
+.filter-select-input {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  margin: 0;
+  padding: var(--ctrl-pad-y) var(--ctrl-pad-x);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: var(--ctrl-font);
+  line-height: var(--ctrl-line);
+  background: var(--input);
+  color: var(--text);
+  box-sizing: border-box;
+  text-align: left;
+  cursor: pointer;
+}
+.filter-select-trigger {
+  gap: 8px;
+  justify-content: space-between;
+  min-height: calc(var(--ctrl-pad-y) * 2 + var(--ctrl-font) * var(--ctrl-line));
+}
+.filter-select.stale .filter-select-trigger {
+  border-color: #e8b4b0;
+}
+.filter-select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filter-select-caret {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+}
+.filter-select-input {
+  cursor: text;
+}
+.filter-select-input:focus,
+.filter-select-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+.filter-select-dropdown {
+  position: absolute;
+  z-index: 40;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.filter-select-hint {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1.35;
+  background: var(--bg);
+}
+.filter-select-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 16rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 20px rgba(45, 59, 45, 0.12);
+}
+.filter-select-option {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: var(--ctrl-font);
+  line-height: var(--ctrl-line);
+  cursor: pointer;
+  word-break: break-all;
+}
+.filter-select-option:hover,
+.filter-select-option.active {
+  background: rgba(61, 107, 74, 0.12);
+}
+.filter-select-option.current {
+  font-weight: 600;
+}
+.filter-select-empty {
+  margin: 0;
+  padding: 8px;
+  font-size: 12px;
+}
+
 @media (max-width: 720px) {
   .head-mid {
     flex-direction: column;

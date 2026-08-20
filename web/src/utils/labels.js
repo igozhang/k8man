@@ -8,16 +8,15 @@ export function permTypeLabel(t) {
 }
 
 export function frontProxyLabel(t) {
-  if (t === 'ingress-nginx') return 'ingress-nginx'
-  if (t === 'nginx') return '外置 nginx'
   if (t === 'rancher') return 'Rancher'
+  // 历史值 ingress-nginx / nginx 与 non-rancher 一律展示为非 Rancher
+  if (t === 'non-rancher' || t === 'nginx' || t === 'ingress-nginx') return '非 Rancher'
   return ''
 }
 
 export function frontProxyClass(t) {
-  if (t === 'ingress-nginx') return 'ingress'
-  if (t === 'nginx') return 'nginx-front'
   if (t === 'rancher') return 'rancher'
+  if (t === 'non-rancher' || t === 'nginx' || t === 'ingress-nginx') return 'non-rancher'
   return ''
 }
 

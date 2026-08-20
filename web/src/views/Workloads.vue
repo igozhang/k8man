@@ -18,6 +18,7 @@ import {
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import ConfigMapEditor from '../components/ConfigMapEditor.vue'
+import FilterSelect from '../components/FilterSelect.vue'
 
 const { currentClusterId } = useClusterStore()
 const namespaces = ref([])
@@ -550,10 +551,13 @@ watch([ns, tab], () => {
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
       <div class="toolbar">
-        <select v-model="ns">
-          <option value="">请选择命名空间</option>
-          <option v-for="n in namespaces" :key="n.name" :value="n.name">{{ n.name }}</option>
-        </select>
+        <FilterSelect
+          v-model="ns"
+          :options="namespaces"
+          empty-label="请选择命名空间"
+          placeholder="输入 1–3 个字母筛选命名空间"
+          aria-label="选择命名空间"
+        />
         <div class="tabs">
           <button class="tab" :class="{ active: tab === 'pods' }" @click="tab = 'pods'">Pods</button>
           <button

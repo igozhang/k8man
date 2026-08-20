@@ -211,6 +211,14 @@ export function cacheInvalidate(key) {
   writeIndex(readIndex().filter((k) => k !== key))
 }
 
+/** 巡检摘要更新后通知顶栏等订阅方（同页多组件共用 inspections 缓存） */
+export const INSPECTIONS_CHANGED = 'k8man:inspections-changed'
+
+export function notifyInspectionsChanged() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(INSPECTIONS_CHANGED))
+}
+
 export function cacheInvalidateWhere(pred) {
   const keys = new Set([...mem.keys(), ...readIndex()])
   for (const k of keys) {

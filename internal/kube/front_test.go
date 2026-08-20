@@ -23,7 +23,7 @@ func TestClassifyFrontProxy(t *testing.T) {
 			srv:  "nginx",
 			ct:   "text/plain",
 			body: "default backend - 404\n",
-			want: FrontIngressNginx,
+			want: FrontNonRancher,
 		},
 		{
 			name: "stock nginx html 404",
@@ -31,7 +31,7 @@ func TestClassifyFrontProxy(t *testing.T) {
 			srv:  "nginx/1.18.0",
 			ct:   "text/html",
 			body: "<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n",
-			want: FrontNginx,
+			want: FrontNonRancher,
 		},
 		{
 			name: "welcome to nginx",
@@ -39,7 +39,7 @@ func TestClassifyFrontProxy(t *testing.T) {
 			srv:  "nginx",
 			ct:   "text/html",
 			body: "<h1>Welcome to nginx!</h1>",
-			want: FrontNginx,
+			want: FrontNonRancher,
 		},
 		{
 			name: "nginx 302 to dashboard",
@@ -47,7 +47,15 @@ func TestClassifyFrontProxy(t *testing.T) {
 			srv:  "nginx/1.18.0",
 			ct:   "text/html",
 			body: "",
-			want: FrontNginx,
+			want: FrontNonRancher,
+		},
+		{
+			name: "f5 404",
+			code: 404,
+			srv:  "BigIP",
+			ct:   "text/html",
+			body: "",
+			want: FrontNonRancher,
 		},
 		{
 			name: "rancher ping",
@@ -63,7 +71,7 @@ func TestClassifyFrontProxy(t *testing.T) {
 			srv:  "",
 			ct:   "application/json",
 			body: `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"not found","code":404}`,
-			want: FrontAPIServer,
+			want: "",
 		},
 		{
 			name: "plain nginx 404 no html",
@@ -71,7 +79,7 @@ func TestClassifyFrontProxy(t *testing.T) {
 			srv:  "nginx",
 			ct:   "text/plain",
 			body: "404",
-			want: FrontNginx,
+			want: FrontNonRancher,
 		},
 		{
 			name: "nginx return 404 empty body",
@@ -79,7 +87,7 @@ func TestClassifyFrontProxy(t *testing.T) {
 			srv:  "nginx",
 			ct:   "text/plain; charset=utf-8",
 			body: "",
-			want: FrontNginx,
+			want: FrontNonRancher,
 		},
 		{
 			name: "unknown",
@@ -124,7 +132,7 @@ func TestDetectFrontProxyIngressVsNginx(t *testing.T) {
 	}))
 	t.Cleanup(stock.Close)
 
-	// 外置 nginx 反代 Rancher：/ping=pong，未知路径仍是 nginx 404
+	// 外置 nginx 反代 Rancher：/ping=pong，未知路径仍是 nginx 404 → 非 Rancher
 	behindNginx := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ping" {
 			_, _ = w.Write([]byte("pong"))
@@ -145,14 +153,14 @@ func TestDetectFrontProxyIngressVsNginx(t *testing.T) {
 	t.Cleanup(rancher.Close)
 
 	ctx := context.Background()
-	if got := DetectFrontProxy(ctx, kubeconfigYAML(ingress.URL+"/k8s/clusters/local"), nil); got != FrontIngressNginx {
+	if got := DetectFrontProxy(ctx, kubeconfigYAML(ingress.URL+"/k8s/clusters/local"), nil); got != FrontNonRancher {
 		t.Fatalf("ingress: got %q", got)
 	}
-	if got := DetectFrontProxy(ctx, kubeconfigYAML(stock.URL+"/k8s/clusters/local"), nil); got != FrontNginx {
+	if got := DetectFrontProxy(ctx, kubeconfigYAML(stock.URL+"/k8s/clusters/local"), nil); got != FrontNonRancher {
 		t.Fatalf("stock nginx: got %q", got)
 	}
-	if got := DetectFrontProxy(ctx, kubeconfigYAML(behindNginx.URL+"/k8s/clusters/local"), nil); got != FrontNginx {
-		t.Fatalf("rancher behind nginx: got %q want nginx", got)
+	if got := DetectFrontProxy(ctx, kubeconfigYAML(behindNginx.URL+"/k8s/clusters/local"), nil); got != FrontNonRancher {
+		t.Fatalf("rancher behind nginx: got %q want non-rancher", got)
 	}
 	if got := DetectFrontProxy(ctx, kubeconfigYAML(rancher.URL+"/k8s/clusters/local"), nil); got != FrontRancher {
 		t.Fatalf("rancher: got %q", got)
@@ -171,8 +179,8 @@ func TestDetectFrontProxyWaitsForSlowNginxProbe(t *testing.T) {
 	t.Cleanup(front.Close)
 
 	ctx := context.Background()
-	if got := DetectFrontProxy(ctx, kubeconfigYAML(front.URL+"/k8s/clusters/local"), nil); got != FrontNginx {
-		t.Fatalf("slow nginx 404 after pong: got %q want nginx", got)
+	if got := DetectFrontProxy(ctx, kubeconfigYAML(front.URL+"/k8s/clusters/local"), nil); got != FrontNonRancher {
+		t.Fatalf("slow nginx 404 after pong: got %q want non-rancher", got)
 	}
 }
 
@@ -189,8 +197,8 @@ func TestDetectFrontProxyNginxRedirect(t *testing.T) {
 	t.Cleanup(front.Close)
 
 	ctx := context.Background()
-	if got := DetectFrontProxy(ctx, kubeconfigYAML(front.URL+"/k8s/clusters/local"), nil); got != FrontNginx {
-		t.Fatalf("nginx 302: got %q want nginx", got)
+	if got := DetectFrontProxy(ctx, kubeconfigYAML(front.URL+"/k8s/clusters/local"), nil); got != FrontNonRancher {
+		t.Fatalf("nginx 302: got %q want non-rancher", got)
 	}
 }
 
@@ -198,12 +206,14 @@ func TestPickFrontKind(t *testing.T) {
 	tests := []struct {
 		ping, probe, want string
 	}{
-		{FrontRancher, FrontNginx, FrontNginx},
-		{FrontRancher, FrontIngressNginx, FrontIngressNginx},
+		{FrontRancher, FrontNonRancher, FrontNonRancher},
+		{FrontRancher, FrontNginx, FrontNonRancher},
+		{FrontRancher, FrontIngressNginx, FrontNonRancher},
 		{FrontRancher, "", FrontRancher},
 		{FrontRancher, FrontRancher, FrontRancher},
-		{"", FrontNginx, FrontNginx},
-		{"", FrontIngressNginx, FrontIngressNginx},
+		{"", FrontNonRancher, FrontNonRancher},
+		{"", FrontNginx, FrontNonRancher},
+		{"", FrontIngressNginx, FrontNonRancher},
 	}
 	for _, tt := range tests {
 		if got := pickFrontKind(tt.ping, tt.probe); got != tt.want {

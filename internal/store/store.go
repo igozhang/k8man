@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS host_aliases (
 		return err
 	}
 	_, _ = s.db.Exec(`ALTER TABLE clusters ADD COLUMN front_proxy TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE clusters ADD COLUMN kube_version TEXT NOT NULL DEFAULT ''`)
 	_, err = s.db.Exec(`
 CREATE TABLE IF NOT EXISTS cluster_inspections (
   cluster_id TEXT PRIMARY KEY,
@@ -136,7 +137,7 @@ func parseTime(s string) time.Time {
 // ---- clusters ----
 
 func (s *Store) ListClusters() ([]model.Cluster, error) {
-	rows, err := s.db.Query(`SELECT id,name,description,kubeconfig,perm_type,namespaces,server,status,last_error,front_proxy,created_at,updated_at FROM clusters ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id,name,description,kubeconfig,perm_type,namespaces,server,status,last_error,front_proxy,kube_version,created_at,updated_at FROM clusters ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +159,7 @@ func (s *Store) ListClusters() ([]model.Cluster, error) {
 }
 
 func (s *Store) GetCluster(id string, withKubeconfig bool) (*model.Cluster, error) {
-	row := s.db.QueryRow(`SELECT id,name,description,kubeconfig,perm_type,namespaces,server,status,last_error,front_proxy,created_at,updated_at FROM clusters WHERE id=?`, id)
+	row := s.db.QueryRow(`SELECT id,name,description,kubeconfig,perm_type,namespaces,server,status,last_error,front_proxy,kube_version,created_at,updated_at FROM clusters WHERE id=?`, id)
 	c, err := scanCluster(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -176,7 +177,7 @@ func (s *Store) GetCluster(id string, withKubeconfig bool) (*model.Cluster, erro
 }
 
 func (s *Store) GetClusterByName(name string) (*model.Cluster, error) {
-	row := s.db.QueryRow(`SELECT id,name,description,kubeconfig,perm_type,namespaces,server,status,last_error,front_proxy,created_at,updated_at FROM clusters WHERE name=?`, name)
+	row := s.db.QueryRow(`SELECT id,name,description,kubeconfig,perm_type,namespaces,server,status,last_error,front_proxy,kube_version,created_at,updated_at FROM clusters WHERE name=?`, name)
 	c, err := scanCluster(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -188,15 +189,15 @@ func (s *Store) GetClusterByName(name string) (*model.Cluster, error) {
 }
 
 func (s *Store) CreateCluster(c *model.Cluster) error {
-	_, err := s.db.Exec(`INSERT INTO clusters(id,name,description,kubeconfig,perm_type,namespaces,server,status,last_error,front_proxy,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, c.Name, c.Description, c.Kubeconfig, c.PermType, encodeStrings(c.Namespaces), c.Server, c.Status, c.LastError, c.FrontProxy, fmtTime(c.CreatedAt), fmtTime(c.UpdatedAt))
+	_, err := s.db.Exec(`INSERT INTO clusters(id,name,description,kubeconfig,perm_type,namespaces,server,status,last_error,front_proxy,kube_version,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.ID, c.Name, c.Description, c.Kubeconfig, c.PermType, encodeStrings(c.Namespaces), c.Server, c.Status, c.LastError, c.FrontProxy, c.KubeVersion, fmtTime(c.CreatedAt), fmtTime(c.UpdatedAt))
 	return err
 }
 
 func (s *Store) UpdateCluster(c *model.Cluster) error {
-	_, err := s.db.Exec(`UPDATE clusters SET name=?,description=?,kubeconfig=?,perm_type=?,namespaces=?,server=?,status=?,last_error=?,front_proxy=?,updated_at=? WHERE id=?`,
-		c.Name, c.Description, c.Kubeconfig, c.PermType, encodeStrings(c.Namespaces), c.Server, c.Status, c.LastError, c.FrontProxy, fmtTime(c.UpdatedAt), c.ID)
+	_, err := s.db.Exec(`UPDATE clusters SET name=?,description=?,kubeconfig=?,perm_type=?,namespaces=?,server=?,status=?,last_error=?,front_proxy=?,kube_version=?,updated_at=? WHERE id=?`,
+		c.Name, c.Description, c.Kubeconfig, c.PermType, encodeStrings(c.Namespaces), c.Server, c.Status, c.LastError, c.FrontProxy, c.KubeVersion, fmtTime(c.UpdatedAt), c.ID)
 	return err
 }
 
@@ -219,7 +220,7 @@ type rowScanner interface {
 func scanCluster(r rowScanner) (model.Cluster, error) {
 	var c model.Cluster
 	var ns, created, updated string
-	err := r.Scan(&c.ID, &c.Name, &c.Description, &c.Kubeconfig, &c.PermType, &ns, &c.Server, &c.Status, &c.LastError, &c.FrontProxy, &created, &updated)
+	err := r.Scan(&c.ID, &c.Name, &c.Description, &c.Kubeconfig, &c.PermType, &ns, &c.Server, &c.Status, &c.LastError, &c.FrontProxy, &c.KubeVersion, &created, &updated)
 	if err != nil {
 		return c, err
 	}

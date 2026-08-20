@@ -82,12 +82,14 @@ func applyKubeconfigOptions(raw, serverOverride string, insecureSkipTLS *bool) (
 
 func probeResponse(probe kube.ProbeResult) gin.H {
 	return gin.H{
-		"server":     probe.Server,
-		"permType":   probe.PermType,
-		"namespaces": probe.Namespaces,
-		"status":     probe.Status,
-		"lastError":  probe.LastError,
-		"frontProxy": probe.FrontProxy,
+		"server":      probe.Server,
+		"permType":    probe.PermType,
+		"namespaces":  probe.Namespaces,
+		"status":      probe.Status,
+		"lastError":   probe.LastError,
+		"frontProxy":  probe.FrontProxy,
+		"kubeVersion": probe.KubeVersion,
+		"versionHint": probe.VersionHint,
 	}
 }
 
@@ -201,6 +203,7 @@ func (h *Handler) UpdateCluster(c *gin.Context) {
 		existing.Status = "unknown"
 		existing.LastError = ""
 		existing.FrontProxy = ""
+		existing.KubeVersion = ""
 		h.Pool.Invalidate(id)
 		_ = h.Store.DeleteInspection(id)
 	}
@@ -257,6 +260,7 @@ func (h *Handler) TestCluster(c *gin.Context) {
 	cl.Status = probe.Status
 	cl.LastError = probe.LastError
 	cl.FrontProxy = probe.FrontProxy
+	cl.KubeVersion = probe.KubeVersion
 	cl.UpdatedAt = time.Now().UTC()
 	if err := h.Store.UpdateCluster(cl); err != nil {
 		respond.Internal(c, err.Error())

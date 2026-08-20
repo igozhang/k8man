@@ -85,8 +85,8 @@ func TestProbeNginxHTML404IsGatewayError(t *testing.T) {
 	if strings.Contains(res.LastError, "get namespaces") && !strings.Contains(res.LastError, "前端网关") && !strings.Contains(res.LastError, "外置 nginx") {
 		t.Fatalf("still wrapped as k8s namespaces 404: %q", res.LastError)
 	}
-	if res.FrontProxy != FrontNginx {
-		t.Fatalf("frontProxy=%q want nginx", res.FrontProxy)
+	if res.FrontProxy != FrontNonRancher {
+		t.Fatalf("frontProxy=%q want non-rancher", res.FrontProxy)
 	}
 }
 
@@ -104,8 +104,8 @@ func TestProbeNginxInFrontOfRancherPing(t *testing.T) {
 	if res.Status != "error" {
 		t.Fatalf("want error, got %+v", res)
 	}
-	if res.FrontProxy != FrontNginx {
-		t.Fatalf("frontProxy=%q want nginx (unknown path), not rancher from /ping", res.FrontProxy)
+	if res.FrontProxy != FrontNonRancher {
+		t.Fatalf("frontProxy=%q want non-rancher (unknown path), not rancher from /ping", res.FrontProxy)
 	}
 }
 

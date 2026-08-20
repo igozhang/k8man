@@ -11,6 +11,7 @@ import { formatIssueMessage, issueMessageSuffix, issueTimeLabel, issueInspectBri
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import TextDrawer from '../components/TextDrawer.vue'
+import FilterSelect from '../components/FilterSelect.vue'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 const route = useRoute()
@@ -765,10 +766,13 @@ onUnmounted(() => {
           <button class="tab" :class="{ active: category === 'pod' }" type="button" @click="category = 'pod'">Pod</button>
           <button class="tab" :class="{ active: category === 'event' }" type="button" @click="category = 'event'">事件</button>
         </div>
-        <select v-model="nsFilter">
-          <option value="">全部命名空间</option>
-          <option v-for="n in namespaces" :key="n" :value="n">{{ n }}</option>
-        </select>
+        <FilterSelect
+          v-model="nsFilter"
+          :options="namespaces"
+          empty-label="全部命名空间"
+          placeholder="输入 1–3 个字母筛选命名空间"
+          aria-label="筛选命名空间"
+        />
         <select v-model="severity">
           <option value="">全部严重度</option>
           <option value="critical">严重</option>

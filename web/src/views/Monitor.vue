@@ -15,10 +15,12 @@ import {
   cacheLoad,
   cacheSet,
   cacheInvalidate,
+  notifyInspectionsChanged,
   getViewPref,
   setViewPref
 } from '../utils/resourceCache'
 import InspectionDrawer from '../components/InspectionDrawer.vue'
+import FilterSelect from '../components/FilterSelect.vue'
 
 const INSPECT_KEY = cacheKey('inspections', 'local')
 const BLOCK_LINES = 3
@@ -197,6 +199,7 @@ async function loadInspections({ force = false } = {}) {
     if (!inspectSeq.is(seq)) return
     const fresh = cacheGet(INSPECT_KEY)
     applyInspectList(data, fresh?.at || Date.now())
+    notifyInspectionsChanged()
   } catch (e) {
     if (!inspectSeq.is(seq)) return
     inspectError.value = errMessage(e)
@@ -595,10 +598,13 @@ onMounted(enterPage)
 
       <template v-else-if="tab === 'pods'">
         <div class="toolbar toolbar-start" style="margin-bottom:12px">
-          <select v-model="ns">
-            <option value="">请选择命名空间</option>
-            <option v-for="n in namespaces" :key="n.name" :value="n.name">{{ n.name }}</option>
-          </select>
+          <FilterSelect
+            v-model="ns"
+            :options="namespaces"
+            empty-label="请选择命名空间"
+            placeholder="输入 1–3 个字母筛选命名空间"
+            aria-label="选择命名空间"
+          />
         </div>
         <p v-if="nsLoading" class="muted">加载命名空间列表…</p>
         <div v-else-if="!ns" class="empty">请选择命名空间后再加载 Pod 指标。</div>
