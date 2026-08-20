@@ -1,8 +1,8 @@
 <script setup>
 import { ref, computed, onUnmounted } from 'vue'
 import { asArray } from '../utils/safe'
-import { severityLabel, issueCategoryLabel } from '../utils/labels'
-import { issueMessageSuffix } from '../utils/inspect'
+import { severityLabel, issueCategoryLabel, issueReasonDisplay } from '../utils/labels'
+import { formatIssueMessage, issueMessageSuffix, formatEvidenceLine } from '../utils/inspect'
 import { fmtTime } from '../utils/quantity'
 import { copyText } from '../utils/clipboard'
 
@@ -182,12 +182,12 @@ defineExpose({ open: show, close, update: show, updateLive, setRunning })
           <span class="muted">{{ row.namespace ? `${row.namespace} / ${row.name}` : row.name }}</span>
         </div>
         <p v-if="row.reason || row.message" class="inspect-issue-msg">
-          <template v-if="row.reason">{{ row.reason }}</template>
-          <template v-if="row.reason && row.message">：</template>
-          {{ row.message }}<span v-if="issueMessageSuffix(row)" class="muted">{{ issueMessageSuffix(row) }}</span>
+          <template v-if="row.reason">{{ issueReasonDisplay(row.reason) }}</template>
+          <template v-if="row.reason && formatIssueMessage(row)">：</template>
+          {{ formatIssueMessage(row) }}<span v-if="issueMessageSuffix(row)" class="muted">{{ issueMessageSuffix(row) }}</span>
         </p>
         <ul v-if="asArray(row.evidence).length" class="inspect-evidence">
-          <li v-for="(ev, i) in asArray(row.evidence)" :key="i">{{ ev }}</li>
+          <li v-for="(ev, i) in asArray(row.evidence)" :key="i">{{ formatEvidenceLine(ev) }}</li>
         </ul>
         <div v-if="asArray(row.logExcerpt).length" class="inspect-log-wrap drawer-logs">
           <p class="inspect-log-meta">{{ logSourceSummary(row) }}</p>

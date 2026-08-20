@@ -5,7 +5,7 @@ import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory, fmtTime, mergeNodeUsage } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
 import { asArray, createSeq, errMessage } from '../utils/safe'
-import { severityLabel, issueCategoryLabel } from '../utils/labels'
+import { severityLabel } from '../utils/labels'
 import { issueInspectBrief } from '../utils/inspect'
 import {
   TTL,

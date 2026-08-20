@@ -6,7 +6,8 @@ import { useClusterStore } from '../stores/cluster'
 import { asArray, createSeq, errMessage } from '../utils/safe'
 import { copyText } from '../utils/clipboard'
 import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad } from '../utils/resourceCache'
-import { permTypeLabel } from '../utils/labels'
+import { permTypeLabel, severityLabel, issueCategoryLabel, issueReasonDisplay } from '../utils/labels'
+import { formatIssueMessage, issueMessageSuffix, issueTimeLabel, issueInspectBrief, formatEvidenceLine } from '../utils/inspect'
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import TextDrawer from '../components/TextDrawer.vue'
@@ -125,7 +126,7 @@ function canLogs(row) {
 }
 
 function typeLabel(row) {
-  const cat = categoryLabel(row.category)
+  const cat = issueCategoryLabel(row.category)
   const kind = String(row?.kind || '').trim()
   if (!kind) return cat
   if (row.category === 'pod' && kind.toLowerCase() === 'pod') return 'Pod'
@@ -157,12 +158,14 @@ function sourceTitle(row) {
 
 function explainBrief(row) {
   const parts = []
-  if (row.message) parts.push(String(row.message).trim())
+  const msg = formatIssueMessage(row)
+  const suffix = issueMessageSuffix(row)
+  if (msg || suffix) parts.push(`${msg}${suffix}`.trim())
   const loc = locationLine(row)
   if (loc && row.category !== 'node') parts.push(loc)
   else if (row.category === 'node' && row.nodeIP) parts.push(row.nodeIP)
   const text = parts.filter(Boolean).join(' · ')
-  return text || row.reason || '查看完整说明'
+  return text || issueReasonDisplay(row.reason) || '查看完整说明'
 }
 
 function evidenceList(row) {
@@ -310,23 +313,24 @@ function explainText(row, logsInfo) {
   }
   if (row.container) lines.push(`容器: ${row.container}`)
   if (row.count && Number(row.count) > 1) lines.push(`次数: ${row.count}`)
-  if (row.reason) lines.push(`原因: ${row.reason}`)
+  if (row.reason) lines.push(`原因: ${issueReasonDisplay(row.reason)}`)
   if (row.category === 'event') {
-    if (row.since || row.age) lines.push(`上次: ${row.since || row.age}`)
+    if (row.since || row.age) lines.push(`上次: ${row.since || row.age} 前`)
   } else {
-    if (row.since) lines.push(`持续: ${row.since}`)
-    if (row.age && row.age !== row.since) lines.push(`创建: ${row.age}`)
+    if (row.since) lines.push(`时间: ${issueTimeLabel({ ...row, age: '' })}`)
+    if (row.age && row.age !== row.since) lines.push(`对象创建: ${row.age}`)
   }
-  if (row.message) {
+  const msg = formatIssueMessage(row)
+  if (msg) {
     lines.push('')
     lines.push('内容:')
-    lines.push(row.message)
+    lines.push(msg)
   }
   const evLines = extraEvidence(row)
   if (evLines.length) {
     lines.push('')
     lines.push('补充:')
-    for (const e of evLines) lines.push(`- ${e}`)
+    for (const e of evLines) lines.push(`- ${formatEvidenceLine(e)}`)
   }
   const cmds = kubectlCommands(row, logsInfo)
   if (cmds.length) {
@@ -396,12 +400,8 @@ function showExplain(row) {
     })
 }
 
-function severityLabel(s) {
-  return s === 'critical' ? '严重' : '警告'
-}
-
 function categoryLabel(c) {
-  return { node: '节点', workload: '负载', pod: 'Pod', event: '事件' }[c] || c
+  return issueCategoryLabel(c)
 }
 
 function rowKey(row, idx) {
@@ -464,10 +464,7 @@ function clipSummaryMsg(s, n = 200) {
 }
 
 function issueSummaryLine(row) {
-  const loc = row.namespace ? `${row.namespace}/${row.name}` : row.name
-  const head = `${severityLabel(row.severity)} · ${categoryLabel(row.category)} ${row.kind} ${loc} · ${row.reason}`
-  const msg = clipSummaryMsg(row.message)
-  return msg ? `${head} · ${msg}` : head
+  return clipSummaryMsg(issueInspectBrief(row), 240)
 }
 
 function scanHasError(cat) {
@@ -811,7 +808,7 @@ onUnmounted(() => {
             <td>{{ typeLabel(row) }}</td>
             <td>{{ row.namespace || '—' }}</td>
             <td>{{ row.name }}</td>
-            <td>{{ row.reason }}</td>
+            <td>{{ issueReasonDisplay(row.reason) }}</td>
             <td class="msg">
               <button
                 class="explain-brief"
@@ -822,15 +819,7 @@ onUnmounted(() => {
                 <span class="explain-brief-text">{{ explainBrief(row) }}</span>
               </button>
             </td>
-            <td>
-              <template v-if="row.category === 'event'">
-                上次 {{ row.since || row.age || '—' }}
-              </template>
-              <template v-else>
-                {{ row.since || row.age || '—' }}
-                <span v-if="row.since && row.age && row.since !== row.age" class="muted"> / {{ row.age }}</span>
-              </template>
-            </td>
+            <td>{{ issueTimeLabel(row) }}</td>
             <td class="actions">
               <button v-if="canLogs(row)" class="btn btn-sm" type="button" @click="showLogs(row)">日志</button>
               <button v-if="canYAML(row)" class="btn btn-sm" type="button" @click="openYAML(row)">YAML</button>
