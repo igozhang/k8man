@@ -993,6 +993,21 @@ body.is-drawer-resizing {
 .inspect-box > .toolbar {
   margin-bottom: 8px;
 }
+.inspect-intro {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.inspect-actions {
+  margin-bottom: 8px;
+}
+.inspect-actions .actions {
+  margin-top: 0;
+}
+.inspect-actions select {
+  min-width: 12rem;
+  max-width: min(24rem, 100%);
+}
 .inspect-head {
   display: flex;
   align-items: center;

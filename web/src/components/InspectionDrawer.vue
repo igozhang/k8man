@@ -56,7 +56,7 @@ function emptyHint(d) {
   const st = probeStatusOf(d)
   if (st === 'ok') return '本轮巡检未发现问题。'
   if (st === 'error') return 'kubeconfig 无效，未做诊断扫描。'
-  return d?.summary || '尚未巡检，可对当前集群点「一键巡检」。'
+  return d?.summary || '尚未巡检，请在监控页选择配置后点「一键巡检」。'
 }
 
 onUnmounted(close)

@@ -42,6 +42,7 @@ const inspectItems = ref(asArray(cacheGet(INSPECT_KEY)?.data?.items))
 const inspectLoading = ref(false)
 const inspectError = ref('')
 const inspecting = ref(false)
+const inspectTargetId = ref('')
 const inspectDrawer = ref(null)
 
 const nodesSeq = createSeq()
@@ -191,12 +192,13 @@ async function openInspectDetail(clusterId) {
 }
 
 async function runInspect() {
-  if (!currentClusterId.value || inspecting.value) return
+  const targetId = inspectTargetId.value
+  if (!targetId || inspecting.value) return
   const seq = inspectRunSeq.next()
   inspecting.value = true
   inspectError.value = ''
   try {
-    const data = await writeApi.inspectCluster(currentClusterId.value)
+    const data = await writeApi.inspectCluster(targetId)
     if (!inspectRunSeq.is(seq)) return
     cacheInvalidate(INSPECT_KEY)
     inspectDrawer.value?.open(data)
@@ -432,6 +434,11 @@ watch(ns, (v) => {
     podRefreshing.value = false
   }
 })
+watch(inspectItems, (items) => {
+  if (inspectTargetId.value && !items.some((it) => it.clusterId === inspectTargetId.value)) {
+    inspectTargetId.value = ''
+  }
+})
 onMounted(enterPage)
 </script>
 
@@ -440,7 +447,7 @@ onMounted(enterPage)
   <div>
     <h1>监控</h1>
     <p class="page-desc">
-      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。当前选用集群在 TTL 内复用并合并重复请求；过期后后台更新，不先清空。Pod 指标需选择命名空间。未安装或权限不足时降级提示。页底为全部 kubeconfig 的巡检摘要（约两小时一轮、错开执行）；「一键巡检」只跑当前选用的集群。
+      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。当前选用集群在 TTL 内复用并合并重复请求；过期后后台更新，不先清空。Pod 指标需选择命名空间。未安装或权限不足时降级提示。
     </p>
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
@@ -542,19 +549,30 @@ onMounted(enterPage)
           <strong>巡检</strong>
           <span class="muted inspect-meta">{{ inspectMeta }}</span>
         </div>
+      </div>
+      <p class="inspect-intro muted">
+        对每个 kubeconfig 约 2 小时一轮、错开串行：先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。下方为全部配置摘要（最多 8 条）。改 YAML / API Server / TLS 会清空该配置巡检快照；手动巡检请先选配置再点「一键巡检」。
+      </p>
+      <div class="toolbar toolbar-start inspect-actions">
+        <select v-model="inspectTargetId" aria-label="巡检目标 kubeconfig">
+          <option value="">选择 kubeconfig</option>
+          <option v-for="it in inspectItems" :key="it.clusterId" :value="it.clusterId">
+            {{ it.clusterName }}
+          </option>
+        </select>
         <div class="actions">
           <button
             class="btn btn-sm"
             type="button"
-            :disabled="!currentClusterId || inspecting"
-            :title="currentClusterId ? '对当前选用集群立即巡检' : '请先选择集群'"
+            :disabled="!inspectTargetId || inspecting"
+            :title="inspectTargetId ? '对所选配置立即巡检' : '请先选择 kubeconfig'"
             @click="runInspect"
           >{{ inspecting ? '巡检中…' : '一键巡检' }}</button>
           <button
             class="btn btn-sm"
             type="button"
-            :disabled="!currentClusterId && !inspectLines.length"
-            @click="openInspectDetail(currentClusterId || inspectVisible[0]?.clusterId)"
+            :disabled="!inspectTargetId && !inspectLines.length"
+            @click="openInspectDetail(inspectTargetId || inspectVisible[0]?.clusterId)"
           >详情</button>
         </div>
       </div>
@@ -562,7 +580,7 @@ onMounted(enterPage)
       <p v-if="inspectLoading && !inspectItems.length" class="muted">加载巡检结果…</p>
       <div v-else-if="!inspectItems.length && !inspectError" class="muted">暂无已导入的 kubeconfig。</div>
       <div v-else-if="!inspectLines.length && inspectItems.length" class="muted">
-        {{ inspectHasRun ? '全部配置巡检正常。' : '尚未巡检。后台约两小时一轮，也可对当前集群一键巡检。' }}
+        {{ inspectHasRun ? '全部配置巡检正常。' : '尚未巡检。后台约两小时一轮，也可选择配置后一键巡检。' }}
       </div>
       <template v-else-if="inspectLines.length">
         <ul class="inspect-lines">
