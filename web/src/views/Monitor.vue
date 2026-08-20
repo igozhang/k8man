@@ -229,22 +229,6 @@ function resetView() {
   tab.value = ''
   error.value = ''
 }
-  nodesSeq.bump()
-  podsSeq.bump()
-  nodeRows.value = []
-  podMetrics.value = []
-  nodeTip.value = ''
-  podTip.value = ''
-  nodeLoading.value = false
-  nodeRefreshing.value = false
-  podLoading.value = false
-  podRefreshing.value = false
-  nsLoading.value = false
-  namespaces.value = []
-  ns.value = ''
-  tab.value = ''
-  error.value = ''
-}
 
 function applyMonitorPref() {
   const pref = getViewPref('monitor', currentClusterId.value)
