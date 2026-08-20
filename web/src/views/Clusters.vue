@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, nextTick, onUnmounted, computed } from 'vue'
+import { ref, onMounted, nextTick, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
@@ -87,8 +87,17 @@ function scheduleFormHostSuggest() {
   formHostSuggestTimer = setTimeout(() => {
     formHostSuggestTimer = null
     refreshFormHostSuggest()
-  }, 400)
+  }, 150)
 }
+
+watch(
+  () => [showForm.value, form.value.kubeconfig, form.value.serverOverride],
+  () => {
+    if (!showForm.value) return
+    scheduleFormHostSuggest()
+  },
+  { flush: 'post' }
+)
 
 /** 从 kubeconfig 提取 API 域名，预填「10.10.10.10 域名」供手动改 IP */
 function refreshFormHostSuggest() {
@@ -123,8 +132,13 @@ function onFormHostInput() {
   }
 }
 
-function onServerOverrideInput() {
-  scheduleFormHostSuggest()
+function isFormHostPlaceholderLine(line) {
+  const parsed = parseHostLine(line)
+  return !!parsed && parsed.ip === FORM_HOST_DEFAULT_IP
+}
+
+function formHostPlaceholderError() {
+  return `请将占位 IP ${FORM_HOST_DEFAULT_IP} 改为本机 ping 得到的实际地址后再添加`
 }
 
 function emptyForm() {
@@ -253,6 +267,10 @@ async function persistHostLine(raw, { clearInputRef = null } = {}) {
 
 async function addFormHost() {
   if (!formHostLine.value.trim()) return
+  if (isFormHostPlaceholderLine(formHostLine.value)) {
+    formHostError.value = formHostPlaceholderError()
+    return
+  }
   formHostError.value = ''
   hostBusy.value = true
   try {
@@ -273,6 +291,10 @@ async function addFormHost() {
 /** 测试/导入前：若填写了 hosts 行则先写入（未点「添加」也生效） */
 async function ensureFormHostApplied() {
   if (!formHostLine.value.trim()) return true
+  if (isFormHostPlaceholderLine(formHostLine.value)) {
+    formHostError.value = formHostPlaceholderError()
+    return false
+  }
   formHostError.value = ''
   hostBusy.value = true
   try {
@@ -338,6 +360,7 @@ function closeForm() {
   formMode.value = 'create'
   editingId.value = ''
   formLoading.value = false
+  formTesting.value = false
   formError.value = ''
   formNotice.value = ''
   formHostLine.value = ''
@@ -365,6 +388,7 @@ function openCreate() {
   formError.value = ''
   formNotice.value = ''
   formLoading.value = false
+  formTesting.value = false
   formHostLine.value = ''
   formHostError.value = ''
   resetFormHostSuggest()
@@ -405,6 +429,7 @@ async function openEdit(c) {
   formHostError.value = ''
   resetFormHostSuggest()
   formLoading.value = true
+  formTesting.value = false
   showForm.value = true
   try {
     const detail = await readApi.getCluster(c.id)
@@ -457,7 +482,10 @@ function onKubeconfigInput() {
     const suggested = suggestNameFromKubeconfig(form.value.kubeconfig)
     if (suggested) form.value.name = suggested
   }
-  scheduleFormHostSuggest()
+}
+
+function onKubeconfigPaste() {
+  nextTick(() => refreshFormHostSuggest())
 }
 
 function onFileChange(e) {
@@ -839,12 +867,12 @@ onUnmounted(() => {
         <div class="actions">
           <button
             class="btn btn-primary btn-sm"
-            :disabled="busy || formLoading || formTesting || !!testingId || hostBusy"
+            :disabled="busy || formLoading || formTesting || hostBusy"
             @click="save"
           >{{ busy ? '保存中…' : (formMode === 'create' ? '导入' : '保存') }}</button>
           <button
             class="btn btn-sm"
-            :disabled="busy || formLoading || formTesting || !!testingId || hostBusy"
+            :disabled="busy || formLoading || formTesting || hostBusy || !form.kubeconfig.trim()"
             @click="testForm"
           >{{ formTesting ? '测试中…' : '测试' }}</button>
           <button class="btn btn-sm" :disabled="busy || formTesting" @click="requestClose">关闭</button>
@@ -891,6 +919,7 @@ onUnmounted(() => {
             :placeholder="formLoading ? '正在加载已保存的 kubeconfig…' : '粘贴 kubeconfig YAML 内容'"
             :disabled="formLoading"
             @input="onKubeconfigInput"
+            @paste="onKubeconfigPaste"
           ></textarea>
           <button
             v-if="form.kubeconfig"
@@ -930,7 +959,7 @@ onUnmounted(() => {
           type="text"
           :placeholder="formMode === 'edit' ? '当前 kubeconfig 内 server' : '留空则使用 kubeconfig 内 server'"
           :disabled="formLoading"
-          @input="onServerOverrideInput"
+          @input="scheduleFormHostSuggest"
         />
       </div>
 

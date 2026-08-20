@@ -6,6 +6,10 @@ function unquote(s) {
   return t
 }
 
+function normalizeKubeconfigText(text) {
+  return String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+}
+
 /** Lightweight kubeconfig parse: clusters/contexts/current-context only. */
 export function parseKubeconfigLite(text) {
   const clusters = new Map()
@@ -30,7 +34,7 @@ export function parseKubeconfigLite(text) {
     contextName = ''
   }
 
-  const lines = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  const lines = normalizeKubeconfigText(text).split('\n')
   for (const rawLine of lines) {
     const t = rawLine.trim()
     if (!t || t.startsWith('#')) continue
@@ -46,6 +50,14 @@ export function parseKubeconfigLite(text) {
       } else if (t === 'contexts:') {
         section = 'contexts'
       } else if (t === 'users:') {
+        if (section === 'clusters') flushCluster()
+        if (section === 'contexts') flushContext()
+        section = ''
+      } else if (
+        t.startsWith('apiVersion:')
+        || t.startsWith('kind:')
+        || t.startsWith('preferences:')
+      ) {
         if (section === 'clusters') flushCluster()
         if (section === 'contexts') flushContext()
         section = ''
@@ -83,8 +95,9 @@ export function parseKubeconfigLite(text) {
 
 /** Mirrors backend SuggestServerFromKubeconfig. */
 export function suggestServerFromKubeconfig(text) {
-  if (!String(text || '').trim()) return ''
-  const { clusters, contexts, currentContext } = parseKubeconfigLite(text)
+  const raw = normalizeKubeconfigText(text)
+  if (!raw.trim()) return ''
+  const { clusters, contexts, currentContext } = parseKubeconfigLite(raw)
 
   let ctxName = currentContext
   if (!ctxName) {
@@ -100,7 +113,8 @@ export function suggestServerFromKubeconfig(text) {
   for (const server of clusters.values()) {
     if (server) return server
   }
-  return ''
+  const m = raw.match(/^\s*server:\s*(\S+)/m)
+  return m?.[1] ? unquote(m[1]) : ''
 }
 
 export function hostnameFromServerURL(server) {
