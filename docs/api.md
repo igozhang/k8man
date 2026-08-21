@@ -10,7 +10,7 @@
 
 ## UI
 
-- `GET /api/v1/read/ui` — 页眉品牌名（`title`）、slogan（`tagline`）、是否有自定义 icon / banner（读 `etc/k8man.conf`）
+- `GET /api/v1/read/ui` — 页眉品牌名（`title`）、是否有自定义 icon / banner（读 `etc/k8man.conf`）。站名下方 slogan 固定为 `practice makes perfect`，不在此接口返回。
 - `GET /icon`、`GET /favicon.ico` — 站点图标（`etc` 下 `icon.jpg` / `icon.png` 优先，否则返回内置马里奥风格数字 8）
 - `GET /banner` — 头部 banner 图片（`etc` 下有图则返回，否则 404）
 
@@ -24,7 +24,7 @@
 | GET | `/clusters/:id` | 集群详情；**含** kubeconfig 原文仅当请求带有效写 token，否则省略（供编辑回填） |
 | GET | `/clusters/:id/namespaces` | Namespace 列表（List 首页 `resourceVersion=0` 走 API Server watch cache） |
 | GET | `/clusters/:id/nodes` | 节点列表（project 返回 403；同样走 watch cache） |
-| GET | `/clusters/:id/diagnose?namespace=` | 诊断扫描，只返回异常项（见下方） |
+| GET | `/clusters/:id/diagnose?namespace=` | 诊断扫描，只返回仍成立的问题（含 Ready Pod 的 Restarts，见下方） |
 | GET | `/inspections` | 全部集群最新巡检摘要（见「巡检」） |
 | GET | `/inspections/:clusterId` | 该集群本轮完整巡检报告 |
 
@@ -58,7 +58,7 @@
 
 `GET /clusters/:id/diagnose?namespace=`
 
-并行扫描节点（project 跳过）、Deployment / StatefulSet / DaemonSet、Pod、近期 `type=Warning` 事件。`namespace` 为空则优先集群级 List（首页 `resourceVersion=0` 走 API Server watch cache）；仅 403 时才回退按命名空间拉取。某一类失败不阻断其它类，写入 `errors`。
+并行扫描节点（project 跳过）、Deployment / StatefulSet / DaemonSet、Pod、近期 `type=Warning` 事件。`namespace` 为空则优先集群级 List（首页 `resourceVersion=0` 走 API Server watch cache）；仅 403 时才回退按命名空间拉取。某一类失败不阻断其它类，写入 `errors`。只返回仍成立的问题（含 Ready Pod 的 Restarts）。
 
 为降低对 API Server / etcd 的压力：Pod 带 `status.phase!=Succeeded` 过滤已完成 Job；事件最多 80 条；指标单独 5s 超时，失败则跳过用量告警。Warning 事件优先挂到已发现的异常 `evidence` 上，未匹配的才作为独立 `event` 行。
 
@@ -106,18 +106,18 @@
 }
 ```
 
-- `severity`：`critical`（严重）/ `error`（错误）/ `warning`（警告）/ `info`（提示）。基线由对象当前状态决定；连续成立满 30 天降 1 级、满 60 天再降 1 级，最低 `info`。`baseSeverity` 为降级前级别，`sinceAt` 为问题首次成立时间（RFC3339）。kubeconfig、节点用量/压力、Restarts、独立事件不降级；节点 NotReady 在集群过半未就绪时不降；CrashLoop/OOM 与系统命名空间最低 `error`。`Evicted` / `Shutdown` 等已被 kubelet 清掉的 Failed 残留不列入结果
+- `severity`：`critical`（严重）/ `error`（错误）/ `warning`（警告）/ `info`（提示）。基线由对象当前状态决定；连续成立满 30 天降 1 级、满 60 天再降 1 级，最低 `info`。`baseSeverity` 为降级前级别。例如普通命名空间的 ImagePullBackOff 满 60 天可收敛为警告；系统命名空间最多降 1 级且不低于错误，不会落到警告/提示。kubeconfig、节点用量/压力、Restarts、独立事件不降级；节点 NotReady 在集群过半未就绪时不降；CrashLoop/OOM 与系统命名空间（kube-system / kube-public / kube-node-lease / istio-system / istio-operator / cattle-* / calico-*）最低 `error`，且不会把警告抬成错误。Restarts 满 30 天从结果消失，不会变成 `info`。`Evicted` / `Shutdown` 等已被 kubelet 清掉的 Failed 残留不列入结果
 - `category`：`node` / `workload` / `pod` / `event`
 - `node` / `nodeIP`：所在节点名与节点 IP。Pod 来自 `spec.nodeName` / `status.hostIP`；Warning 事件优先取 `Event.source.host`，再用已扫描 Pod/Node 补 IP
 - `reporter` / `count`：事件上报组件（kubelet 等）与发生次数
-- `since`：异常条件持续时长（如 Ready=False 的 LastTransitionTime）；`age` 仍为对象创建时长
+- `since` / `sinceAt`：Restarts 为上次异常退出；独立事件为最近出现；其余为条件首次成立时间（RFC3339，与降级时钟同源）。`age` 仍为对象创建时长
 - `logPath`：节点上 kubelet 日志文件路径（`/var/log/pods/<ns>_<pod>_<uid>/<container>/<n>.log`）
 - `logSource`：`previous`/`current`、容器名、tail 行数；CrashLoop/OOM 优先上一份日志
 - `logExcerpt`：关键行 ±1 行有限上下文（最多 8 行）；排序后优先 CrashLoop/OOM，最多 8 个严重 Pod；ImagePull / Evicted 等无容器日志的不拉，接口失败也不把错误写进摘录
 - `scan`：本轮实际列出的对象数、耗时；`logsFetched` 为实际拉到的日志摘录份数；`fromCache=true` 表示 List 首页走 watch cache；`metricsSkipped` 表示节点指标未采集（用量异常无法判断）
 - Warning 事件先最多取 500 条再按时间留 80 条，并优先挂到已发现异常的 `evidence`
-- `evidence` 前部可含 `restart[1..3]`：尽力列出最近三次重启时间与原因。`status.lastState` 只保留上次退出；更早次数来自 Warning 的 Killing / BackOff（常被聚合成一条）。凑不满 3 条时带 `restartNote`。控制器行另可有 `selector=`，用于对照下属 Pod
-- 控制器副本已 Ready、但下属 Pod 近 2h 仍 CrashLoop / OOM / 累计重启 ≥ 3 时，会多一行 `category=workload` `reason=Restarts`；已有 NotReady 则只挂证据、不另占行。滚动宽限期内不单独占控制器 Restarts 行
+- `evidence` 前部可含 `restart[1..3]`：尽力列出最近三次**异常退出**。`status.lastState` 只保留上次退出；更早次数来自 Warning 的 Killing / BackOff（常被聚合成一条）。Completed / exit=0 不列入。凑不满 3 条时带 `restartNote`。控制器 NotReady 行另可有 `selector=`，用于对照下属 Pod
+- Restarts 只报 Pod：当前 Ready；计入次数 ≥ 3（容器 `restartCount`，上次退出若 Completed / Success / exit=0 则该容器按 0）且上次异常退出在 30 天内。上次超过 30 天或计入不足 3 不占行；上次退出时间缺失时只要计入 ≥ 3 仍占行。控制器已 Ready 时不另占负载行；已有 NotReady 时只把重启时间线挂到该行说明。说明里的「近 2h 内有/无重启」与「计入重启 N 次」分别描述近 2 小时与计入次数，占行门槛仍是 30 天
 - `skippedNodes`：`project` kubeconfig 为 `true`
 - `truncated`：扫描或结果达到上限（每类最多 200 条，事件最多 80 条）
 - `errors`：可选，某类扫描失败信息（如 `{"pods":"..."}`）
@@ -167,7 +167,7 @@
 
 每轮复用现有逻辑：先 `Probe`（与「测试」相同，并回写 `status` / `permType` / `namespaces` / `server` / `lastError` / `frontProxy`）；失败则记 kubeconfig 无效，不再跑诊断。成功则跑 `Diagnose`（节点/负载/Pod/事件，含节点 CPU/内存 ≥90%；project 跳过节点）。每集群只保留最近一轮。进程退出或请求取消时不落库。改 kubeconfig / API Server / TLS 会删除该集群巡检记录，按尚未巡检重新排队。
 
-监控页底部按集群分块展示异常摘要（每块最多 3 条预览，带缓存时间；点击块打开抽屉）。「一键巡检」与「详情」对路径指定集群执行 `POST /clusters/:id/inspect`（`force`，先可展示 `GET /inspections/:id` 缓存，再实时 Probe + 诊断并更新）。
+监控页底部按集群分块展示问题摘要（每块最多 3 条预览，只含严重/错误/警告；仅有提示时 summary 为「N 提示」、不当故障刷块）。定级与诊断页相同（含 Restarts）。「一键巡检」与「详情」对路径指定集群执行 `POST /clusters/:id/inspect`（`force`，先可展示 `GET /inspections/:id` 缓存，再实时 Probe + 诊断并更新）。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -208,7 +208,7 @@
 }
 ```
 
-`preview` 为该集群按严重度排序后的最多 8 条。详情接口另含 `probe`、`diagnose`（完整诊断报告）与 `issues`（本轮全部异常；kubeconfig 失败时为一条 `category=kubeconfig`）。
+`preview` 为该集群按严重度排序后的最多 8 条，**不含** `info`。`summary` 在仅有提示时为「N 提示」，有严重/错误/警告时省略提示计数。详情接口另含 `probe`、`diagnose`（完整诊断报告）与 `issues`（本轮全部问题，含提示；kubeconfig 失败时为一条 `category=kubeconfig`）。
 
 ### 文档
 

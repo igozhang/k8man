@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-func TestDefaultTagline(t *testing.T) {
+func TestFixedTagline(t *testing.T) {
 	ui := uiFromVals(map[string]string{"title": "demo"})
-	if ui.Tagline != defaultTagline {
-		t.Fatalf("tagline=%q want %q", ui.Tagline, defaultTagline)
+	if ui.Tagline != FixedTagline {
+		t.Fatalf("tagline=%q want %q", ui.Tagline, FixedTagline)
 	}
 	ui = uiFromVals(map[string]string{"tagline": "custom slogan"})
-	if ui.Tagline != "custom slogan" {
-		t.Fatalf("tagline=%q", ui.Tagline)
+	if ui.Tagline != FixedTagline {
+		t.Fatalf("tagline must ignore conf: %q", ui.Tagline)
 	}
 }
 

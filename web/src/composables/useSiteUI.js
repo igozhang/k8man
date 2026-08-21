@@ -10,7 +10,6 @@ const cachedUI = cacheGet(UI_KEY)?.data
 
 const ui = ref({
   title: cachedUI?.title || DEFAULT_SITE_TITLE,
-  tagline: cachedUI?.tagline || 'practice makes perfect',
   hasBanner: !!cachedUI?.hasBanner,
   bannerUrl: cachedUI?.bannerUrl || '/banner',
   iconUrl: cachedUI?.iconUrl || '/icon',
@@ -35,7 +34,6 @@ function applyUI(data, { refreshMedia = false } = {}) {
   if (!data) return
   ui.value = {
     title: data.title || ui.value.title,
-    tagline: data.tagline || 'practice makes perfect',
     hasBanner: !!data.hasBanner,
     bannerUrl: data.bannerUrl || '/banner',
     iconUrl: data.iconUrl || '/icon',

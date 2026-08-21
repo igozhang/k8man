@@ -33,7 +33,7 @@ go run ./cmd/server
 | `K8MAN_DB_PATH` | `$DATA_DIR/k8man.db` | SQLite 路径 |
 | `K8MAN_ETC_DIR` | `./etc` | 配置与可选自有 icon / banner 目录（容器内 `/etc/k8man`） |
 
-`etc/k8man.conf`：头部为生效配置，尾部为说明与示例（含巡检行为）；缺失或无效时启动自动生成。`title` / `tagline` 分别为页眉左侧品牌名（兼浏览器标签页标题）与站名下方 slogan（默认 `practice makes perfect`）。将自有 `icon.jpg` / `icon.png` 放入 `etc` 即作为 favicon 与页眉图标；无文件则使用内置马里奥风格（红白蓝）数字 8。将自有 `banner.jpg`（或 png/webp/gif）放入 `etc` 即启用头部 banner；无文件则默认浅青面板风格（配色/布局参考同类站点，不使用外部 banner 图）。
+`etc/k8man.conf`：头部为生效配置，尾部为说明与示例（含巡检行为）；缺失或无效时启动自动生成。`title` 为页眉左侧品牌名（兼浏览器标签页标题）。站名下方 slogan 固定为 `practice makes perfect`（不可配置；双击复制 igokey）。将自有 `icon.jpg` / `icon.png` 放入 `etc` 即作为 favicon 与页眉图标；无文件则使用内置马里奥风格（红白蓝）数字 8。将自有 `banner.jpg`（或 png/webp/gif）放入 `etc` 即启用头部 banner；无文件则默认浅青面板风格（配色/布局参考同类站点，不使用外部 banner 图）。
 
 ### 前端（开发）
 
@@ -72,7 +72,7 @@ npm run dev   # Vite 代理 /api -> :8080
 
 每轮先做与页面「测试」相同的 Probe（并回写状态），成功再跑诊断扫描（节点/负载/Pod/事件；project 凭证跳过节点）。进程退出或请求取消时不落库。
 
-「监控」页底部展示全部配置的问题摘要（有异常的集群独立成块，每块最多约 3 行预览，带缓存时间；点击块在抽屉查看详情）。**一键巡检**与**详情**均对所选 kubeconfig 执行：先展示缓存快照（若有）并立即触发实时巡检，完成后更新。
+「监控」页底部展示全部配置的问题摘要（有严重/错误/警告的集群独立成块，每块最多约 3 行预览；仅有提示时不刷块，摘要写「N 提示」）。**一键巡检**与**详情**均对所选 kubeconfig 执行：先展示缓存快照（若有）并立即触发实时巡检，完成后更新。定级与 Restarts 规则与诊断页相同。
 
 ## 目录说明
 

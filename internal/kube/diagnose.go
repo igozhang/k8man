@@ -27,10 +27,10 @@ const (
 	diagnosePendingOther = 15 * time.Minute
 	diagnoseRestartWarn  = int32(3)
 	diagnoseRestartMax   = 3
-	// 回看窗口：mixin 用 for:15m 防值班误叫；诊断页是复盘，2h 内重启/事件仍要看。
+	// 回看窗口：说明里写「近 2h 有/无重启」、独立事件是否成行。不是 Restarts 占行门槛。
 	diagnoseRestartRecent = 2 * time.Hour
-	// 历史展示窗口：2h 外但 60d 内仍保留最近一次时间，避免把很老的累计重启刷成当前问题。
-	diagnoseRestartDetail = 60 * 24 * time.Hour
+	// Restarts 占行窗口：上次异常退出超过 30d 不再独立占行（不走降级，直接从列表消失）。
+	diagnoseRestartDetail = 30 * 24 * time.Hour
 	diagnoseRestartDedup  = 2 * time.Minute
 	diagnoseEventFresh    = 2 * time.Hour
 	// 防误报等待：滚动缺口、普通 Pending 仍用 15m，拉长到 2h 会把卡住的发布瞒掉。
@@ -110,7 +110,7 @@ type DiagnoseScan struct {
 	MetricsSkipped string `json:"metricsSkipped,omitempty"`
 }
 
-// DiagnoseReport is the diagnose API payload: anomalies only.
+// DiagnoseReport is the diagnose API payload: standing problems only.
 type DiagnoseReport struct {
 	Issues       []Issue           `json:"issues"`
 	Counts       DiagnoseCounts    `json:"counts"`
@@ -133,7 +133,7 @@ func shouldScanNodes(permType string) bool {
 	return permType != "project"
 }
 
-// Diagnose scans nodes, workloads, pods and Warning events and returns only problems.
+// Diagnose scans nodes, workloads, pods and Warning events and returns only standing problems.
 func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseReport, error) {
 	if opt.Now.IsZero() {
 		opt.Now = time.Now()
@@ -538,13 +538,10 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 		return issue("warning", reason, msg, since)
 	}
 
-	var restarts int32
-	for _, cs := range p.Status.ContainerStatuses {
-		restarts += cs.RestartCount
-	}
+	restarts := podAlertRestartCount(p)
 	if restarts >= diagnoseRestartWarn {
 		last := lastRestartAt(p)
-		// restartCount 是生命周期累计；超过 60d 的旧重启不再刷成当前问题。
+		// restartCount 是生命周期累计；Completed/exit=0 已剔除；超过 30d 的旧异常退出不再占行。
 		if !last.IsZero() && now.Sub(last) > diagnoseRestartDetail {
 			return nil
 		}
@@ -1342,13 +1339,27 @@ func containerFact(cs corev1.ContainerStatus, init bool, now time.Time) string {
 }
 
 func lastRestartAt(p corev1.Pod) time.Time {
-	latest := lastContainerChange(p)
+	var latest time.Time
+	consider := func(t *corev1.ContainerStateTerminated) {
+		if t == nil || t.FinishedAt.IsZero() || terminationBenign(t) {
+			return
+		}
+		if t.FinishedAt.After(latest) {
+			latest = t.FinishedAt.Time
+		}
+	}
+	for _, group := range [][]corev1.ContainerStatus{p.Status.InitContainerStatuses, p.Status.ContainerStatuses} {
+		for _, cs := range group {
+			consider(cs.State.Terminated)
+			consider(cs.LastTerminationState.Terminated)
+		}
+	}
 	if !latest.IsZero() {
 		return latest
 	}
 	for _, group := range [][]corev1.ContainerStatus{p.Status.InitContainerStatuses, p.Status.ContainerStatuses} {
 		for _, cs := range group {
-			if cs.RestartCount <= 0 {
+			if containerAlertRestartCount(cs) <= 0 {
 				continue
 			}
 			if r := cs.State.Running; r != nil && !r.StartedAt.IsZero() && r.StartedAt.After(latest) {
@@ -1359,28 +1370,49 @@ func lastRestartAt(p corev1.Pod) time.Time {
 	return latest
 }
 
-func lastContainerChange(p corev1.Pod) time.Time {
-	var latest time.Time
-	consider := func(cs corev1.ContainerStatus) {
-		if t := cs.State.Terminated; t != nil && t.FinishedAt.After(latest) {
-			latest = t.FinishedAt.Time
-		}
-		if t := cs.LastTerminationState.Terminated; t != nil && t.FinishedAt.After(latest) {
-			latest = t.FinishedAt.Time
-		}
-		if w := cs.State.Waiting; w != nil && cs.LastTerminationState.Terminated != nil {
-			if t := cs.LastTerminationState.Terminated.FinishedAt; t.After(latest) {
-				latest = t.Time
-			}
-		}
-	}
-	for _, cs := range p.Status.InitContainerStatuses {
-		consider(cs)
-	}
+func podAlertRestartCount(p corev1.Pod) int32 {
+	var n int32
 	for _, cs := range p.Status.ContainerStatuses {
-		consider(cs)
+		n += containerAlertRestartCount(cs)
 	}
-	return latest
+	return n
+}
+
+func containerAlertRestartCount(cs corev1.ContainerStatus) int32 {
+	if t := latestContainerTermination(cs); terminationBenign(t) {
+		return 0
+	}
+	return cs.RestartCount
+}
+
+func latestContainerTermination(cs corev1.ContainerStatus) *corev1.ContainerStateTerminated {
+	cur := cs.State.Terminated
+	last := cs.LastTerminationState.Terminated
+	switch {
+	case cur == nil:
+		return last
+	case last == nil:
+		return cur
+	case last.FinishedAt.After(cur.FinishedAt.Time):
+		return last
+	default:
+		return cur
+	}
+}
+
+func terminationBenign(t *corev1.ContainerStateTerminated) bool {
+	if t == nil {
+		return false
+	}
+	if t.ExitCode == 0 {
+		return true
+	}
+	switch t.Reason {
+	case "Completed", "Success":
+		return true
+	default:
+		return false
+	}
 }
 
 func conditionTime(p corev1.Pod, t corev1.PodConditionType) time.Time {
@@ -1810,21 +1842,18 @@ func (c *Clients) scanWorkloads(ctx context.Context, opt DiagnoseOptions, addSca
 	for _, d := range deps {
 		issues = append(issues, diagnoseDeployment(d, opt.Now)...)
 		if r, ok := newWorkloadRef("Deployment", d.Namespace, d.Name, d.CreationTimestamp.Time, d.Spec.Selector); ok {
-			r.RolloutRecent = deploymentRolloutRecent(d, opt.Now)
 			refs = append(refs, r)
 		}
 	}
 	for _, s := range sts {
 		issues = append(issues, diagnoseStatefulSet(s, opt.Now)...)
 		if r, ok := newWorkloadRef("StatefulSet", s.Namespace, s.Name, s.CreationTimestamp.Time, s.Spec.Selector); ok {
-			r.RolloutRecent = statefulSetRolloutRecent(s, opt.Now)
 			refs = append(refs, r)
 		}
 	}
 	for _, ds := range dss {
 		issues = append(issues, diagnoseDaemonSet(ds, opt.Now)...)
 		if r, ok := newWorkloadRef("DaemonSet", ds.Namespace, ds.Name, ds.CreationTimestamp.Time, ds.Spec.Selector); ok {
-			r.RolloutRecent = daemonSetRolloutRecent(ds, opt.Now)
 			refs = append(refs, r)
 		}
 	}

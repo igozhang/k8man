@@ -20,6 +20,7 @@ import {
   setViewPref
 } from '../utils/resourceCache'
 import InspectionDrawer from '../components/InspectionDrawer.vue'
+import InspectRules from '../components/InspectRules.vue'
 import FilterSelect from '../components/FilterSelect.vue'
 import { canWrite } from '../stores/opsAuth'
 
@@ -84,7 +85,8 @@ const inspectIssueBlocks = computed(() => {
     const errorN = Number(it.error) || 0
     const warning = Number(it.warning) || 0
     if (!critical && !errorN && !warning) continue
-    const sorted = sortedPreviewIssues(it.preview)
+    // 提示不当故障刷：卡片与预览只看严重/错误/警告（服务端 preview 也会跳过 info）
+    const sorted = sortedPreviewIssues(it.preview).filter((iss) => iss?.severity !== 'info')
     const lines = sorted.slice(0, BLOCK_LINES).map((iss) => ({
       ...iss,
       clusterId: it.clusterId,
@@ -674,7 +676,7 @@ onMounted(enterPage)
         </div>
       </div>
       <p class="inspect-intro muted">
-        对每个 kubeconfig 约 2 小时一轮、错开串行：先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。下方按集群分块展示异常摘要（每块最多 3 条，带缓存时间）；点击块在右侧抽屉查看该配置详情<template v-if="canWrite">并触发实时巡检</template>。
+        对每个 kubeconfig 约 2 小时一轮、错开串行：先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。定级与「诊断」页相同（含 Restarts）。下方按集群分块展示摘要（每块最多 3 条，只含严重/错误/警告；仅有提示时不单独成块）；点击块在右侧抽屉查看该配置详情<template v-if="canWrite">并触发实时巡检</template>。
       </p>
       <div class="toolbar toolbar-start inspect-actions">
         <select v-model="inspectTargetId" aria-label="巡检目标 kubeconfig">
@@ -704,7 +706,9 @@ onMounted(enterPage)
       <p v-if="inspectLoading && !inspectItems.length" class="muted">加载巡检结果…</p>
       <div v-else-if="!inspectItems.length && !inspectError" class="muted">暂无已导入的 kubeconfig。</div>
       <div v-else-if="!inspectIssueBlocks.length && inspectItems.length" class="muted">
-        {{ inspectHasRun ? '全部配置巡检正常。' : (canWrite ? '尚未巡检。后台约两小时一轮，也可选择配置后一键巡检。' : '尚未巡检。后台约两小时一轮。') }}
+        <template v-if="!inspectHasRun">{{ canWrite ? '尚未巡检。后台约两小时一轮，也可选择配置后一键巡检。' : '尚未巡检。后台约两小时一轮。' }}</template>
+        <template v-else-if="inspectCounts.info">无严重 / 错误 / 警告；仅有 {{ inspectCounts.info }} 提示（不当故障刷，点「详情」可看）。</template>
+        <template v-else>全部配置巡检正常。</template>
       </div>
       <div v-else-if="inspectIssueBlocks.length" class="inspect-cluster-blocks">
         <article
@@ -740,32 +744,7 @@ onMounted(enterPage)
         </article>
       </div>
 
-      <details class="inspect-rules" open>
-        <summary>基线与降级机制</summary>
-        <p class="inspect-rules-lead">巡检与诊断共用同一套定级。卡片和摘要看的是降级后的级别；提示不把集群刷成着火。</p>
-        <h3>四级</h3>
-        <ul>
-          <li>严重：集群或负载整体不可用，应立刻看。</li>
-          <li>错误：明确故障但未全挂，本周要处理。</li>
-          <li>警告：降级、压力、长期无人管的死问题。</li>
-          <li>提示：只留底，不当故障刷；摘要在仅有提示时写「N 提示」。</li>
-        </ul>
-        <h3>基线（刚出现、未降级）</h3>
-        <ul>
-          <li>严重：kubeconfig 不通；节点 Ready≠True；负载 ready=0；Pod CrashLoop / ImagePull / CreateContainerError / OOMKilled / Failed（排除 Evicted 等残留）。</li>
-          <li>错误：负载 0&lt;ready&lt;desired；节点 Disk/Memory/PID/Network 压力；Pod Running 未就绪或 Unknown；Pending Unschedulable 超过 2 分钟。</li>
-          <li>警告：CPU/内存 ≥ 90%；DaemonSet 仅 misscheduled；其它 Pending 超过 15 分钟；Restarts；独立成行的调度/挂载失败。</li>
-          <li>提示：不是新的事件类型，只作为降级终点。</li>
-        </ul>
-        <h3>降级</h3>
-        <ul>
-          <li>问题连续成立满 30 天降 1 级，满 60 天再降 1 级，最低到提示。时钟用条件首次成立时间，不跟每次重启刷新。</li>
-          <li>例如 ImagePullBackOff 基线是严重，满 60 天收敛为警告。</li>
-          <li>不降级：kubeconfig、节点 CPU/内存用量、节点压力、Restarts、独立事件。</li>
-          <li>节点 NotReady 要降；Ready 节点为 0 或未就绪 ≥ 半数时整组不降。</li>
-          <li>仍在 CrashLoop / OOM 的，降级下限是错误。kube-system / cattle-* / calico-* / istio-system 最多降 1 级且不低于错误（不会把警告抬成错误）。</li>
-        </ul>
-      </details>
+      <InspectRules class="is-split" title="基线与降级机制" />
     </section>
     <InspectionDrawer ref="inspectDrawer" />
   </div>

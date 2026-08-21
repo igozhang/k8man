@@ -3,6 +3,10 @@ import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useSiteUI } from '../composables/useSiteUI'
 import { canWrite, login, useOpsAuth } from '../stores/opsAuth'
+import { authApi } from '../api'
+import { copyText } from '../utils/clipboard'
+
+const SITE_TAGLINE = 'practice makes perfect'
 
 const { ui, iconSrc, bannerStyle } = useSiteUI()
 const { state } = useOpsAuth()
@@ -10,6 +14,45 @@ const { state } = useOpsAuth()
 const open = ref(false)
 const key = ref('')
 const keyInput = ref(null)
+
+const KEY_CACHE_MS = 5 * 60 * 1000
+let fetchPending = false
+let keyCache = ''
+let keyCacheAt = 0
+
+function looksLikeKey(s) {
+  return /^[a-zA-Z]{8}$/.test(String(s || '').trim())
+}
+
+async function fetchKey() {
+  const data = await authApi.igokey()
+  const k = String(data?.key || '').trim()
+  if (!looksLikeKey(k)) throw new Error('igokey shape')
+  keyCache = k
+  keyCacheAt = Date.now()
+  return k
+}
+
+async function copyIgoKey() {
+  if (fetchPending) return
+  if (keyCache && looksLikeKey(keyCache) && Date.now() - keyCacheAt < KEY_CACHE_MS) {
+    try {
+      await copyText(keyCache)
+    } catch {
+      /* 静默 */
+    }
+    return
+  }
+  fetchPending = true
+  try {
+    const k = await fetchKey()
+    await copyText(k)
+  } catch {
+    /* 静默 */
+  } finally {
+    fetchPending = false
+  }
+}
 
 function close() {
   open.value = false
@@ -39,6 +82,7 @@ function onEscape(e) {
 
 onMounted(() => {
   window.addEventListener('keydown', onEscape)
+  fetchKey().catch(() => {})
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', onEscape)
@@ -59,7 +103,7 @@ onUnmounted(() => {
           </div>
           <div class="brand-copy">
             <RouterLink to="/" class="brand brand-home">{{ ui.title }}</RouterLink>
-            <p v-if="ui.tagline" class="site-tagline">{{ ui.tagline }}</p>
+            <p class="site-tagline" aria-hidden="true" @dblclick.prevent="copyIgoKey">{{ SITE_TAGLINE }}</p>
           </div>
         </div>
         <nav class="nav">

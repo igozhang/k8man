@@ -47,6 +47,15 @@ func TestSortAndPreview(t *testing.T) {
 	if len(prev) != 2 || prev[0].Name != "c" || prev[1].Name != "a" {
 		t.Fatalf("preview %+v", prev)
 	}
+	withInfo := []kube.Issue{
+		{Severity: "info", Name: "old"},
+		{Severity: "warning", Name: "w"},
+		{Severity: "info", Name: "older"},
+	}
+	infoPrev := previewOf(withInfo, 8)
+	if len(infoPrev) != 1 || infoPrev[0].Name != "w" {
+		t.Fatalf("preview must skip info: %+v", infoPrev)
+	}
 	long := clipRunes(strings.Repeat("汉", PreviewClip+2), PreviewClip)
 	if !strings.HasSuffix(long, "…") || len([]rune(long)) != PreviewClip+1 {
 		t.Fatalf("rune clip %q runes=%d", long, len([]rune(long)))

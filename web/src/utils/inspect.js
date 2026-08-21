@@ -15,7 +15,7 @@ export function issueInspectBrief(row) {
   if (message) {
     line += reasonText ? ` ${message}` : `：${message}`
   } else if (!sinceSuffix && reason === 'Restarts') {
-    line += ' · 近 2h 内无重启记录'
+    line += ' · 计入重启偏多（Completed / exit=0 不计）'
   }
   if (sinceSuffix) line += sinceSuffix
   return line
@@ -90,7 +90,7 @@ export function formatEvidenceLine(line) {
 
 /**
  * since 在后端语义并不统一，必须按原因选择措辞，避免“已持续”误用：
- * - Restarts：最近一次重启
+ * - Restarts：最近一次异常退出
  * - event：最近出现
  * - Failed/Unknown 且 since==age：多为创建时间锚点
  * - 条件类与容器 Waiting（NotReady / CrashLoop / ImagePull 等）：条件首次成立至今（降级时钟同源）
@@ -100,7 +100,7 @@ function issueSincePhrase(row, since) {
   const category = String(row?.category || '').trim()
   const age = String(row?.age || '').trim()
 
-  if (reason === 'Restarts') return `最近一次 ${since} 前`
+  if (reason === 'Restarts') return `最近一次异常退出 ${since} 前`
   if (category === 'event') return `最近出现于 ${since} 前`
 
   if (isCreationAnchored(row, since, age)) {

@@ -144,11 +144,11 @@ func previewOf(issues []kube.Issue, n int) []PreviewIssue {
 	if n <= 0 || len(issues) == 0 {
 		return []PreviewIssue{}
 	}
-	if n > len(issues) {
-		n = len(issues)
-	}
 	out := make([]PreviewIssue, 0, n)
-	for _, it := range issues[:n] {
+	for _, it := range issues {
+		if it.Severity == "info" {
+			continue
+		}
 		out = append(out, PreviewIssue{
 			Severity:  it.Severity,
 			Category:  it.Category,
@@ -159,6 +159,9 @@ func previewOf(issues []kube.Issue, n int) []PreviewIssue {
 			Message:   clipRunes(it.Message, PreviewClip),
 			Since:     it.Since,
 		})
+		if len(out) >= n {
+			break
+		}
 	}
 	return out
 }

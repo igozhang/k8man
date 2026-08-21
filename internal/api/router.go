@@ -62,7 +62,6 @@ func NewRouter(d Deps) *gin.Engine {
 		ui := config.LoadUI(d.UI.EtcDir)
 		respond.OK(c, gin.H{
 			"title":     ui.Title,
-			"tagline":   ui.Tagline,
 			"hasBanner": ui.BannerPath != "",
 			"bannerUrl": "/banner",
 			"hasIcon":   ui.IconPath != "",

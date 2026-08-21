@@ -99,6 +99,7 @@ func severityNeverDecay(it Issue) bool {
 		string(corev1.NodePIDPressure),
 		string(corev1.NodeNetworkUnavailable),
 		"Restarts", "DiagnoseError":
+		// Restarts 满 30 天从不占行（不走 info）；DiagnoseError 按独立事件不降级。
 		return true
 	default:
 		return false

@@ -205,6 +205,9 @@ a.brand {
   line-height: 1.2;
   color: var(--muted);
   text-align: left;
+  cursor: default;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .site-head.has-banner .site-tagline {
   text-shadow:
@@ -315,30 +318,6 @@ a.brand {
   padding-top: 0.65rem;
   padding-bottom: 0.65rem;
 }
-.foot-igo-hit {
-  font: inherit;
-  font-size: inherit;
-  line-height: inherit;
-  color: inherit;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  margin: 0;
-  text-decoration: none;
-  cursor: inherit;
-  -webkit-tap-highlight-color: transparent;
-  user-select: none;
-}
-.foot-igo-hit:hover,
-.foot-igo-hit:active,
-.foot-igo-hit:focus {
-  color: inherit;
-  background: transparent;
-  text-decoration: none;
-  outline: none;
-  box-shadow: none;
-}
-
 h1 {
   font-size: 1.08rem;
   margin: 0 0 0.3rem;
@@ -1230,8 +1209,13 @@ body.is-drawer-resizing {
 }
 .inspect-rules {
   margin-top: 12px;
+}
+.inspect-rules.is-split {
   padding-top: 12px;
   border-top: 1px dashed var(--line);
+}
+.inspect-rules.panel {
+  margin-bottom: 0;
 }
 .inspect-rules > summary {
   display: flex;

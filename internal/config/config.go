@@ -15,7 +15,6 @@ type Config struct {
 	EtcDir  string
 
 	Title      string
-	Tagline    string
 	BannerName string
 	IconName   string
 }
@@ -30,13 +29,14 @@ type UISettings struct {
 }
 
 const defaultTitle = "k8s多集群运维"
-const defaultTagline = "practice makes perfect"
+
+// FixedTagline 页眉站名下方 slogan，写死不可配置。
+const FixedTagline = "practice makes perfect"
 
 // defaultConfBody: 头部为生效配置，尾部为说明与示例。
 const defaultConfBody = `addr=:8080
 data_dir=./data
 title=k8s多集群运维
-tagline=practice makes perfect
 
 # =============================================================================
 # 说明（以下均为注释，修改请改上方生效区）
@@ -49,10 +49,11 @@ tagline=practice makes perfect
 # | data_dir  | K8MAN_DATA_DIR   | ./data                  | 数据目录 |
 # | db_path   | K8MAN_DB_PATH    | <data_dir>/k8man.db     | SQLite 路径，可省略 |
 # | title     | （仅 conf）      | k8s多集群运维           | 页眉左侧品牌名；兼浏览器标签页标题 |
-# | tagline   | （仅 conf）      | practice makes perfect  | 站名下方 slogan |
 # | icon      | （仅 conf）      | （自动探测）            | etc 下站点 icon 文件名 |
 # | banner    | （仅 conf）      | （自动探测）            | etc 下图片文件名 |
 # | hosts     | （文件）         | <etc>/hosts             | 私有解析，格式：IP hostname |
+#
+# 页眉 slogan 固定为 practice makes perfect，不可配置；双击可复制 igokey。
 #
 # 写操作鉴权（igokey，与站点方案相同）：
 #   访问 /igokey 取得 8 位字母密钥（约 1 小时；剩余 >15 分钟刷新复用）。
@@ -82,7 +83,6 @@ tagline=practice makes perfect
 #
 # ----- 示例 -----
 # db_path=./data/k8man.db
-# tagline=practice makes perfect
 # icon=icon.png
 # banner=banner.jpg
 #
@@ -119,7 +119,6 @@ func Load() Config {
 		DataDir:    dataDir,
 		EtcDir:     etcDir,
 		Title:      ui.Title,
-		Tagline:    ui.Tagline,
 		BannerName: ui.BannerName,
 		IconName:   ui.IconName,
 	}
@@ -155,7 +154,7 @@ func LoadUI(etcDir string) UISettings {
 func uiFromVals(fileVals map[string]string) UISettings {
 	return UISettings{
 		Title:      firstNonEmpty(fileVals["title"], defaultTitle),
-		Tagline:    firstNonEmpty(fileVals["tagline"], defaultTagline),
+		Tagline:    FixedTagline,
 		BannerName: fileVals["banner"],
 		IconName:   fileVals["icon"],
 	}
