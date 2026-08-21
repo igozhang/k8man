@@ -85,7 +85,7 @@ func TestDiagnoseNode(t *testing.T) {
 		Type: corev1.NodeDiskPressure, Status: corev1.ConditionTrue, Reason: "DiskPressure", Message: "full",
 	})
 	got = diagnoseNode(pressure, nodeUsage{}, now)
-	if len(got) != 1 || got[0].Severity != "warning" || got[0].Reason != string(corev1.NodeDiskPressure) {
+	if len(got) != 1 || got[0].Severity != "error" || got[0].Reason != string(corev1.NodeDiskPressure) {
 		t.Fatalf("disk pressure: %+v", got)
 	}
 
@@ -184,6 +184,17 @@ func TestDiagnosePod(t *testing.T) {
 		t.Fatalf("failed: %+v", got)
 	}
 
+	lateFail := podAt("late-fail", corev1.PodFailed, now.Add(-90*24*time.Hour))
+	lateFail.Status.Conditions = []corev1.PodCondition{{
+		Type:               corev1.PodReady,
+		Status:             corev1.ConditionFalse,
+		LastTransitionTime: metav1.NewTime(now.Add(-24 * time.Hour)),
+	}}
+	got = diagnosePod(lateFail, now)
+	if len(got) != 1 || got[0].Since != "1d" {
+		t.Fatalf("failed clock must use Ready=False, not creation: %+v", got)
+	}
+
 	evicted := podAt("evict", corev1.PodFailed, now.Add(-time.Hour))
 	evicted.Status.Reason = "Evicted"
 	evicted.Status.Message = "The node was low on resource: memory."
@@ -199,7 +210,7 @@ func TestDiagnosePod(t *testing.T) {
 
 	unknown := podAt("unk", corev1.PodUnknown, now.Add(-time.Hour))
 	got = diagnosePod(unknown, now)
-	if len(got) != 1 || got[0].Severity != "warning" || got[0].Reason != "Unknown" {
+	if len(got) != 1 || got[0].Severity != "error" || got[0].Reason != "Unknown" {
 		t.Fatalf("unknown: %+v", got)
 	}
 
@@ -209,11 +220,24 @@ func TestDiagnosePod(t *testing.T) {
 		{Name: "b", Ready: false},
 	}
 	got = diagnosePod(notReady, now)
-	if len(got) != 1 || got[0].Severity != "warning" || got[0].Reason != "NotReady" {
+	if len(got) != 1 || got[0].Severity != "error" || got[0].Reason != "NotReady" {
 		t.Fatalf("not ready: %+v", got)
 	}
 	if !strings.Contains(got[0].Message, "1/2") {
 		t.Fatalf("ready message: %s", got[0].Message)
+	}
+
+	readyTrueUnready := podAt("ready-true-nr", corev1.PodRunning, now.Add(-90*24*time.Hour))
+	readyTrueUnready.Status.ContainerStatuses = []corev1.ContainerStatus{
+		{Name: "a", Ready: false},
+	}
+	readyTrueUnready.Status.Conditions = []corev1.PodCondition{
+		{Type: corev1.PodReady, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(now.Add(-80 * 24 * time.Hour))},
+		{Type: corev1.ContainersReady, Status: corev1.ConditionFalse, LastTransitionTime: metav1.NewTime(now.Add(-10 * time.Minute))},
+	}
+	got = diagnosePod(readyTrueUnready, now)
+	if len(got) != 1 || got[0].Since != "10m" {
+		t.Fatalf("not ready must ignore Ready=True time: %+v", got)
 	}
 
 	young := podAt("young", corev1.PodPending, now.Add(-time.Minute))
@@ -252,7 +276,7 @@ func TestDiagnosePod(t *testing.T) {
 		Message: "0/3 nodes",
 	}}
 	got = diagnosePod(oldPending, now)
-	if len(got) != 1 || got[0].Severity != "warning" || got[0].Reason != "Unschedulable" {
+	if len(got) != 1 || got[0].Severity != "error" || got[0].Reason != "Unschedulable" {
 		t.Fatalf("pending: %+v", got)
 	}
 
@@ -382,11 +406,32 @@ func TestDiagnoseWorkloads(t *testing.T) {
 		t.Fatalf("deploy evidence: %v", got[0].Evidence)
 	}
 
+	avail := none
+	avail.Name = "avail"
+	avail.Status.Conditions = []appsv1.DeploymentCondition{
+		{
+			Type:               appsv1.DeploymentProgressing,
+			Status:             corev1.ConditionFalse,
+			Reason:             "ProgressDeadlineExceeded",
+			LastTransitionTime: metav1.NewTime(now.Add(-80 * 24 * time.Hour)),
+		},
+		{
+			Type:               appsv1.DeploymentAvailable,
+			Status:             corev1.ConditionFalse,
+			Reason:             "MinimumReplicasUnavailable",
+			LastTransitionTime: metav1.NewTime(now.Add(-9 * time.Minute)),
+		},
+	}
+	got = diagnoseDeployment(avail, now)
+	if len(got) != 1 || got[0].Since != "9m" {
+		t.Fatalf("deploy since should prefer Available: %q %+v", got[0].Since, got)
+	}
+
 	partial := ok
 	partial.Name = "partial"
 	partial.Status.ReadyReplicas = 2
 	got = diagnoseDeployment(partial, now)
-	if len(got) != 1 || got[0].Severity != "warning" {
+	if len(got) != 1 || got[0].Severity != "error" {
 		t.Fatalf("partial: %+v", got)
 	}
 
@@ -425,8 +470,18 @@ func TestDiagnoseWorkloads(t *testing.T) {
 		Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1},
 	}
 	got = diagnoseStatefulSet(sts, now)
-	if len(got) != 1 || got[0].Kind != "StatefulSet" || got[0].Severity != "warning" {
+	if len(got) != 1 || got[0].Kind != "StatefulSet" || got[0].Severity != "error" {
 		t.Fatalf("sts: %+v", got)
+	}
+
+	sts.Status.Conditions = []appsv1.StatefulSetCondition{{
+		Type:               "Available",
+		Status:             corev1.ConditionFalse,
+		LastTransitionTime: metav1.NewTime(now.Add(-12 * time.Minute)),
+	}}
+	got = diagnoseStatefulSet(sts, now)
+	if len(got) != 1 || got[0].Since != "12m" || got[0].SinceAt == "" {
+		t.Fatalf("sts should stamp Available since: %+v", got)
 	}
 
 	ds := appsv1.DaemonSet{

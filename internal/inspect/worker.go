@@ -145,7 +145,7 @@ func (w *Worker) RunCluster(ctx context.Context, clusterID string, force bool) (
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	critical, warning := countIssues(issues)
+	critical, errorN, warning, info := countIssues(issues)
 	rep := Report{Probe: probe, Diagnose: diag, Issues: issues}
 	raw, err := json.Marshal(rep)
 	if err != nil {
@@ -160,8 +160,10 @@ func (w *Worker) RunCluster(ctx context.Context, clusterID string, force bool) (
 		ProbeStatus: probe.Status,
 		ProbeError:  probe.LastError,
 		Critical:    critical,
+		Error:       errorN,
 		Warning:     warning,
-		Summary:     makeSummary(probe, critical, warning),
+		Info:        info,
+		Summary:     makeSummary(probe, critical, errorN, warning, info),
 		ReportJSON:  string(raw),
 	}
 	if err := w.Store.UpsertInspection(row); err != nil {

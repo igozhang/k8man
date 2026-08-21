@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onUnmounted } from 'vue'
 import { asArray } from '../utils/safe'
-import { severityLabel, issueCategoryLabel, issueReasonDisplay } from '../utils/labels'
+import { severityLabel, severityClass, issueCategoryLabel, issueReasonDisplay } from '../utils/labels'
 import { formatIssueMessage, issueMessageSuffix, formatEvidenceLine } from '../utils/inspect'
 import { fmtTime } from '../utils/quantity'
 import { copyText } from '../utils/clipboard'
@@ -175,7 +175,7 @@ defineExpose({ open: show, close, update: show, updateLive, setRunning })
     <div v-else class="inspect-issue-list" :class="{ 'inspect-issue-list-dim': running && source === 'cache' }">
       <article v-for="(row, idx) in issues" :key="idx" class="inspect-issue">
         <div class="inspect-issue-head">
-          <span class="tag" :class="row.severity === 'critical' ? 'sev-critical' : 'sev-warning'">
+          <span class="tag" :class="severityClass(row.severity)">
             {{ severityLabel(row.severity) }}
           </span>
           <strong>{{ typeLabel(row) }}</strong>

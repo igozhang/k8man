@@ -163,11 +163,7 @@ func newWorkloadRestartsIssue(w workloadRef, owned []corev1.Pod, recent []restar
 	if age.IsZero() && len(owned) > 0 {
 		age = owned[0].CreationTimestamp.Time
 	}
-	var since string
-	if hasLatest {
-		since = formatAgeAt(latest.When, now)
-	}
-	return Issue{
+	it := Issue{
 		Severity:  "warning",
 		Category:  "workload",
 		Kind:      w.Kind,
@@ -176,9 +172,12 @@ func newWorkloadRestartsIssue(w workloadRef, owned []corev1.Pod, recent []restar
 		Reason:    "Restarts",
 		Message:   clipRunes(msg, diagnoseMsgMaxRunes),
 		Age:       formatAgeAt(age, now),
-		Since:     since,
 		Evidence:  applyRestartEvidence(nil, evidenceHits, w.SelectorStr, now),
 	}
+	if hasLatest {
+		stampIssueSince(&it, latest.When, now)
+	}
+	return it
 }
 
 func workloadRestartCount(pods []corev1.Pod) int32 {

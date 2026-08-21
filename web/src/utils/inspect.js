@@ -82,6 +82,9 @@ export function formatEvidenceLine(line) {
   s = s.replace(/(\d+[smhd])\s*ago\b/gi, '$1 前')
   s = s.replace(/\bmisscheduled=(\d+)/gi, '错位调度=$1')
   s = s.replace(/\bready=(\d+)\/(\d+)/gi, 'Ready=$1/$2')
+  if (s.startsWith('severityNote: ')) {
+    s = '降级: ' + s.slice('severityNote: '.length)
+  }
   return s
 }
 
@@ -90,8 +93,7 @@ export function formatEvidenceLine(line) {
  * - Restarts：最近一次重启
  * - event：最近出现
  * - Failed/Unknown 且 since==age：多为创建时间锚点
- * - 条件类（NotReady/压力等）：条件持续至今
- * - 崩溃/拉镜像等：最近状态变化
+ * - 条件类与容器 Waiting（NotReady / CrashLoop / ImagePull 等）：条件首次成立至今（降级时钟同源）
  */
 function issueSincePhrase(row, since) {
   const reason = String(row?.reason || '').trim()
@@ -108,7 +110,6 @@ function issueSincePhrase(row, since) {
   }
 
   if (isConditionDurationReason(reason)) return `已持续 ${since}`
-  if (isLastChangeReason(reason)) return `最近状态变化于 ${since} 前`
   return `自 ${since} 前起`
 }
 
@@ -132,22 +133,14 @@ function isConditionDurationReason(reason) {
     'Misscheduled',
     'ProgressDeadlineExceeded',
     'ContainerCreating',
-    'Unhealthy'
-  ].includes(reason)
-}
-
-/** lastState / 最近容器变化：不是“连续时长”，而是最近一次变化点 */
-function isLastChangeReason(reason) {
-  return [
+    'Unhealthy',
     'CrashLoopBackOff',
     'ImagePullBackOff',
     'ErrImagePull',
     'OOMKilled',
     'CreateContainerError',
     'CreateContainerConfigError',
-    'InvalidImageName',
-    'Evicted',
-    'Error'
+    'InvalidImageName'
   ].includes(reason)
 }
 

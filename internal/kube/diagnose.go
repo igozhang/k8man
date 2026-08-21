@@ -61,24 +61,26 @@ var podCriticalReasons = map[string]bool{
 
 // Issue is one anomaly found by Diagnose.
 type Issue struct {
-	Severity   string   `json:"severity"`
-	Category   string   `json:"category"`
-	Kind       string   `json:"kind"`
-	Namespace  string   `json:"namespace,omitempty"`
-	Name       string   `json:"name"`
-	Reason     string   `json:"reason"`
-	Message    string   `json:"message"`
-	Age        string   `json:"age"`
-	Since      string   `json:"since,omitempty"`
-	Node       string   `json:"node,omitempty"`
-	NodeIP     string   `json:"nodeIP,omitempty"`
-	Container  string   `json:"container,omitempty"`
-	Reporter   string   `json:"reporter,omitempty"`
-	Count      int32    `json:"count,omitempty"`
-	Evidence   []string `json:"evidence,omitempty"`
-	LogPath    string   `json:"logPath,omitempty"`
-	LogSource  string   `json:"logSource,omitempty"`
-	LogExcerpt []string `json:"logExcerpt,omitempty"`
+	Severity     string   `json:"severity"`
+	BaseSeverity string   `json:"baseSeverity,omitempty"`
+	Category     string   `json:"category"`
+	Kind         string   `json:"kind"`
+	Namespace    string   `json:"namespace,omitempty"`
+	Name         string   `json:"name"`
+	Reason       string   `json:"reason"`
+	Message      string   `json:"message"`
+	Age          string   `json:"age"`
+	Since        string   `json:"since,omitempty"`
+	SinceAt      string   `json:"sinceAt,omitempty"`
+	Node         string   `json:"node,omitempty"`
+	NodeIP       string   `json:"nodeIP,omitempty"`
+	Container    string   `json:"container,omitempty"`
+	Reporter     string   `json:"reporter,omitempty"`
+	Count        int32    `json:"count,omitempty"`
+	Evidence     []string `json:"evidence,omitempty"`
+	LogPath      string   `json:"logPath,omitempty"`
+	LogSource    string   `json:"logSource,omitempty"`
+	LogExcerpt   []string `json:"logExcerpt,omitempty"`
 }
 
 // DiagnoseCounts is per-category issue totals.
@@ -88,7 +90,9 @@ type DiagnoseCounts struct {
 	Pods      int `json:"pods"`
 	Events    int `json:"events"`
 	Critical  int `json:"critical"`
+	Error     int `json:"error"`
 	Warning   int `json:"warning"`
+	Info      int `json:"info"`
 }
 
 // DiagnoseScan is what this pass actually listed (for verifying coverage).
@@ -179,6 +183,7 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 		podLocs      = map[string]resourceLoc{}
 		podOK        = map[string]bool{}
 		nodeIPs      = map[string]string{}
+		nodeOutage   bool
 	)
 
 	var wg sync.WaitGroup
@@ -203,6 +208,10 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 				return
 			}
 			addScan(func(s *DiagnoseScan) { s.Nodes = len(nodes) })
+			outage := clusterNodeOutage(nodes)
+			mu.Lock()
+			nodeOutage = outage
+			mu.Unlock()
 			for _, n := range nodes {
 				if ip := nodeInternalIP(n); ip != "" {
 					locMu.Lock()
@@ -295,6 +304,7 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 	merged, attached := attachEvents(rep.Issues, events, opt.Now, podOK)
 	rep.Issues = merged
 	enrichLocations(rep.Issues, podLocs, nodeIPs)
+	applySeverityDecay(rep.Issues, opt.Now, nodeOutage)
 	if eventsTrunc {
 		rep.Truncated = true
 	}
@@ -389,11 +399,13 @@ func diagnoseNode(n corev1.Node, usage nodeUsage, now time.Time) []Issue {
 		} else {
 			ev = append(ev, "Ready condition missing")
 		}
-		out = append(out, Issue{
+		it := Issue{
 			Severity: "critical", Category: "node", Kind: "Node",
 			Name: n.Name, NodeIP: ip, Reason: ready, Message: msg, Age: age,
-			Since: formatAgeAt(readySince, now), Evidence: clipEvidence(ev),
-		})
+			Evidence: clipEvidence(ev),
+		}
+		stampIssueSince(&it, readySince, now)
+		out = append(out, it)
 	}
 
 	pressures := []corev1.NodeConditionType{
@@ -417,12 +429,13 @@ func diagnoseNode(n corev1.Node, usage nodeUsage, now time.Time) []Issue {
 			if cond.Message != "" {
 				ev = append(ev, "message="+clipRunes(cond.Message, 240))
 			}
-			out = append(out, Issue{
-				Severity: "warning", Category: "node", Kind: "Node",
+			it := Issue{
+				Severity: "error", Category: "node", Kind: "Node",
 				Name: n.Name, NodeIP: ip, Reason: reason, Message: clipRunes(msg, diagnoseMsgMaxRunes),
-				Age: age, Since: formatAgeAt(cond.LastTransitionTime.Time, now),
-				Evidence: clipEvidence(ev),
-			})
+				Age: age, Evidence: clipEvidence(ev),
+			}
+			stampIssueSince(&it, cond.LastTransitionTime.Time, now)
+			out = append(out, it)
 		}
 	}
 
@@ -464,14 +477,15 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 			Severity: sev, Category: "pod", Kind: "Pod",
 			Namespace: p.Namespace, Name: p.Name, Node: p.Spec.NodeName, NodeIP: p.Status.HostIP,
 			Reason: reason, Message: clipRunes(msg, diagnoseMsgMaxRunes),
-			Age: age, Since: formatAgeAt(since, now), Evidence: clipEvidence(facts),
+			Age: age, Evidence: clipEvidence(facts),
 		}
+		stampIssueSince(&it, since, now)
 		applyPodLogHint(&it, p)
 		return []Issue{it}
 	}
 
 	if reason, msg, critical := podContainerProblem(p); critical {
-		return issue("critical", reason, msg, lastContainerChange(p))
+		return issue("critical", reason, msg, podUnhealthySince(p))
 	}
 
 	if p.Status.Phase == corev1.PodFailed {
@@ -486,7 +500,7 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 		if msg == "" {
 			msg = "Pod phase is Failed"
 		}
-		return issue("critical", reason, msg, p.CreationTimestamp.Time)
+		return issue("critical", reason, msg, podUnhealthySince(p))
 	}
 
 	if p.Status.Phase == corev1.PodUnknown {
@@ -494,16 +508,12 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 		if msg == "" {
 			msg = "Pod phase is Unknown"
 		}
-		return issue("warning", "Unknown", msg, p.CreationTimestamp.Time)
+		return issue("error", "Unknown", msg, podUnhealthySince(p))
 	}
 
 	if p.Status.Phase == corev1.PodRunning && !podContainersReady(p) {
 		ready, total := podReadyCounts(p)
-		since := conditionTime(p, corev1.PodReady)
-		if since.IsZero() {
-			since = conditionTime(p, corev1.ContainersReady)
-		}
-		return issue("warning", "NotReady", fmt.Sprintf("ready %d/%d", ready, total), since)
+		return issue("error", "NotReady", fmt.Sprintf("ready %d/%d", ready, total), podUnhealthySince(p))
 	}
 
 	if p.Status.Phase == corev1.PodPending {
@@ -515,9 +525,15 @@ func diagnosePod(p corev1.Pod, now time.Time) []Issue {
 		if now.Sub(p.CreationTimestamp.Time) < minAge {
 			return nil
 		}
-		since := conditionTime(p, corev1.PodScheduled)
+		since := conditionFalseTime(p, corev1.PodScheduled)
+		if since.IsZero() {
+			since = conditionTime(p, corev1.PodScheduled)
+		}
 		if since.IsZero() {
 			since = p.CreationTimestamp.Time
+		}
+		if reason == "Unschedulable" {
+			return issue("error", reason, msg, since)
 		}
 		return issue("warning", reason, msg, since)
 	}
@@ -563,10 +579,12 @@ func diagnoseStatefulSet(s appsv1.StatefulSet, now time.Time) []Issue {
 		fmt.Sprintf("replicas desired=%d ready=%d current=%d updated=%d",
 			desired, s.Status.ReadyReplicas, s.Status.CurrentReplicas, s.Status.UpdatedReplicas),
 	}
+	since, extra := statefulSetFalseConditions(s.Status.Conditions)
+	ev = append(ev, extra...)
 	if desired > 0 && s.Status.ReadyReplicas < desired && statefulSetRolloutRecent(s, now) {
 		return nil
 	}
-	return replicaIssues("StatefulSet", s.Namespace, s.Name, desired, s.Status.ReadyReplicas, 0, s.CreationTimestamp.Time, time.Time{}, now, ev)
+	return replicaIssues("StatefulSet", s.Namespace, s.Name, desired, s.Status.ReadyReplicas, 0, s.CreationTimestamp.Time, since, now, ev)
 }
 
 func diagnoseDaemonSet(ds appsv1.DaemonSet, now time.Time) []Issue {
@@ -577,13 +595,15 @@ func diagnoseDaemonSet(ds appsv1.DaemonSet, now time.Time) []Issue {
 		fmt.Sprintf("desired=%d ready=%d available=%d misscheduled=%d updated=%d",
 			desired, ready, ds.Status.NumberAvailable, miss, ds.Status.UpdatedNumberScheduled),
 	}
+	since, extra := daemonSetFalseConditions(ds.Status.Conditions)
+	ev = append(ev, extra...)
 	if desired > 0 && ready < desired && daemonSetRolloutRecent(ds, now) {
 		if miss > 0 {
-			return replicaIssues("DaemonSet", ds.Namespace, ds.Name, desired, desired, miss, ds.CreationTimestamp.Time, time.Time{}, now, ev)
+			return replicaIssues("DaemonSet", ds.Namespace, ds.Name, desired, desired, miss, ds.CreationTimestamp.Time, since, now, ev)
 		}
 		return nil
 	}
-	return replicaIssues("DaemonSet", ds.Namespace, ds.Name, desired, ready, miss, ds.CreationTimestamp.Time, time.Time{}, now, ev)
+	return replicaIssues("DaemonSet", ds.Namespace, ds.Name, desired, ready, miss, ds.CreationTimestamp.Time, since, now, ev)
 }
 
 func replicaIssues(kind, ns, name string, desired, ready, misscheduled int32, created, since, now time.Time, evidence []string) []Issue {
@@ -593,7 +613,7 @@ func replicaIssues(kind, ns, name string, desired, ready, misscheduled int32, cr
 	age := formatAgeAt(created, now)
 	sinceAge := formatAgeAt(since, now)
 	if desired > 0 && ready < desired {
-		sev := "warning"
+		sev := "error"
 		if ready == 0 {
 			sev = "critical"
 		}
@@ -601,19 +621,29 @@ func replicaIssues(kind, ns, name string, desired, ready, misscheduled int32, cr
 		if misscheduled > 0 {
 			msg += fmt.Sprintf(" · misscheduled %d", misscheduled)
 		}
-		return []Issue{{
+		it := Issue{
 			Severity: sev, Category: "workload", Kind: kind,
 			Namespace: ns, Name: name, Reason: "NotReady", Message: msg,
-			Age: age, Since: sinceAge, Evidence: clipEvidence(evidence),
-		}}
+			Age: age, Evidence: clipEvidence(evidence),
+		}
+		stampIssueSince(&it, since, now)
+		if it.Since == "" {
+			it.Since = sinceAge
+		}
+		return []Issue{it}
 	}
 	if misscheduled > 0 {
-		return []Issue{{
+		it := Issue{
 			Severity: "warning", Category: "workload", Kind: kind,
 			Namespace: ns, Name: name, Reason: "Misscheduled",
 			Message: fmt.Sprintf("misscheduled %d", misscheduled),
-			Age:     age, Since: sinceAge, Evidence: clipEvidence(evidence),
-		}}
+			Age:     age, Evidence: clipEvidence(evidence),
+		}
+		stampIssueSince(&it, since, now)
+		if it.Since == "" {
+			it.Since = sinceAge
+		}
+		return []Issue{it}
 	}
 	return nil
 }
@@ -693,7 +723,7 @@ func diagnoseEvent(e corev1.Event, now time.Time) Issue {
 		msg = fmt.Sprintf("x%d · %s", e.Count, e.Message)
 	}
 	ev := []string{eventEvidenceLine(e, now)}
-	return Issue{
+	it := Issue{
 		Severity:  "warning",
 		Category:  "event",
 		Kind:      kind,
@@ -702,13 +732,14 @@ func diagnoseEvent(e corev1.Event, now time.Time) Issue {
 		Reason:    reason,
 		Message:   clipRunes(msg, diagnoseMsgMaxRunes),
 		Age:       formatAgeAt(when, now),
-		Since:     formatAgeAt(when, now),
 		Node:      node,
 		Container: cname,
 		Reporter:  reporter,
 		Count:     e.Count,
 		Evidence:  clipEvidence(ev),
 	}
+	stampIssueSince(&it, when, now)
+	return it
 }
 
 type resourceLoc struct {
@@ -970,7 +1001,11 @@ func problemContainer(p corev1.Pod) (name string, restarts int32) {
 }
 
 func shouldFetchPodLogs(it Issue) bool {
-	if it.Category != "pod" || it.Severity != "critical" {
+	base := it.BaseSeverity
+	if base == "" {
+		base = it.Severity
+	}
+	if it.Category != "pod" || base != "critical" {
 		return false
 	}
 	if it.Namespace == "" || it.Name == "" {
@@ -1357,10 +1392,37 @@ func conditionTime(p corev1.Pod, t corev1.PodConditionType) time.Time {
 	return time.Time{}
 }
 
-func workloadFalseConditions(conds []appsv1.DeploymentCondition) (time.Time, []string) {
-	var since time.Time
+func conditionFalseTime(p corev1.Pod, t corev1.PodConditionType) time.Time {
+	for _, c := range p.Status.Conditions {
+		if c.Type == t && c.Status != corev1.ConditionTrue {
+			return c.LastTransitionTime.Time
+		}
+	}
+	return time.Time{}
+}
+
+func podUnhealthySince(p corev1.Pod) time.Time {
+	for _, t := range []corev1.PodConditionType{corev1.PodReady, corev1.ContainersReady, corev1.PodScheduled} {
+		if since := conditionFalseTime(p, t); !since.IsZero() {
+			return since
+		}
+	}
+	if p.Status.StartTime != nil && !p.Status.StartTime.IsZero() {
+		return p.Status.StartTime.Time
+	}
+	return p.CreationTimestamp.Time
+}
+
+type condView struct {
+	Type, Reason, Message string
+	Status                corev1.ConditionStatus
+	LastTransition        time.Time
+}
+
+func falseConditionsSince(views []condView) (time.Time, []string) {
+	var earliest, available time.Time
 	var extra []string
-	for _, c := range conds {
+	for _, c := range views {
 		if c.Status == corev1.ConditionTrue {
 			continue
 		}
@@ -1369,11 +1431,53 @@ func workloadFalseConditions(conds []appsv1.DeploymentCondition) (time.Time, []s
 			line += ": " + clipRunes(c.Message, 200)
 		}
 		extra = append(extra, line)
-		if !c.LastTransitionTime.IsZero() && (since.IsZero() || c.LastTransitionTime.Time.Before(since)) {
-			since = c.LastTransitionTime.Time
+		if c.LastTransition.IsZero() {
+			continue
+		}
+		if strings.EqualFold(c.Type, "Available") {
+			available = c.LastTransition
+		}
+		if earliest.IsZero() || c.LastTransition.Before(earliest) {
+			earliest = c.LastTransition
 		}
 	}
-	return since, extra
+	if !available.IsZero() {
+		return available, extra
+	}
+	return earliest, extra
+}
+
+func workloadFalseConditions(conds []appsv1.DeploymentCondition) (time.Time, []string) {
+	views := make([]condView, 0, len(conds))
+	for _, c := range conds {
+		views = append(views, condView{
+			Type: string(c.Type), Status: c.Status, Reason: c.Reason, Message: c.Message,
+			LastTransition: c.LastTransitionTime.Time,
+		})
+	}
+	return falseConditionsSince(views)
+}
+
+func statefulSetFalseConditions(conds []appsv1.StatefulSetCondition) (time.Time, []string) {
+	views := make([]condView, 0, len(conds))
+	for _, c := range conds {
+		views = append(views, condView{
+			Type: string(c.Type), Status: c.Status, Reason: c.Reason, Message: c.Message,
+			LastTransition: c.LastTransitionTime.Time,
+		})
+	}
+	return falseConditionsSince(views)
+}
+
+func daemonSetFalseConditions(conds []appsv1.DaemonSetCondition) (time.Time, []string) {
+	views := make([]condView, 0, len(conds))
+	for _, c := range conds {
+		views = append(views, condView{
+			Type: string(c.Type), Status: c.Status, Reason: c.Reason, Message: c.Message,
+			LastTransition: c.LastTransitionTime.Time,
+		})
+	}
+	return falseConditionsSince(views)
 }
 
 func podContainersReady(p corev1.Pod) bool {
@@ -1575,6 +1679,10 @@ func countIssues(items []Issue) DiagnoseCounts {
 		}
 		if it.Severity == "critical" {
 			c.Critical++
+		} else if it.Severity == "error" {
+			c.Error++
+		} else if it.Severity == "info" {
+			c.Info++
 		} else {
 			c.Warning++
 		}
@@ -1583,7 +1691,7 @@ func countIssues(items []Issue) DiagnoseCounts {
 }
 
 func sortIssues(items []Issue) {
-	sev := map[string]int{"critical": 0, "warning": 1}
+	sev := map[string]int{"critical": 0, "error": 1, "warning": 2, "info": 3}
 	cat := map[string]int{"node": 0, "workload": 1, "pod": 2, "event": 3}
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]

@@ -6,7 +6,7 @@ import { useClusterStore } from '../stores/cluster'
 import { asArray, createSeq, errMessage } from '../utils/safe'
 import { copyText } from '../utils/clipboard'
 import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad } from '../utils/resourceCache'
-import { permTypeLabel, severityLabel, issueCategoryLabel, issueReasonDisplay } from '../utils/labels'
+import { permTypeLabel, severityLabel, severityClass, issueCategoryLabel, issueReasonDisplay } from '../utils/labels'
 import { formatIssueMessage, issueMessageSuffix, issueTimeLabel, issueInspectBrief, formatEvidenceLine } from '../utils/inspect'
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
@@ -33,6 +33,7 @@ let copiedTimer = 0
 const category = ref('')
 const nsFilter = ref('')
 const severity = ref('')
+const showInfo = ref(false)
 const loadSeq = createSeq()
 const explainSeq = createSeq()
 const EXPLAIN_LOG_TAIL = 40
@@ -57,6 +58,7 @@ const filtered = computed(() => {
   return issues.value.filter((it) => {
     if (category.value && it.category !== category.value) return false
     if (severity.value && it.severity !== severity.value) return false
+    if (!severity.value && !showInfo.value && it.severity === 'info') return false
     if (nsFilter.value && it.category !== 'node' && it.namespace !== nsFilter.value) return false
     return true
   })
@@ -67,8 +69,18 @@ const errorEntries = computed(() => {
   return Object.keys(obj).map((k) => ({ key: k, message: obj[k] }))
 })
 
+function emptyTableHint() {
+  if (!issues.value.length) return '未发现异常。'
+  const onlyInfoHidden =
+    !showInfo.value &&
+    !severity.value &&
+    issues.value.every((it) => it.severity === 'info')
+  if (onlyInfoHidden) return '仅有提示级异常，勾选「显示提示」查看。'
+  return '当前筛选下没有匹配项。'
+}
+
 function emptyCounts() {
-  return { nodes: 0, workloads: 0, pods: 0, events: 0, critical: 0, warning: 0 }
+  return { nodes: 0, workloads: 0, pods: 0, events: 0, critical: 0, error: 0, warning: 0, info: 0 }
 }
 
 function emptyReport() {
@@ -315,6 +327,9 @@ function explainText(row, logsInfo) {
   if (row.container) lines.push(`容器: ${row.container}`)
   if (row.count && Number(row.count) > 1) lines.push(`次数: ${row.count}`)
   if (row.reason) lines.push(`原因: ${issueReasonDisplay(row.reason)}`)
+  if (row.baseSeverity && row.baseSeverity !== row.severity) {
+    lines.push(`级别: ${severityLabel(row.baseSeverity)} → ${severityLabel(row.severity)}（长期未处理已降级）`)
+  }
   if (row.category === 'event') {
     if (row.since || row.age) lines.push(`上次: ${row.since || row.age} 前`)
   } else {
@@ -547,7 +562,9 @@ const summaryFull = computed(() => {
       lines.push(...checks)
     }
   } else if (total) {
-    lines.push(`结论: 发现 ${total} 条当前异常（严重 ${c.critical || 0} · 警告 ${c.warning || 0}）。`)
+    lines.push(
+      `结论: 发现 ${total} 条当前异常（严重 ${c.critical || 0} · 错误 ${c.error || 0} · 警告 ${c.warning || 0}${c.info ? ` · 提示 ${c.info}` : ''}）。`
+    )
   }
   if (scanLine.value) lines.push(scanLine.value)
   if (skippedNodes.value && total) lines.push('节点: 项目凭证未扫描。')
@@ -557,16 +574,28 @@ const summaryFull = computed(() => {
     lines.push(`${categoryLabel(e.key)}扫描失败: ${e.message}`)
   }
   const crit = issues.value.filter((it) => it.severity === 'critical')
-  const warn = issues.value.filter((it) => it.severity !== 'critical')
+  const errs = issues.value.filter((it) => it.severity === 'error')
+  const warn = issues.value.filter((it) => it.severity === 'warning')
+  const infos = issues.value.filter((it) => it.severity === 'info')
   if (crit.length) {
     lines.push('')
     lines.push(`严重 (${crit.length}):`)
     for (const it of crit) lines.push(`- ${issueSummaryLine(it)}`)
   }
+  if (errs.length) {
+    lines.push('')
+    lines.push(`错误 (${errs.length}):`)
+    for (const it of errs) lines.push(`- ${issueSummaryLine(it)}`)
+  }
   if (warn.length) {
     lines.push('')
     lines.push(`警告 (${warn.length}):`)
     for (const it of warn) lines.push(`- ${issueSummaryLine(it)}`)
+  }
+  if (infos.length) {
+    lines.push('')
+    lines.push(`提示 (${infos.length}):`)
+    for (const it of infos) lines.push(`- ${issueSummaryLine(it)}`)
   }
   return lines.join('\n')
 })
@@ -776,8 +805,14 @@ onUnmounted(() => {
         <select v-model="severity">
           <option value="">全部严重度</option>
           <option value="critical">严重</option>
+          <option value="error">错误</option>
           <option value="warning">警告</option>
+          <option value="info">提示</option>
         </select>
+        <label class="show-info">
+          <input v-model="showInfo" type="checkbox" />
+          显示提示
+        </label>
         <button class="btn btn-sm" type="button" :disabled="busy" @click="load({ force: true })">刷新</button>
       </div>
 
@@ -805,7 +840,7 @@ onUnmounted(() => {
         <tbody>
           <tr v-for="(row, idx) in filtered" :key="rowKey(row, idx)">
             <td>
-              <span class="tag" :class="row.severity === 'critical' ? 'sev-critical' : 'sev-warning'">
+              <span class="tag" :class="severityClass(row.severity)">
                 {{ severityLabel(row.severity) }}
               </span>
             </td>
@@ -840,7 +875,7 @@ onUnmounted(() => {
         </tbody>
       </table>
       <div v-else-if="!loading" class="empty">
-        {{ issues.length ? '当前筛选下没有匹配项。' : '未发现异常。' }}
+        {{ emptyTableHint() }}
       </div>
     </template>
 
@@ -869,15 +904,30 @@ onUnmounted(() => {
     <details ref="rulesEl" class="panel rules-panel" open @toggle="onRulesToggle">
       <summary>判定规则</summary>
       <p class="rules-lead">异常看对象当前状态；事件是过程记录，默认只挂到说明里。对齐 kubernetes-mixin / kube-prometheus 的「当前不健康才告警」，诊断页当场显示，不等值班窗口。</p>
+      <h3>四级</h3>
+      <ul>
+        <li>严重：集群或负载整体不可用（含 ImagePull / CrashLoop / 负载 0 副本 / 节点 NotReady）。</li>
+        <li>错误：明确故障但未全挂（部分副本未就绪、节点压力、Running 未就绪、Unschedulable）。</li>
+        <li>警告：用量偏高、misscheduled、普通 Pending、Restarts、独立成行的调度/挂载失败。</li>
+        <li>提示：长期无人处理降级后的终点；默认表格隐藏，勾选「显示提示」或筛选「提示」可见。</li>
+      </ul>
+      <h3>存在时长降级</h3>
+      <ul>
+        <li>问题连续成立满 30 天降 1 级，满 60 天再降 1 级，最低到提示。时钟用条件首次成立时间（Ready=False 的 LastTransitionTime），不跟每次重启刷新。</li>
+        <li>例如 ImagePullBackOff 基线是严重，满 60 天收敛为警告。</li>
+        <li>不降级：kubeconfig、节点 CPU/内存用量、节点压力、Restarts、独立事件。</li>
+        <li>节点 NotReady 要降；但 Ready 节点为 0 或未就绪 ≥ 半数时整组不降。</li>
+        <li>仍在 CrashLoop / OOM 的，降级下限是错误。kube-system / cattle-* / calico-* / istio-system 最多降 1 级且不低于错误。</li>
+      </ul>
       <h3>算异常</h3>
       <ul>
-        <li>节点 Ready≠True → 严重；Disk/Memory/PID/Network 压力为 True → 警告；CPU/内存用量 ≥ 90% → 警告。项目凭证不扫节点。</li>
-        <li>负载 ready &lt; desired 且不是滚动中 → 副本为 0 严重，否则警告。DaemonSet misscheduled &gt; 0 → 警告。缩到 0 不算。</li>
+        <li>节点 Ready≠True → 严重；Disk/Memory/PID/Network 压力为 True → 错误；CPU/内存用量 ≥ 90% → 警告。项目凭证不扫节点。</li>
+        <li>负载 ready &lt; desired 且不是滚动中 → 副本为 0 严重，否则错误。DaemonSet misscheduled &gt; 0 → 警告。缩到 0 不算。</li>
         <li>滚动中（Progressing=True 且 ReplicaSetUpdated 等，或 Unavailable&gt;0 且 Progressing 持续不足 15 分钟）不算；超过 15 分钟仍对不上才报。</li>
-        <li>Pod 正在 CrashLoop / 拉镜像失败 / CreateContainerError / OOMKilled → 严重。Failed（非 Evicted/Shutdown 等）→ 严重。Unknown、Running 未就绪 → 警告。</li>
-        <li>Pending Unschedulable 超过 2 分钟，或其它 Pending 超过 15 分钟 → 警告。Succeeded、刚创建的 Pending 不算。</li>
-        <li>当前 Ready，但最近 2 小时内重启过且累计 ≥ 3 次 → 警告。上次重启更早的生命周期计数不算。</li>
-        <li>控制器副本已 Ready，但下属 Pod 仍符合上一条（CrashLoop / OOM / 近 2h 重启 ≥ 3）→ 警告 Restarts。已有 NotReady 时只把重启时间线挂到说明，不另占一行。滚动宽限期内不单独占控制器 Restarts 行。</li>
+        <li>Pod 正在 CrashLoop / 拉镜像失败 / CreateContainerError / OOMKilled → 严重。Failed（非 Evicted/Shutdown 等）→ 严重。Unknown、Running 未就绪 → 错误。</li>
+        <li>Pending Unschedulable 超过 2 分钟 → 错误；其它 Pending 超过 15 分钟 → 警告。Succeeded、刚创建的 Pending 不算。</li>
+        <li>当前 Ready，但累计重启 ≥ 3 且上次重启在 60 天内 → 警告。上次重启超过 60 天的生命周期计数不算。</li>
+        <li>控制器副本已 Ready，但下属 Pod 仍 CrashLoop / OOM / 累计重启 ≥ 3 → 警告 Restarts。已有 NotReady 时只把重启时间线挂到说明，不另占一行。滚动宽限期内不单独占控制器 Restarts 行。</li>
       </ul>
       <h3>说明里的最近重启</h3>
       <ul>
@@ -911,9 +961,30 @@ onUnmounted(() => {
   background: rgba(180, 35, 24, 0.1);
   color: var(--danger);
 }
+.tag.sev-error {
+  background: rgba(194, 65, 12, 0.12);
+  color: var(--error);
+}
 .tag.sev-warning {
   background: rgba(154, 103, 0, 0.12);
   color: var(--warn);
+}
+.tag.sev-info {
+  background: rgba(90, 107, 90, 0.12);
+  color: var(--muted);
+}
+.show-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--ctrl-font);
+  line-height: var(--ctrl-line);
+  white-space: nowrap;
+}
+.show-info input {
+  margin: 0;
 }
 .msg {
   max-width: 28rem;

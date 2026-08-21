@@ -62,26 +62,36 @@ func diagnoseFailIssue(cl *model.Cluster, err error) kube.Issue {
 	}
 }
 
-func countIssues(issues []kube.Issue) (critical, warning int) {
+func countIssues(issues []kube.Issue) (critical, errorN, warning, info int) {
 	for _, it := range issues {
-		if it.Severity == "critical" {
+		switch it.Severity {
+		case "critical":
 			critical++
-			continue
+		case "error":
+			errorN++
+		case "info":
+			info++
+		default:
+			warning++
 		}
-		warning++
 	}
-	return critical, warning
+	return critical, errorN, warning, info
 }
 
 func sortIssues(issues []kube.Issue) {
 	rank := func(sev string) int {
-		if sev == "critical" {
+		switch sev {
+		case "critical":
 			return 0
-		}
-		if sev == "warning" {
+		case "error":
 			return 1
+		case "warning":
+			return 2
+		case "info":
+			return 3
+		default:
+			return 2
 		}
-		return 2
 	}
 	sort.SliceStable(issues, func(i, j int) bool {
 		ri, rj := rank(issues[i].Severity), rank(issues[j].Severity)
@@ -95,16 +105,22 @@ func sortIssues(issues []kube.Issue) {
 	})
 }
 
-func makeSummary(probe kube.ProbeResult, critical, warning int) string {
+func makeSummary(probe kube.ProbeResult, critical, errorN, warning, info int) string {
 	if probe.Status != "ok" {
 		return "kubeconfig 无效"
 	}
-	if critical == 0 && warning == 0 {
+	if critical == 0 && errorN == 0 && warning == 0 {
+		if info > 0 {
+			return strconv.Itoa(info) + " 提示"
+		}
 		return "巡检正常"
 	}
-	parts := make([]string, 0, 2)
+	parts := make([]string, 0, 3)
 	if critical > 0 {
 		parts = append(parts, strconv.Itoa(critical)+" 严重")
+	}
+	if errorN > 0 {
+		parts = append(parts, strconv.Itoa(errorN)+" 错误")
 	}
 	if warning > 0 {
 		parts = append(parts, strconv.Itoa(warning)+" 警告")

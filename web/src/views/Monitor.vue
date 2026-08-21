@@ -5,7 +5,7 @@ import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory, fmtTime, mergeNodeUsage } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
 import { asArray, createSeq, errMessage } from '../utils/safe'
-import { severityLabel } from '../utils/labels'
+import { severityLabel, severityClass } from '../utils/labels'
 import { issueInspectBrief } from '../utils/inspect'
 import {
   TTL,
@@ -62,7 +62,9 @@ const showNodesTab = computed(() => !isProject.value)
 
 function issueRank(severity) {
   if (severity === 'critical') return 0
-  if (severity === 'warning') return 1
+  if (severity === 'error') return 1
+  if (severity === 'warning') return 2
+  if (severity === 'info') return 3
   return 2
 }
 
@@ -79,20 +81,22 @@ const inspectIssueBlocks = computed(() => {
   const blocks = []
   for (const it of inspectItems.value) {
     const critical = Number(it.critical) || 0
+    const errorN = Number(it.error) || 0
     const warning = Number(it.warning) || 0
-    if (!critical && !warning) continue
+    if (!critical && !errorN && !warning) continue
     const sorted = sortedPreviewIssues(it.preview)
     const lines = sorted.slice(0, BLOCK_LINES).map((iss) => ({
       ...iss,
       clusterId: it.clusterId,
       clusterName: it.clusterName
     }))
-    const total = critical + warning
+    const total = critical + errorN + warning
     blocks.push({
       clusterId: it.clusterId,
       clusterName: it.clusterName || it.clusterId,
       checkedAt: it.checkedAt,
       critical,
+      error: errorN,
       warning,
       summary: it.summary,
       lines,
@@ -101,8 +105,9 @@ const inspectIssueBlocks = computed(() => {
     })
   }
   blocks.sort((a, b) => {
-    const ra = a.critical > 0 ? 0 : a.warning > 0 ? 1 : 2
-    const rb = b.critical > 0 ? 0 : b.warning > 0 ? 1 : 2
+    const rank = (x) => (x.critical > 0 ? 0 : x.error > 0 ? 1 : x.warning > 0 ? 2 : 3)
+    const ra = rank(a)
+    const rb = rank(b)
     if (ra !== rb) return ra - rb
     return String(a.clusterName).localeCompare(String(b.clusterName), 'zh')
   })
@@ -118,12 +123,16 @@ const inspectListCacheTag = computed(() => {
 })
 const inspectCounts = computed(() => {
   let critical = 0
+  let errorN = 0
   let warning = 0
+  let info = 0
   for (const it of inspectItems.value) {
     critical += Number(it.critical) || 0
+    errorN += Number(it.error) || 0
     warning += Number(it.warning) || 0
+    info += Number(it.info) || 0
   }
-  return { critical, warning }
+  return { critical, error: errorN, warning, info }
 })
 const inspectHasRun = computed(() => inspectItems.value.some((it) => !!it.checkedAt))
 const inspectListRefreshing = computed(
@@ -148,12 +157,15 @@ const inspectMeta = computed(() => {
   const parts = [`${n} 个配置`]
   if (last) parts.push(`上次 ${fmtInspectTime(last)}`)
   if (next) parts.push(`下次 ${fmtInspectTime(next)}`)
-  const { critical, warning } = inspectCounts.value
-  if (critical || warning) {
+  const { critical, error: errorN, warning, info } = inspectCounts.value
+  if (critical || errorN || warning) {
     const bits = []
     if (critical) bits.push(`${critical} 严重`)
+    if (errorN) bits.push(`${errorN} 错误`)
     if (warning) bits.push(`${warning} 警告`)
     parts.push(bits.join(' / '))
+  } else if (info) {
+    parts.push(`${info} 提示`)
   } else if (last) {
     parts.push('全部正常')
   } else {
@@ -710,12 +722,13 @@ onMounted(enterPage)
               <strong>{{ block.clusterName }}</strong>
               <span class="tag" :class="block.inspecting ? 'inspect-running' : 'inspect-cache'">{{ blockCacheTag(block) }}</span>
               <span v-if="block.critical" class="tag sev-critical">{{ block.critical }} 严重</span>
+              <span v-if="block.error" class="tag sev-error">{{ block.error }} 错误</span>
               <span v-if="block.warning" class="tag sev-warning">{{ block.warning }} 警告</span>
             </div>
             <ul class="inspect-lines">
               <li v-for="(row, idx) in block.lines" :key="idx">
                 <div class="inspect-line inspect-line-static">
-                  <span class="tag" :class="row.severity === 'critical' ? 'sev-critical' : 'sev-warning'">
+                  <span class="tag" :class="severityClass(row.severity)">
                     {{ severityLabel(row.severity) }}
                   </span>
                   <span class="inspect-line-text">{{ issueLineBrief(row) }}</span>
@@ -726,6 +739,33 @@ onMounted(enterPage)
           </button>
         </article>
       </div>
+
+      <details class="inspect-rules" open>
+        <summary>基线与降级机制</summary>
+        <p class="inspect-rules-lead">巡检与诊断共用同一套定级。卡片和摘要看的是降级后的级别；提示不把集群刷成着火。</p>
+        <h3>四级</h3>
+        <ul>
+          <li>严重：集群或负载整体不可用，应立刻看。</li>
+          <li>错误：明确故障但未全挂，本周要处理。</li>
+          <li>警告：降级、压力、长期无人管的死问题。</li>
+          <li>提示：只留底，不当故障刷；摘要在仅有提示时写「N 提示」。</li>
+        </ul>
+        <h3>基线（刚出现、未降级）</h3>
+        <ul>
+          <li>严重：kubeconfig 不通；节点 Ready≠True；负载 ready=0；Pod CrashLoop / ImagePull / CreateContainerError / OOMKilled / Failed（排除 Evicted 等残留）。</li>
+          <li>错误：负载 0&lt;ready&lt;desired；节点 Disk/Memory/PID/Network 压力；Pod Running 未就绪或 Unknown；Pending Unschedulable 超过 2 分钟。</li>
+          <li>警告：CPU/内存 ≥ 90%；DaemonSet 仅 misscheduled；其它 Pending 超过 15 分钟；Restarts；独立成行的调度/挂载失败。</li>
+          <li>提示：不是新的事件类型，只作为降级终点。</li>
+        </ul>
+        <h3>降级</h3>
+        <ul>
+          <li>问题连续成立满 30 天降 1 级，满 60 天再降 1 级，最低到提示。时钟用条件首次成立时间，不跟每次重启刷新。</li>
+          <li>例如 ImagePullBackOff 基线是严重，满 60 天收敛为警告。</li>
+          <li>不降级：kubeconfig、节点 CPU/内存用量、节点压力、Restarts、独立事件。</li>
+          <li>节点 NotReady 要降；Ready 节点为 0 或未就绪 ≥ 半数时整组不降。</li>
+          <li>仍在 CrashLoop / OOM 的，降级下限是错误。kube-system / cattle-* / calico-* / istio-system 最多降 1 级且不低于错误（不会把警告抬成错误）。</li>
+        </ul>
+      </details>
     </section>
     <InspectionDrawer ref="inspectDrawer" />
   </div>

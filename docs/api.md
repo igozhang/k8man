@@ -69,6 +69,7 @@
   "issues": [
     {
       "severity": "critical",
+      "baseSeverity": "critical",
       "category": "pod",
       "kind": "Pod",
       "namespace": "default",
@@ -77,6 +78,7 @@
       "message": "back-off restarting failed container",
       "age": "12m",
       "since": "1m",
+      "sinceAt": "2026-08-20T00:00:00Z",
       "node": "n1",
       "nodeIP": "10.0.0.8",
       "container": "app",
@@ -97,14 +99,14 @@
       ]
     }
   ],
-  "counts": { "nodes": 0, "workloads": 0, "pods": 1, "events": 0, "critical": 1, "warning": 0 },
+  "counts": { "nodes": 0, "workloads": 0, "pods": 1, "events": 0, "critical": 1, "error": 0, "warning": 0, "info": 0 },
   "scan": { "nodes": 12, "pods": 80, "deployments": 20, "statefulSets": 2, "daemonSets": 3, "events": 40, "eventsAttached": 12, "logsFetched": 1, "elapsedMs": 900, "fromCache": true },
   "truncated": false,
   "skippedNodes": false
 }
 ```
 
-- `severity`：`critical` / `warning`。`Evicted` / `Shutdown` 等已被 kubelet 清掉的 Failed 残留不列入结果（节点恢复后无需处理）
+- `severity`：`critical`（严重）/ `error`（错误）/ `warning`（警告）/ `info`（提示）。基线由对象当前状态决定；连续成立满 30 天降 1 级、满 60 天再降 1 级，最低 `info`。`baseSeverity` 为降级前级别，`sinceAt` 为问题首次成立时间（RFC3339）。kubeconfig、节点用量/压力、Restarts、独立事件不降级；节点 NotReady 在集群过半未就绪时不降；CrashLoop/OOM 与系统命名空间最低 `error`。`Evicted` / `Shutdown` 等已被 kubelet 清掉的 Failed 残留不列入结果
 - `category`：`node` / `workload` / `pod` / `event`
 - `node` / `nodeIP`：所在节点名与节点 IP。Pod 来自 `spec.nodeName` / `status.hostIP`；Warning 事件优先取 `Event.source.host`，再用已扫描 Pod/Node 补 IP
 - `reporter` / `count`：事件上报组件（kubelet 等）与发生次数
@@ -186,7 +188,9 @@
       "elapsedMs": 900,
       "probeStatus": "ok",
       "critical": 1,
+      "error": 0,
       "warning": 2,
+      "info": 0,
       "summary": "1 严重 / 2 警告",
       "preview": [
         {

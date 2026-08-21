@@ -34,7 +34,11 @@ export function clusterStatusClass(status) {
 }
 
 export function severityLabel(s) {
-  return s === 'critical' ? '严重' : '警告'
+  return { critical: '严重', error: '错误', warning: '警告', info: '提示' }[s] || '警告'
+}
+
+export function severityClass(s) {
+  return { critical: 'sev-critical', error: 'sev-error', warning: 'sev-warning', info: 'sev-info' }[s] || 'sev-warning'
 }
 
 export function issueCategoryLabel(c) {

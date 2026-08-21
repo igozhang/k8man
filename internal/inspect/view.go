@@ -33,7 +33,9 @@ type ListItem struct {
 	ProbeStatus string         `json:"probeStatus,omitempty"`
 	ProbeError  string         `json:"probeError,omitempty"`
 	Critical    int            `json:"critical"`
+	Error       int            `json:"error"`
 	Warning     int            `json:"warning"`
+	Info        int            `json:"info"`
 	Summary     string         `json:"summary"`
 	Preview     []PreviewIssue `json:"preview"`
 	// HasScan / ScanPods / PodIssues come from the latest DiagnoseReport (overview cards).
@@ -81,7 +83,9 @@ func listItemFromRow(name string, row *store.InspectionRow, issues []kube.Issue,
 	item.ProbeStatus = row.ProbeStatus
 	item.ProbeError = row.ProbeError
 	item.Critical = row.Critical
+	item.Error = row.Error
 	item.Warning = row.Warning
+	item.Info = row.Info
 	if row.Summary != "" {
 		item.Summary = row.Summary
 	}

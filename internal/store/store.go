@@ -99,7 +99,12 @@ CREATE TABLE IF NOT EXISTS cluster_inspections (
   report_json TEXT NOT NULL DEFAULT ''
 );
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`ALTER TABLE cluster_inspections ADD COLUMN error INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE cluster_inspections ADD COLUMN info INTEGER NOT NULL DEFAULT 0`)
+	return nil
 }
 
 func encodeStrings(v []string) string {

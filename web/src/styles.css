@@ -10,6 +10,7 @@
   --accent: #3d6b4a;
   --accent-hover: #345a3f;
   --danger: #b42318;
+  --error: #c2410c;
   --ok: #2f6b45;
   --warn: #9a6700;
   --shell-max: 64rem; /* 运维表格略宽于博客 52rem，页眉正文仍同宽居中 */
@@ -1045,9 +1046,17 @@ body.is-drawer-resizing {
   background: rgba(180, 35, 24, 0.1);
   color: var(--danger);
 }
+.tag.sev-error {
+  background: rgba(194, 65, 12, 0.12);
+  color: var(--error);
+}
 .tag.sev-warning {
   background: rgba(154, 103, 0, 0.12);
   color: var(--warn);
+}
+.tag.sev-info {
+  background: rgba(90, 107, 90, 0.12);
+  color: var(--muted);
 }
 .inspect-box {
   margin-top: 20px;
@@ -1212,6 +1221,51 @@ body.is-drawer-resizing {
 .inspect-more:hover,
 .inspect-more:focus-visible {
   color: var(--accent);
+}
+.inspect-rules {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+.inspect-rules > summary {
+  display: flex;
+  align-items: center;
+  min-height: calc(var(--ctrl-pad-y) * 2 + var(--ctrl-font) * var(--ctrl-line));
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+.inspect-rules > summary::-webkit-details-marker {
+  display: none;
+}
+.inspect-rules > summary::before {
+  content: '▸';
+  margin-right: 8px;
+  color: var(--muted);
+  line-height: 1;
+}
+.inspect-rules[open] > summary::before {
+  content: '▾';
+}
+.inspect-rules-lead {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.inspect-rules h3 {
+  margin: 12px 0 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.inspect-rules ul {
+  margin: 0;
+  padding-left: 1.2em;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.inspect-rules li + li {
+  margin-top: 4px;
 }
 .inspect-drawer .inspect-drawer-probe {
   margin: 0 0 8px;

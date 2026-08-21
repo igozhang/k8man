@@ -15,15 +15,21 @@ func TestKubeconfigIssueAndSummary(t *testing.T) {
 	if iss.Severity != "critical" || iss.Category != "kubeconfig" || !strings.Contains(iss.Message, "x509") {
 		t.Fatalf("issue: %+v", iss)
 	}
-	if got := makeSummary(probe, 1, 0); got != "kubeconfig 无效" {
+	if got := makeSummary(probe, 1, 0, 0, 0); got != "kubeconfig 无效" {
 		t.Fatalf("summary %q", got)
 	}
 	ok := kube.ProbeResult{Status: "ok"}
-	if got := makeSummary(ok, 0, 0); got != "巡检正常" {
+	if got := makeSummary(ok, 0, 0, 0, 0); got != "巡检正常" {
 		t.Fatalf("ok summary %q", got)
 	}
-	if got := makeSummary(ok, 2, 3); got != "2 严重 / 3 警告" {
+	if got := makeSummary(ok, 2, 0, 3, 0); got != "2 严重 / 3 警告" {
 		t.Fatalf("count summary %q", got)
+	}
+	if got := makeSummary(ok, 1, 2, 0, 4); got != "1 严重 / 2 错误" {
+		t.Fatalf("omit info %q", got)
+	}
+	if got := makeSummary(ok, 0, 0, 0, 3); got != "3 提示" {
+		t.Fatalf("info only %q", got)
 	}
 }
 
