@@ -843,7 +843,6 @@ onUnmounted(() => {
               <span v-if="c.id === currentClusterId" class="tag current">当前</span>
             </div>
             <div v-if="c.description" class="muted">{{ c.description }}</div>
-            <div v-if="c.insecureSkipTLS" class="muted">TLS: 已跳过校验</div>
           </td>
           <td><span class="tag" :class="c.permType">{{ permTypeLabel(c.permType) }}</span></td>
           <td class="server-cell muted" :title="c.server">{{ c.server }}</td>
