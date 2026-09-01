@@ -139,11 +139,74 @@ export function isLiteralIP(host) {
   return false
 }
 
-/** serverOverride wins when set; else kubeconfig current-context cluster server. */
+export function normalizeHostname(h) {
+  return String(h || '').trim().toLowerCase().replace(/\.+$/, '')
+}
+
+/** Domain hostnames from API Server override, then kubeconfig cluster servers. */
+export function collectKubeconfigHostnames({ kubeconfig = '', serverOverride = '' } = {}) {
+  const out = []
+  const seen = new Set()
+  const addServer = (server) => {
+    const host = normalizeHostname(hostnameFromServerURL(server))
+    if (!host || isLiteralIP(host) || seen.has(host)) return
+    seen.add(host)
+    out.push(host)
+  }
+  addServer(serverOverride)
+  addServer(suggestServerFromKubeconfig(kubeconfig))
+  const { clusters } = parseKubeconfigLite(kubeconfig)
+  for (const server of clusters.values()) addServer(server)
+  return out
+}
+
+/** serverOverride domain wins; if override is an IP, fall back to kubeconfig. */
 export function suggestHostsHostname({ kubeconfig = '', serverOverride = '' } = {}) {
-  const override = String(serverOverride || '').trim()
-  const server = override || suggestServerFromKubeconfig(kubeconfig)
-  const hostname = hostnameFromServerURL(server)
-  if (!hostname || isLiteralIP(hostname)) return ''
-  return hostname
+  return collectKubeconfigHostnames({ kubeconfig, serverOverride })[0] || ''
+}
+
+/** Look up an existing hosts-file IP for hostname (case-insensitive). */
+export function lookupHostsIP(hostname, hosts = []) {
+  const host = normalizeHostname(hostname)
+  if (!host) return ''
+  const list = Array.isArray(hosts) ? hosts : []
+  for (const row of list) {
+    const name = normalizeHostname(row?.hostname || row?.id)
+    if (name === host) return String(row?.ip || '').trim()
+  }
+  return ''
+}
+
+/**
+ * Prefill hosts line: reuse existing IP when any detected hostname is already in Hosts;
+ * otherwise fall back to defaultIP (placeholder for the user to replace).
+ */
+export function suggestHostsLine({
+  kubeconfig = '',
+  serverOverride = '',
+  hosts = [],
+  defaultIP = '10.10.10.10'
+} = {}) {
+  const hostnames = collectKubeconfigHostnames({ kubeconfig, serverOverride })
+  if (!hostnames.length) return { hostname: '', ip: '', line: '', fromHosts: false }
+
+  for (const hostname of hostnames) {
+    const existing = lookupHostsIP(hostname, hosts)
+    if (existing) {
+      return {
+        hostname,
+        ip: existing,
+        line: `${existing} ${hostname}`,
+        fromHosts: true
+      }
+    }
+  }
+
+  const hostname = hostnames[0]
+  return {
+    hostname,
+    ip: defaultIP,
+    line: `${defaultIP} ${hostname}`,
+    fromHosts: false
+  }
 }

@@ -7,7 +7,7 @@ import { asArray, createSeq, errMessage } from '../utils/safe'
 import { cacheGet, cacheKey, invalidateClusterLists } from '../utils/resourceCache'
 import { permTypeLabel, clusterStatusLabel, clusterStatusClass, frontProxyLabel, frontProxyClass } from '../utils/labels'
 import { copyText } from '../utils/clipboard'
-import { suggestHostsHostname } from '../utils/kubeconfig'
+import { lookupHostsIP, suggestHostsLine } from '../utils/kubeconfig'
 import { canWrite } from '../stores/opsAuth'
 
 const FORM_HOST_DEFAULT_IP = '10.10.10.10'
@@ -40,6 +40,7 @@ const editSeq = createSeq()
 let copiedTimer = 0
 
 const hosts = ref([])
+const hostsLoaded = ref(false)
 const hostsPath = ref('')
 const hostError = ref('')
 const hostBusy = ref(false)
@@ -54,9 +55,16 @@ const formHostDetectedHostname = ref('')
 const formProbeOkKey = ref('')
 let formHostSuggestTimer = null
 
+const formHostExistingIP = computed(() => {
+  const host = formHostDetectedHostname.value
+  const ip = lookupHostsIP(host, hosts.value)
+  return ip && ip !== FORM_HOST_DEFAULT_IP ? ip : ''
+})
+
 const formHostPlaceholder = computed(() => {
   const host = formHostDetectedHostname.value
-  return host ? `${FORM_HOST_DEFAULT_IP} ${host}` : '10.10.10.10 igozhang.cn'
+  if (!host) return `${FORM_HOST_DEFAULT_IP} igozhang.cn`
+  return `${formHostExistingIP.value || FORM_HOST_DEFAULT_IP} ${host}`
 })
 
 function suggestNameFromKubeconfig(text) {
@@ -129,15 +137,19 @@ function clearFormProbeOk() {
   formProbeOkKey.value = ''
 }
 
-/** 从 kubeconfig 提取 API 域名，预填「10.10.10.10 域名」供手动改 IP */
+/** 从 kubeconfig 提取 API 域名；已有 Hosts 则引用其 IP，否则预填占位 IP 供手动改 */
 function refreshFormHostSuggest() {
   if (!showForm.value) return
+  // Hosts 尚未拉完时不要先填占位 IP，否则编辑已有记录时会闪一下 10.10.10.10
+  if (!hostsLoaded.value) return
 
-  const hostname = suggestHostsHostname({
+  const suggested = suggestHostsLine({
     kubeconfig: form.value.kubeconfig,
-    serverOverride: form.value.serverOverride
+    serverOverride: form.value.serverOverride,
+    hosts: hosts.value,
+    defaultIP: FORM_HOST_DEFAULT_IP
   })
-  if (!hostname) {
+  if (!suggested.hostname) {
     formHostDetectedHostname.value = ''
     if (!formHostLine.value.trim() || formHostLine.value === formHostAutoLine.value) {
       formHostLine.value = ''
@@ -146,14 +158,25 @@ function refreshFormHostSuggest() {
     return
   }
 
-  formHostDetectedHostname.value = hostname
+  formHostDetectedHostname.value = suggested.hostname
 
   const current = formHostLine.value.trim()
-  if (current && current !== formHostAutoLine.value) return
+  const canReplace = !current
+    || current === formHostAutoLine.value
+    || isFormHostPlaceholderLine(current)
+  if (!canReplace) return
 
-  const line = `${FORM_HOST_DEFAULT_IP} ${hostname}`
-  formHostAutoLine.value = line
-  formHostLine.value = line
+  formHostAutoLine.value = suggested.line
+  formHostLine.value = suggested.line
+}
+
+/** 占位 IP 且 Hosts 里已有真实地址时，改用已有 IP，避免编辑已配置集群时仍卡住 */
+function adoptExistingHostIfPlaceholder(raw) {
+  const parsed = parseHostLine(raw)
+  if (!parsed || parsed.ip !== FORM_HOST_DEFAULT_IP) return ''
+  const existing = lookupHostsIP(parsed.hostname, hosts.value)
+  if (!existing || existing === FORM_HOST_DEFAULT_IP) return ''
+  return `${existing} ${parsed.hostname}`
 }
 
 function onFormHostInput() {
@@ -234,6 +257,8 @@ async function loadHosts() {
     hostError.value = errMessage(e)
     hosts.value = []
   }
+  hostsLoaded.value = true
+  if (showForm.value) refreshFormHostSuggest()
 }
 
 function formatHostLine(h) {
@@ -297,6 +322,11 @@ async function persistHostLine(raw, { clearInputRef = null } = {}) {
 
 async function addFormHost() {
   if (!formHostLine.value.trim()) return
+  const adopted = adoptExistingHostIfPlaceholder(formHostLine.value)
+  if (adopted) {
+    formHostLine.value = adopted
+    formHostAutoLine.value = adopted
+  }
   if (isFormHostPlaceholderLine(formHostLine.value)) {
     formHostError.value = formHostPlaceholderError()
     return
@@ -322,6 +352,11 @@ async function addFormHost() {
 async function ensureFormHostApplied() {
   if (!canWrite.value) return true
   if (!formHostLine.value.trim()) return true
+  const adopted = adoptExistingHostIfPlaceholder(formHostLine.value)
+  if (adopted) {
+    formHostLine.value = adopted
+    formHostAutoLine.value = adopted
+  }
   if (isFormHostPlaceholderLine(formHostLine.value)) {
     formHostError.value = formHostPlaceholderError()
     return false
@@ -470,7 +505,7 @@ async function openEdit(c) {
   formTesting.value = false
   showForm.value = true
   try {
-    const detail = await readApi.getCluster(c.id)
+    const [detail] = await Promise.all([readApi.getCluster(c.id), loadHosts()])
     if (!editSeq.is(seq)) return
     const kubeconfig = String(detail?.kubeconfig || '')
     const server = detail?.server || c.server || ''
@@ -493,7 +528,7 @@ async function openEdit(c) {
     }
     await nextTick()
     yamlInput.value?.focus()
-    scheduleFormHostSuggest()
+    refreshFormHostSuggest()
   } catch (e) {
     if (!editSeq.is(seq)) return
     formError.value = `加载 kubeconfig 失败：${errMessage(e)}`
@@ -760,10 +795,11 @@ function onEscape(e) {
 
 onMounted(async () => {
   await load()
-  loadHosts()
+  const hostsPromise = loadHosts()
   window.addEventListener('keydown', onEscape)
   const editId = String(route.query.edit || '')
   if (editId && canWrite.value) {
+    await hostsPromise
     const c = list.value.find((x) => x.id === editId)
     if (c) openEdit(c)
     router.replace({ path: '/clusters' })
@@ -1037,10 +1073,12 @@ onUnmounted(() => {
       <div class="form-row">
         <label>
           Hosts
-          <span class="muted">（可选；粘贴 kubeconfig 后自动填入 <code>10.10.10.10 域名</code>，请改 IP 后添加）</span>
+          <span v-if="formHostExistingIP" class="muted">（已引用 Hosts 中该域名的 IP；可改后点添加覆盖）</span>
+          <span v-else class="muted">（可选；粘贴 kubeconfig 后自动填入 <code>10.10.10.10 域名</code>，请改 IP 后添加）</span>
         </label>
         <div v-if="formHostDetectedHostname" class="muted form-host-detected">
           识别域名：<code>{{ formHostDetectedHostname }}</code>
+          <template v-if="formHostExistingIP"> · 已有 IP：<code>{{ formHostExistingIP }}</code></template>
         </div>
         <div class="toolbar toolbar-start host-add-bar form-host-bar">
           <input

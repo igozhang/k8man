@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { suggestHostsHostname, suggestServerFromKubeconfig } from './kubeconfig.js'
+import {
+  lookupHostsIP,
+  suggestHostsHostname,
+  suggestHostsLine,
+  suggestServerFromKubeconfig
+} from './kubeconfig.js'
 
 const rancherSample = `apiVersion: v1
 clusters:
@@ -43,6 +48,69 @@ describe('kubeconfig hosts hostname', () => {
         serverOverride: 'https://override.example.com/'
       }),
       'override.example.com'
+    )
+  })
+
+  it('falls back to kubeconfig hostname when serverOverride is an IP', () => {
+    assert.equal(
+      suggestHostsHostname({
+        kubeconfig: rancherSample,
+        serverOverride: 'https://192.168.8.20/k8s/clusters/local'
+      }),
+      'rancher-dianbai.sunwoda-evb.com'
+    )
+  })
+
+  it('looks up existing hosts IP case-insensitively', () => {
+    assert.equal(
+      lookupHostsIP('Rancher-Dianbai.sunwoda-evb.com.', [
+        { hostname: 'rancher-dianbai.sunwoda-evb.com', ip: '192.168.8.20' }
+      ]),
+      '192.168.8.20'
+    )
+    assert.equal(lookupHostsIP('missing.example', [{ hostname: 'other', ip: '1.1.1.1' }]), '')
+  })
+
+  it('reuses existing hosts IP instead of placeholder', () => {
+    assert.deepEqual(
+      suggestHostsLine({
+        kubeconfig: rancherSample,
+        hosts: [{ hostname: 'rancher-dianbai.sunwoda-evb.com', ip: '192.168.8.20' }]
+      }),
+      {
+        hostname: 'rancher-dianbai.sunwoda-evb.com',
+        ip: '192.168.8.20',
+        line: '192.168.8.20 rancher-dianbai.sunwoda-evb.com',
+        fromHosts: true
+      }
+    )
+  })
+
+  it('finds hosts IP via kubeconfig hostname when override is an IP', () => {
+    assert.deepEqual(
+      suggestHostsLine({
+        kubeconfig: rancherSample,
+        serverOverride: 'https://10.20.30.40/k8s/clusters/local',
+        hosts: [{ hostname: 'rancher-dianbai.sunwoda-evb.com', ip: '192.168.8.20' }]
+      }),
+      {
+        hostname: 'rancher-dianbai.sunwoda-evb.com',
+        ip: '192.168.8.20',
+        line: '192.168.8.20 rancher-dianbai.sunwoda-evb.com',
+        fromHosts: true
+      }
+    )
+  })
+
+  it('falls back to placeholder IP when hosts has no match', () => {
+    assert.deepEqual(
+      suggestHostsLine({ kubeconfig: rancherSample, hosts: [] }),
+      {
+        hostname: 'rancher-dianbai.sunwoda-evb.com',
+        ip: '10.10.10.10',
+        line: '10.10.10.10 rancher-dianbai.sunwoda-evb.com',
+        fromHosts: false
+      }
     )
   })
 })
