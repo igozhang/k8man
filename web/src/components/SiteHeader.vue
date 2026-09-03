@@ -110,7 +110,7 @@ onUnmounted(() => {
           <RouterLink to="/">概览</RouterLink>
           <RouterLink to="/clusters">KubeConfig</RouterLink>
           <RouterLink to="/workloads">工作负载</RouterLink>
-          <RouterLink to="/monitor">监控</RouterLink>
+          <RouterLink to="/monitor">巡检</RouterLink>
           <RouterLink to="/diagnose">诊断</RouterLink>
           <RouterLink to="/docs">运维文档</RouterLink>
         </nav>
