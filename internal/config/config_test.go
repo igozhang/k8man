@@ -54,3 +54,12 @@ func TestResolveIcon(t *testing.T) {
 		t.Fatalf("fallback: got %q", p)
 	}
 }
+
+func TestParsePositiveInt(t *testing.T) {
+	if parsePositiveInt("", 4) != 4 || parsePositiveInt("0", 4) != 4 || parsePositiveInt("x", 4) != 4 {
+		t.Fatal("invalid should use default")
+	}
+	if parsePositiveInt("6", 4) != 6 {
+		t.Fatal("want 6")
+	}
+}

@@ -17,6 +17,11 @@ type Config struct {
 	Title      string
 	BannerName string
 	IconName   string
+
+	// InspectConcurrency is the base parallel patrol slots (default 4).
+	InspectConcurrency int
+	// InspectConcurrencyMax is the hard cap when backlog expands (default 8).
+	InspectConcurrencyMax int
 }
 
 type UISettings struct {
@@ -51,6 +56,8 @@ title=k8s多集群运维
 # | title     | （仅 conf）      | k8s多集群运维           | 页眉左侧品牌名；兼浏览器标签页标题 |
 # | icon      | （仅 conf）      | （自动探测）            | etc 下站点 icon 文件名 |
 # | banner    | （仅 conf）      | （自动探测）            | etc 下图片文件名 |
+# | inspect_concurrency     | K8MAN_INSPECT_CONCURRENCY     | 4 | 巡检基础并发（有界并行） |
+# | inspect_concurrency_max | K8MAN_INSPECT_CONCURRENCY_MAX | 8 | 积压时自动扩容上限（须 ≥ 基础并发，否则抬到 ≥ base） |
 # | hosts     | （文件）         | <etc>/hosts             | 私有解析，格式：IP hostname |
 #
 # 页眉 slogan 固定为 practice makes perfect，不可配置；双击可复制 igokey。
@@ -72,17 +79,19 @@ title=k8s多集群运维
 #   10.10.10.10 igozhang.cn
 #   可直接编辑该文件，或在页面 Hosts 管理中修改。
 #
-# 巡检（进程内，无独立配置项，约 2 小时一轮）：
-#   对每个已保存 kubeconfig 独立计时（完成后 ±6 分钟抖动），串行执行
-#   （同时只跑 1 个，间隔约 15 秒）。先 Probe（与页面「测试」相同并回写状态），
-#   成功再跑 Diagnose（节点/负载/Pod/事件；project 跳过节点）。
-#   进程退出或请求取消时不落库，避免把关机写成 kubeconfig 无效。
-#   结果在「监控」页底部摘要；手动巡检在页内选择 kubeconfig 后点「一键巡检」
-#   （先展示缓存快照，再实时 Probe + 诊断并更新）。
+# 巡检（进程内，约 2 小时一轮）：
+#   对每个已保存 kubeconfig 独立计时（完成后 ±6 分钟抖动）。
+#   有界并发：默认同时 4 路；到期积压超过基础并发时自动扩容，上限默认 8。
+#   启动节流：两次成功开始至少间隔约 2 秒；在途/忙集群跳过且不消耗间隔。
+#   同一集群同时只跑一轮（后台与手动互斥）。先 Probe，成功再 Diagnose。
+#   单次巡检体超时约 45 秒；页面一键巡检 HTTP 约 90 秒。
+#   进程退出或请求取消时不落库。结果在「监控」页底部；手动「一键巡检」走写接口。
 #   改 kubeconfig / API Server / TLS 会丢掉该配置的旧巡检快照。
 #
 # ----- 示例 -----
 # db_path=./data/k8man.db
+# inspect_concurrency=4
+# inspect_concurrency_max=8
 # icon=icon.png
 # banner=banner.jpg
 #
@@ -113,14 +122,22 @@ func Load() Config {
 	)
 	ui := uiFromVals(fileVals)
 
+	baseConc := parsePositiveInt(firstNonEmpty(os.Getenv("K8MAN_INSPECT_CONCURRENCY"), fileVals["inspect_concurrency"]), 4)
+	maxConc := parsePositiveInt(firstNonEmpty(os.Getenv("K8MAN_INSPECT_CONCURRENCY_MAX"), fileVals["inspect_concurrency_max"]), 8)
+	if maxConc < baseConc {
+		maxConc = baseConc
+	}
+
 	return Config{
-		Addr:       addr,
-		DBPath:     dbPath,
-		DataDir:    dataDir,
-		EtcDir:     etcDir,
-		Title:      ui.Title,
-		BannerName: ui.BannerName,
-		IconName:   ui.IconName,
+		Addr:                  addr,
+		DBPath:                dbPath,
+		DataDir:               dataDir,
+		EtcDir:                etcDir,
+		Title:                 ui.Title,
+		BannerName:            ui.BannerName,
+		IconName:              ui.IconName,
+		InspectConcurrency:    baseConc,
+		InspectConcurrencyMax: maxConc,
 	}
 }
 
@@ -236,6 +253,27 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func parsePositiveInt(raw string, def int) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def
+	}
+	n := 0
+	for _, c := range raw {
+		if c < '0' || c > '9' {
+			return def
+		}
+		n = n*10 + int(c-'0')
+		if n > 1000 {
+			return def
+		}
+	}
+	if n <= 0 {
+		return def
+	}
+	return n
 }
 
 func firstNonEmpty(vals ...string) string {

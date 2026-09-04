@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gitee.com/k8man/internal/hostsfile"
@@ -14,37 +15,99 @@ import (
 	"gitee.com/k8man/internal/store"
 )
 
+// Options tunes background patrol concurrency.
+type Options struct {
+	Concurrency    int // base parallel slots (default 4)
+	ConcurrencyMax int // hard cap when backlog expands (default 8)
+}
+
 // Worker runs per-cluster patrols on a 2h stagger and serves stored snapshots.
 type Worker struct {
 	Store *store.Store
 	Pool  *kube.Pool
 	Hosts *hostsfile.File
 
+	baseConcurrency int
+	maxConcurrency  int
+
 	now    func() time.Time
 	jitter func() time.Duration
-	mu     sync.Mutex
+
+	gates    sync.Map // clusterID -> chan struct{} (cap 1)
+	inFlight atomic.Int32
 }
 
 func New(st *store.Store, pool *kube.Pool, hosts *hostsfile.File) *Worker {
+	return NewWithOptions(st, pool, hosts, Options{})
+}
+
+func NewWithOptions(st *store.Store, pool *kube.Pool, hosts *hostsfile.File, opts Options) *Worker {
+	base := opts.Concurrency
+	if base <= 0 {
+		base = DefaultConcurrency
+	}
+	max := opts.ConcurrencyMax
+	if max <= 0 {
+		max = DefaultConcurrencyMax
+	}
+	if max < base {
+		max = base
+	}
 	return &Worker{
-		Store:  st,
-		Pool:   pool,
-		Hosts:  hosts,
-		now:    time.Now,
-		jitter: RandomJitter,
+		Store:           st,
+		Pool:            pool,
+		Hosts:           hosts,
+		baseConcurrency: base,
+		maxConcurrency:  max,
+		now:             time.Now,
+		jitter:          RandomJitter,
 	}
 }
 
-// Loop inspects due clusters one at a time until ctx is cancelled.
+func (w *Worker) gate(clusterID string) chan struct{} {
+	ch, _ := w.gates.LoadOrStore(clusterID, make(chan struct{}, 1))
+	return ch.(chan struct{})
+}
+
+func (w *Worker) tryAcquireCluster(clusterID string) bool {
+	ch := w.gate(clusterID)
+	select {
+	case ch <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *Worker) acquireCluster(ctx context.Context, clusterID string) error {
+	ch := w.gate(clusterID)
+	select {
+	case ch <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (w *Worker) releaseCluster(clusterID string) {
+	ch := w.gate(clusterID)
+	select {
+	case <-ch:
+	default:
+	}
+}
+
+// Loop inspects due clusters with bounded parallelism until ctx is cancelled.
 func (w *Worker) Loop(ctx context.Context) {
 	if w == nil {
 		return
 	}
+	var lastStart time.Time
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		id, err := w.nextDueID()
+		due, err := w.listDueIDs()
 		if err != nil {
 			log.Printf("inspect list: %v", err)
 			if sleepCtx(ctx, Tick) != nil {
@@ -52,43 +115,79 @@ func (w *Worker) Loop(ctx context.Context) {
 			}
 			continue
 		}
-		if id == "" {
-			if sleepCtx(ctx, Tick) != nil {
+
+		limit := EffectiveConcurrency(len(due), w.baseConcurrency, w.maxConcurrency)
+		started := 0
+		for _, id := range due {
+			if int(w.inFlight.Load()) >= limit {
+				break
+			}
+			// Skip busy clusters without burning MinStartGap (in-flight still appear in due).
+			if !w.tryAcquireCluster(id) {
+				continue
+			}
+			if !lastStart.IsZero() {
+				if wait := MinStartGap - w.now().Sub(lastStart); wait > 0 {
+					if sleepCtx(ctx, wait) != nil {
+						w.releaseCluster(id)
+						return
+					}
+				}
+			}
+			lastStart = w.now()
+			w.inFlight.Add(1)
+			started++
+			go func(clusterID string) {
+				defer w.inFlight.Add(-1)
+				defer w.releaseCluster(clusterID)
+				if _, err := w.runClusterBody(ctx, clusterID, false); err != nil &&
+					!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					log.Printf("inspect %s: %v", clusterID, err)
+				}
+			}(id)
+		}
+
+		if started == 0 {
+			pause := MinStartGap
+			if len(due) == 0 && w.inFlight.Load() == 0 {
+				pause = Tick
+			}
+			if sleepCtx(ctx, pause) != nil {
 				return
 			}
-			continue
-		}
-		if _, err := w.RunCluster(ctx, id, false); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("inspect %s: %v", id, err)
-		}
-		if sleepCtx(ctx, MinGap) != nil {
-			return
 		}
 	}
 }
 
-func (w *Worker) nextDueID() (string, error) {
+func (w *Worker) listDueIDs() ([]string, error) {
 	clusters, err := w.Store.ListClusters()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	rows, err := w.Store.ListInspections()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return PickDue(w.now(), clusters, inspectionMap(rows)), nil
+	return ListDue(w.now(), clusters, inspectionMap(rows)), nil
 }
 
 // RunCluster probes kubeconfig then (on success) runs Diagnose. force bypasses MinAge.
+// Same cluster cannot run twice at once (background or manual); waits for the gate.
 func (w *Worker) RunCluster(ctx context.Context, clusterID string, force bool) (*Detail, error) {
 	if w == nil || w.Store == nil {
 		return nil, errors.New("inspect worker not configured")
 	}
+	if err := w.acquireCluster(ctx, clusterID); err != nil {
+		return nil, err
+	}
+	defer w.releaseCluster(clusterID)
+	return w.runClusterBody(ctx, clusterID, force)
+}
+
+func (w *Worker) runClusterBody(ctx context.Context, clusterID string, force bool) (*Detail, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	cl, err := w.Store.GetCluster(clusterID, true)
 	if err != nil {

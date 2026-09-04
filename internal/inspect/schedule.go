@@ -11,14 +11,19 @@ import (
 )
 
 const (
-	Interval    = 2 * time.Hour
-	Jitter      = 6 * time.Minute
-	MinAge      = 110 * time.Minute
-	MinGap      = 15 * time.Second
+	Interval = 2 * time.Hour
+	Jitter   = 6 * time.Minute
+	MinAge   = 110 * time.Minute
+	// MinStartGap is the minimum pause between *starting* two patrols.
+	// Replaces the old global MinGap (15s after each run), which forced full serialisation.
+	MinStartGap = 2 * time.Second
 	Tick        = time.Minute
 	RunTimeout  = 45 * time.Second
 	PreviewMax  = 8
 	PreviewClip = 120
+
+	DefaultConcurrency    = 4
+	DefaultConcurrencyMax = 8
 )
 
 // ShouldSkip reports whether a cluster was inspected too recently.
@@ -53,6 +58,27 @@ func Hash32(id string) uint32 {
 	return h.Sum32()
 }
 
+// EffectiveConcurrency returns how many patrols may run at once.
+// Base slots when backlog is small; expands toward max when dueCount > base.
+func EffectiveConcurrency(dueCount, base, max int) int {
+	if base < 1 {
+		base = DefaultConcurrency
+	}
+	if max < 1 {
+		max = DefaultConcurrencyMax
+	}
+	if max < base {
+		max = base
+	}
+	if dueCount <= base {
+		return base
+	}
+	if dueCount >= max {
+		return max
+	}
+	return dueCount
+}
+
 type dueCandidate struct {
 	id   string
 	due  time.Time
@@ -60,10 +86,7 @@ type dueCandidate struct {
 	seen bool
 }
 
-// PickDue returns the next cluster that should run. Never-inspected clusters
-// come first (stable hash order); otherwise the earliest nextDue that is due
-// and not inside MinAge. Empty string means nothing is due.
-func PickDue(now time.Time, clusters []model.Cluster, rows map[string]store.InspectionRow) string {
+func dueCandidates(now time.Time, clusters []model.Cluster, rows map[string]store.InspectionRow) []dueCandidate {
 	cands := make([]dueCandidate, 0, len(clusters))
 	for _, c := range clusters {
 		if c.ID == "" {
@@ -82,9 +105,6 @@ func PickDue(now time.Time, clusters []model.Cluster, rows map[string]store.Insp
 		}
 		cands = append(cands, dueCandidate{id: c.ID, due: row.NextDue, hash: Hash32(c.ID), seen: true})
 	}
-	if len(cands) == 0 {
-		return ""
-	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		if cands[i].seen != cands[j].seen {
 			return !cands[i].seen
@@ -97,7 +117,26 @@ func PickDue(now time.Time, clusters []model.Cluster, rows map[string]store.Insp
 		}
 		return cands[i].hash < cands[j].hash
 	})
-	return cands[0].id
+	return cands
+}
+
+// ListDue returns all clusters that should run, earliest / never-inspected first.
+func ListDue(now time.Time, clusters []model.Cluster, rows map[string]store.InspectionRow) []string {
+	cands := dueCandidates(now, clusters, rows)
+	out := make([]string, len(cands))
+	for i, c := range cands {
+		out[i] = c.id
+	}
+	return out
+}
+
+// PickDue returns the next cluster that should run, or empty if none is due.
+func PickDue(now time.Time, clusters []model.Cluster, rows map[string]store.InspectionRow) string {
+	ids := ListDue(now, clusters, rows)
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
 }
 
 func inspectionMap(rows []store.InspectionRow) map[string]store.InspectionRow {

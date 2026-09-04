@@ -163,11 +163,21 @@
 
 ### 巡检
 
-进程内后台对每个已保存 kubeconfig **独立计时**：约 **2 小时** 一轮（完成后再加 ±6 分钟抖动），**串行**执行（同时只跑 1 个，间隔约 15 秒），避免同时打满 API Server。距上次完成不足约 1 小时 50 分则跳过。从未巡检的配置启动后按 id 哈希顺序补跑。周期写死在进程内，**不是** `k8man.conf` 配置项（说明见 conf 尾部注释）。
+进程内后台对每个已保存 kubeconfig **独立计时**：约 **2 小时** 一轮（完成后再加 ±6 分钟抖动）。
+
+| 项 | 默认 / 行为 |
+|----|-------------|
+| 基础并发 | `inspect_concurrency` / `K8MAN_INSPECT_CONCURRENCY` = **4** |
+| 扩容上限 | `inspect_concurrency_max` / `K8MAN_INSPECT_CONCURRENCY_MAX` = **8**（积压超过基础并发时自动扩到上限；`max < base` 时抬到 ≥ base） |
+| 启动节流 | 两次成功开始至少间隔约 **2 秒**；在途/忙集群跳过且不消耗间隔 |
+| 同集群互斥 | 后台与 `POST .../inspect` 同一 `clusterId` 同时只跑一轮 |
+| 跳过窗口 | 距上次完成不足约 **1 小时 50 分**（`MinAge`）则跳过 |
+| 单次超时 | 巡检体约 **45 秒**；写接口 HTTP 超时约 **90 秒** |
+| 首轮顺序 | 从未巡检的配置按 id 哈希稳定排序补跑 |
 
 每轮复用现有逻辑：先 `Probe`（与「测试」相同，并回写 `status` / `permType` / `namespaces` / `server` / `lastError` / `frontProxy`）；失败则记 kubeconfig 无效，不再跑诊断。成功则跑 `Diagnose`（节点/负载/Pod/事件，含节点 CPU/内存 ≥90%；project 跳过节点）。每集群只保留最近一轮。进程退出或请求取消时不落库。改 kubeconfig / API Server / TLS 会删除该集群巡检记录，按尚未巡检重新排队。
 
-监控页底部按集群分块展示问题摘要（每块最多 3 条预览，只含严重/错误/警告；仅有提示时 summary 为「N 提示」、不当故障刷块）。定级与诊断页相同（含 Restarts）。「一键巡检」与「详情」对路径指定集群执行 `POST /clusters/:id/inspect`（`force`，先可展示 `GET /inspections/:id` 缓存，再实时 Probe + 诊断并更新）。
+监控页底部按集群分块展示问题摘要（每块最多 3 条预览，只含严重/错误/警告；仅有提示时 summary 为「N 提示」、不当故障刷块）。定级与诊断页相同（含 Restarts）。「一键巡检」与「详情」对路径指定集群执行 `POST /clusters/:id/inspect`（`force`，先可展示 `GET /inspections/:id` 缓存，再实时 Probe + 诊断并更新）。手动巡检不占用后台全局并发计数，但仍与同集群后台任务互斥。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -250,7 +260,7 @@
 | PUT | `/clusters/:id` | 更新；改 kubeconfig / server / TLS 会清空探测结果、丢弃该集群的客户端缓存，并删除其巡检快照 |
 | DELETE | `/clusters/:id` | 删除（同时删除该集群巡检记录） |
 | POST | `/clusters/:id/test` | 连通、权限与入口重探测，并回写 `status` / `permType` / `namespaces` / `server` / `lastError` / `frontProxy` |
-| POST | `/clusters/:id/inspect` | 对**该**集群立即巡检（Probe + 诊断），重置其 2 小时计时；与后台巡检串行，超时约 90 秒 |
+| POST | `/clusters/:id/inspect` | 对**该**集群立即巡检（Probe + 诊断），重置其 2 小时计时；与同集群后台互斥排队；HTTP 超时约 90 秒（单次巡检体约 45 秒） |
 
 导入 body：`{name, description, kubeconfig, serverOverride?, insecureSkipTLS?}`。`name` 可空，取 kubeconfig 的 `current-context`。`serverOverride` 会改写 kubeconfig 内 cluster.server。
 

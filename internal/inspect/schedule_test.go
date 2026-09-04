@@ -78,3 +78,43 @@ func TestHash32Stable(t *testing.T) {
 		t.Fatal("hash should be stable and differ by id")
 	}
 }
+
+func TestEffectiveConcurrency(t *testing.T) {
+	cases := []struct {
+		due, base, max, want int
+	}{
+		{0, 4, 8, 4},
+		{3, 4, 8, 4},
+		{4, 4, 8, 4},
+		{5, 4, 8, 5},
+		{8, 4, 8, 8},
+		{200, 4, 8, 8},
+		{10, 0, 0, 8}, // falls back to defaults then clamps
+		{3, 4, 2, 4},   // max < base → max raised to base in EffectiveConcurrency? 
+	}
+	// For max < base, EffectiveConcurrency sets max = base, so due=3 → 4
+	if got := EffectiveConcurrency(3, 4, 2); got != 4 {
+		t.Fatalf("max<base: got %d want 4", got)
+	}
+	for _, c := range cases[:6] {
+		if got := EffectiveConcurrency(c.due, c.base, c.max); got != c.want {
+			t.Fatalf("due=%d base=%d max=%d: got %d want %d", c.due, c.base, c.max, got, c.want)
+		}
+	}
+	if got := EffectiveConcurrency(10, 0, 0); got != DefaultConcurrencyMax {
+		// base defaults to 4, due=10 > 4, max defaults to 8 → 8
+		t.Fatalf("defaults: got %d want %d", got, DefaultConcurrencyMax)
+	}
+}
+
+func TestListDueMultiple(t *testing.T) {
+	now := time.Date(2026, 8, 20, 8, 0, 0, 0, time.UTC)
+	clusters := []model.Cluster{{ID: "aaa"}, {ID: "bbb"}, {ID: "ccc"}}
+	ids := ListDue(now, clusters, nil)
+	if len(ids) != 3 {
+		t.Fatalf("want 3 due, got %v", ids)
+	}
+	if PickDue(now, clusters, nil) != ids[0] {
+		t.Fatalf("PickDue should match ListDue[0]")
+	}
+}

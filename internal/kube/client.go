@@ -86,8 +86,12 @@ func (p *Pool) Get(id, kubeconfigYAML string) (*Clients, error) {
 		return nil, err
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Another goroutine may have filled the cache while we built.
+	if existing, ok := p.clients[id]; ok {
+		return existing, nil
+	}
 	p.clients[id] = c
-	p.mu.Unlock()
 	return c, nil
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,4 +40,54 @@ func TestRunClusterCanceledDoesNotPersist(t *testing.T) {
 	if err != nil || cl == nil || cl.Status != "unknown" {
 		t.Fatalf("cluster status should stay unknown: %v %+v", err, cl)
 	}
+}
+
+func TestClusterGateSerializesSameID(t *testing.T) {
+	w := New(nil, nil, nil)
+	var concurrent atomic.Int32
+	var maxSeen atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := w.acquireCluster(context.Background(), "same"); err != nil {
+				t.Errorf("acquire: %v", err)
+				return
+			}
+			n := concurrent.Add(1)
+			for {
+				cur := maxSeen.Load()
+				if n <= cur || maxSeen.CompareAndSwap(cur, n) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			concurrent.Add(-1)
+			w.releaseCluster("same")
+		}()
+	}
+	wg.Wait()
+	if maxSeen.Load() != 1 {
+		t.Fatalf("same cluster must be exclusive, max concurrent=%d", maxSeen.Load())
+	}
+}
+
+func TestTryAcquireBusy(t *testing.T) {
+	w := New(nil, nil, nil)
+	if !w.tryAcquireCluster("c1") {
+		t.Fatal("first acquire should succeed")
+	}
+	if w.tryAcquireCluster("c1") {
+		t.Fatal("second try should fail while held")
+	}
+	if !w.tryAcquireCluster("c2") {
+		t.Fatal("other cluster should succeed")
+	}
+	w.releaseCluster("c1")
+	w.releaseCluster("c2")
+	if !w.tryAcquireCluster("c1") {
+		t.Fatal("after release should succeed")
+	}
+	w.releaseCluster("c1")
 }

@@ -53,7 +53,10 @@ func main() {
 	defer rootCancel()
 	go hostsFile.Watch(rootCtx, 2*time.Second)
 
-	inspector := inspect.New(st, pool, hostsFile)
+	inspector := inspect.NewWithOptions(st, pool, hostsFile, inspect.Options{
+		Concurrency:    cfg.InspectConcurrency,
+		ConcurrencyMax: cfg.InspectConcurrencyMax,
+	})
 	go inspector.Loop(rootCtx)
 
 	var webFS fs.FS
@@ -87,8 +90,9 @@ func main() {
 	if ui.IconPath != "" {
 		iconNote = ui.IconPath
 	}
-	log.Printf("k8man %s listening on %s (db=%s etc=%s hosts=%s banner=%s icon=%s)",
-		version, cfg.Addr, cfg.DBPath, cfg.EtcDir, hostsFile.Path(), bannerNote, iconNote)
+	log.Printf("k8man %s listening on %s (db=%s etc=%s hosts=%s banner=%s icon=%s inspect=%d..%d)",
+		version, cfg.Addr, cfg.DBPath, cfg.EtcDir, hostsFile.Path(), bannerNote, iconNote,
+		cfg.InspectConcurrency, cfg.InspectConcurrencyMax)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,

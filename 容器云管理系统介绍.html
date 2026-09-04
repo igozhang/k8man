@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>容器云管理系统介绍</title>
+<style>
+  :root {
+    --bg: #f8fafc;
+    --bg2: rgba(255, 255, 255, 0.75);
+    --ink: #1e293b;
+    --muted: #64748b;
+    --rule: rgba(79, 70, 229, 0.12);
+    --accent: #4F46E5;
+    --accent2: #7C3AED;
+    --success: #16A34A;
+    --warn: #D97706;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    color: var(--ink);
+    background: var(--bg);
+    position: relative;
+    min-height: 100vh;
+  }
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background:
+      radial-gradient(ellipse at top left, rgba(79, 70, 229, 0.08), transparent 50%),
+      radial-gradient(ellipse at top right, rgba(124, 58, 237, 0.07), transparent 50%),
+      radial-gradient(ellipse at bottom center, rgba(79, 70, 229, 0.05), transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 40px 24px 60px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .hero {
+    background: linear-gradient(135deg, rgba(79, 70, 229, 0.95), rgba(124, 58, 237, 0.95));
+    color: #fff;
+    border-radius: 20px;
+    padding: 48px 40px;
+    margin-bottom: 32px;
+    box-shadow: 0 20px 50px rgba(79, 70, 229, 0.25);
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::after {
+    content: '';
+    position: absolute;
+    right: -60px; bottom: -60px;
+    width: 240px; height: 240px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 50%;
+  }
+  .hero .tag {
+    display: inline-block;
+    background: rgba(255,255,255,0.2);
+    backdrop-filter: blur(10px);
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 16px;
+    letter-spacing: 0.5px;
+  }
+  .hero h1 {
+    font-size: 32px;
+    font-weight: 700;
+    margin-bottom: 12px;
+    line-height: 1.3;
+  }
+  .hero p {
+    font-size: 15px;
+    opacity: 0.9;
+    max-width: 620px;
+  }
+  .hero-meta {
+    display: flex;
+    gap: 32px;
+    margin-top: 28px;
+    flex-wrap: wrap;
+  }
+  .hero-meta .item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .hero-meta .label {
+    font-size: 12px;
+    opacity: 0.7;
+    letter-spacing: 0.5px;
+  }
+  .hero-meta .value {
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  section { margin-bottom: 28px; }
+  .card {
+    background: var(--bg2);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    padding: 28px 32px;
+    box-shadow: 0 4px 20px rgba(79, 70, 229, 0.06);
+  }
+  h2 {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2::before {
+    content: '';
+    display: inline-block;
+    width: 4px;
+    height: 20px;
+    background: linear-gradient(180deg, var(--accent), var(--accent2));
+    border-radius: 2px;
+  }
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 18px 0 10px;
+    color: var(--accent);
+  }
+  p { margin-bottom: 10px; }
+  strong { color: var(--ink); font-weight: 600; }
+
+  ul, ol { padding-left: 22px; margin-bottom: 10px; }
+  li { margin-bottom: 6px; }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .grid-4 {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin: 16px 0;
+  }
+
+  .stat {
+    background: rgba(79, 70, 229, 0.05);
+    border: 1px solid rgba(79, 70, 229, 0.1);
+    border-radius: 10px;
+    padding: 18px 16px;
+    text-align: center;
+  }
+  .stat .num {
+    font-size: 28px;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1.2;
+  }
+  .stat .label {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  .module {
+    background: rgba(255,255,255,0.6);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 16px;
+    transition: all 0.2s;
+  }
+  .module:hover {
+    border-color: rgba(79, 70, 229, 0.3);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(79, 70, 229, 0.1);
+  }
+  .module .icon {
+    font-size: 24px;
+    margin-bottom: 8px;
+  }
+  .module .name {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+  .module .desc {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .table-wrap {
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 600px;
+    margin: 12px 0;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  th {
+    background: linear-gradient(135deg, rgba(79, 70, 229, 0.1), rgba(124, 58, 237, 0.1));
+    font-weight: 600;
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 2px solid var(--rule);
+    white-space: nowrap;
+  }
+  td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+
+  .callout {
+    background: rgba(79, 70, 229, 0.05);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 14px 18px;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .callout.warn {
+    background: rgba(217, 119, 6, 0.06);
+    border-left-color: var(--warn);
+  }
+  .callout.ok {
+    background: rgba(22, 163, 74, 0.06);
+    border-left-color: var(--success);
+  }
+
+  .timeline {
+    position: relative;
+    padding-left: 24px;
+    margin: 16px 0;
+  }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 7px; top: 4px; bottom: 4px;
+    width: 2px;
+    background: linear-gradient(180deg, var(--accent), var(--accent2));
+    opacity: 0.3;
+  }
+  .tl-item {
+    position: relative;
+    margin-bottom: 18px;
+  }
+  .tl-item::before {
+    content: '';
+    position: absolute;
+    left: -20px; top: 6px;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid var(--accent);
+  }
+  .tl-item .phase {
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 14px;
+  }
+  .tl-item .content {
+    font-size: 14px;
+    color: var(--ink);
+    margin-top: 2px;
+  }
+
+  .tech-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 12px 0;
+  }
+  .tech-tag {
+    background: rgba(79, 70, 229, 0.08);
+    color: var(--accent);
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 500;
+    border: 1px solid rgba(79, 70, 229, 0.15);
+  }
+
+  footer {
+    text-align: center;
+    padding: 24px;
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 20px;
+  }
+
+  @media (max-width: 768px) {
+    .container { padding: 20px 16px 40px; }
+    .hero { padding: 32px 24px; }
+    .hero h1 { font-size: 24px; }
+    .card { padding: 20px; }
+    .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+    .hero-meta { gap: 20px; }
+    table { min-width: 500px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="hero">
+    <span class="tag">容器云 · 多集群运维</span>
+    <h1>容器云管理系统介绍</h1>
+    <p>k8man — 基于 kubeconfig 导入的轻量多集群 Kubernetes 运维管理台，统一接入、日常运维、诊断巡检与基础监控，能力边界由凭证权限决定。</p>
+    <div class="hero-meta">
+      <div class="item">
+        <span class="label">产品代号</span>
+        <span class="value">k8man</span>
+      </div>
+      <div class="item">
+        <span class="label">当前阶段</span>
+        <span class="value">可用 / 持续迭代</span>
+      </div>
+      <div class="item">
+        <span class="label">技术栈</span>
+        <span class="value">Go + Vue3</span>
+      </div>
+      <div class="item">
+        <span class="label">部署形态</span>
+        <span class="value">单镜像 + PVC</span>
+      </div>
+    </div>
+  </div>
+
+  <section>
+    <div class="card">
+      <h2>一、项目背景</h2>
+      <p>多集群运维场景下，常用 kubectl / Rancher 控制台分散操作，存在以下痛点：</p>
+      <div class="grid-2">
+        <div class="module">
+          <div class="icon">🔗</div>
+          <div class="name">集群入口分散</div>
+          <div class="desc">多套 kubeconfig、多套控制台切换频繁，缺乏统一的接入与选用视图。</div>
+        </div>
+        <div class="module">
+          <div class="icon">🧩</div>
+          <div class="name">权限边界不清</div>
+          <div class="desc">Cluster 管理员与 Project 凭证能力不同，难以一眼区分可操作范围。</div>
+        </div>
+        <div class="module">
+          <div class="icon">🛠️</div>
+          <div class="name">日常运维打断</div>
+          <div class="desc">查日志、重启 Pod、扩缩容、改 ConfigMap 常需在终端与多工具间来回切换。</div>
+        </div>
+        <div class="module">
+          <div class="icon">📡</div>
+          <div class="name">异常发现滞后</div>
+          <div class="desc">缺少跨集群巡检与问题摘要，节点/负载/事件异常难以及时汇聚。</div>
+        </div>
+      </div>
+      <div class="callout">
+        <strong>目标：</strong>用一份有权限的 kubeconfig 即可接入目标集群，在同一 Web 界面完成多集群选用、工作负载运维、诊断与巡检摘要，降低日常运维切换成本。
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>二、核心能力现状</h2>
+      <p>系统已落地多集群接入、工作负载运维、监控巡检与产品内文档等能力，主要包含以下模块：</p>
+
+      <div class="grid-3">
+        <div class="module">
+          <div class="icon">⚙️</div>
+          <div class="name">KubeConfig 接入中心</div>
+          <div class="desc">导入 / 编辑 / 删除 kubeconfig，连通与权限探测，入口层识别，页面 Hosts 热生效。</div>
+        </div>
+        <div class="module">
+          <div class="icon">📦</div>
+          <div class="name">工作负载运维中心</div>
+          <div class="desc">Pod 日志与重启、Deployment/STS 扩缩容、ConfigMap 键值、镜像/环境变量/资源编辑、受限 YAML。</div>
+        </div>
+        <div class="module">
+          <div class="icon">📊</div>
+          <div class="name">监控与诊断中心</div>
+          <div class="desc">节点/Pod 指标（依赖 metrics-server）；后台约 2h 巡检（有界并发 4～8）；一键巡检与诊断定级。</div>
+        </div>
+      </div>
+
+      <div class="grid-4" style="margin-top: 0;">
+        <div class="stat">
+          <div class="num">4~8</div>
+          <div class="label">巡检有界并发</div>
+        </div>
+        <div class="stat">
+          <div class="num">2h</div>
+          <div class="label">后台巡检周期</div>
+        </div>
+        <div class="stat">
+          <div class="num">R/W</div>
+          <div class="label">API 读写分离</div>
+        </div>
+        <div class="stat">
+          <div class="num">1</div>
+          <div class="label">进程即可运行</div>
+        </div>
+      </div>
+
+      <h3>已完成功能</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>模块</th>
+              <th>主要功能</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>概览</td>
+              <td>多集群卡片：命名空间 / 节点 / Pod 与异常摘要，选用当前集群</td>
+              <td><span style="color:var(--success);font-weight:500">✓ 已完成</span></td>
+            </tr>
+            <tr>
+              <td>KubeConfig</td>
+              <td>导入编辑删除、连通/权限探测（cluster / project）、入口探测、API Server 覆盖、跳过 TLS、Hosts</td>
+              <td><span style="color:var(--success);font-weight:500">✓ 已完成</span></td>
+            </tr>
+            <tr>
+              <td>工作负载</td>
+              <td>Pod / Deployment·STS·DS / Service / ConfigMap；日志、重启、扩缩容、键值与常用字段编辑、白名单 YAML</td>
+              <td><span style="color:var(--success);font-weight:500">✓ 已完成</span></td>
+            </tr>
+            <tr>
+              <td>巡检（监控）</td>
+              <td>节点/Pod 指标；底部多集群巡检摘要；有界并发（默认 4、积压扩至 8）、启动间隔 ≥2s、同集群互斥；一键巡检（先缓存再实时）</td>
+              <td><span style="color:var(--success);font-weight:500">✓ 已完成</span></td>
+            </tr>
+            <tr>
+              <td>诊断</td>
+              <td>实时扫描节点 / 控制器 / Pod / Warning 事件，定级与 Restarts / 日志摘录</td>
+              <td><span style="color:var(--success);font-weight:500">✓ 已完成</span></td>
+            </tr>
+            <tr>
+              <td>运维文档</td>
+              <td>产品内 Markdown 文档 CRUD（分类、标签、置顶）</td>
+              <td><span style="color:var(--success);font-weight:500">✓ 已完成</span></td>
+            </tr>
+            <tr>
+              <td>写操作鉴权</td>
+              <td>默认只读；/igokey 取钥、/ops 验证后本会话可写（X-Igo-Token）</td>
+              <td><span style="color:var(--success);font-weight:500">✓ 已完成</span></td>
+            </tr>
+            <tr>
+              <td>持久化与部署</td>
+              <td>内置 SQLite + PVC；前后端一体镜像；K8s Deployment / Service / Ingress 清单</td>
+              <td><span style="color:var(--success);font-weight:500">✓ 已完成</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <strong>能力边界：</strong>完全由导入的 kubeconfig 决定。非完整 PaaS / 全量资源控制台；Secret、Ingress、PVC、Job、RBAC、Helm 等未作为全量管理面覆盖。
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>三、技术架构</h2>
+
+      <h3>技术栈</h3>
+      <div class="tech-list">
+        <span class="tech-tag">Go 1.22</span>
+        <span class="tech-tag">Gin</span>
+        <span class="tech-tag">client-go</span>
+        <span class="tech-tag">SQLite</span>
+        <span class="tech-tag">Vue 3</span>
+        <span class="tech-tag">Vite</span>
+        <span class="tech-tag">Axios</span>
+        <span class="tech-tag">metrics API</span>
+      </div>
+
+      <h3>架构特点</h3>
+      <ul>
+        <li><strong>前后端一体：</strong>Go 进程嵌入前端构建产物，单二进制 / 单镜像即可对外服务</li>
+        <li><strong>读写分离：</strong><code>/api/v1/read</code> 只读；<code>/api/v1/write</code> 须 igokey 会话 Token</li>
+        <li><strong>无独立数据库：</strong>内置 SQLite（PVC 持久化），Hosts / 巡检快照一并落盘</li>
+        <li><strong>进程内巡检：</strong>每集群约 2h 一轮；有界并发默认 4、积压可扩至 8（可配）；成功开始间隔 ≥2s；同集群互斥；无需 Sidecar</li>
+      </ul>
+
+      <div class="grid-2">
+        <div>
+          <h3>资源需求（参考）</h3>
+          <div class="table-wrap">
+            <table>
+              <tbody>
+                <tr><td style="font-weight:600">CPU</td><td>1～2 核</td></tr>
+                <tr><td style="font-weight:600">内存</td><td>512 MB～1 GB</td></tr>
+                <tr><td style="font-weight:600">磁盘</td><td>PVC 持久化 /data（库与配置）</td></tr>
+                <tr><td style="font-weight:600">运行时</td><td>容器镜像（Alpine + 静态 Go）</td></tr>
+                <tr><td style="font-weight:600">副本</td><td>单副本（RWO PVC）</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h3>并发与容量</h3>
+          <div class="table-wrap">
+            <table>
+              <tbody>
+                <tr><td style="font-weight:600">支持并发用户</td><td>约 10～30 人同时在线（运维场景）</td></tr>
+                <tr><td style="font-weight:600">接入集群数</td><td>无硬编码上限，可接入并管理 200+ 集群</td></tr>
+                <tr><td style="font-weight:600">数据库容量</td><td>SQLite 存配置/巡检/文档，GB 级足够</td></tr>
+                <tr><td style="font-weight:600">后台巡检并发</td><td>默认 4 路，积压自动扩至上限 8（<code>inspect_concurrency*</code> / <code>K8MAN_INSPECT_*</code>）</td></tr>
+                <tr><td style="font-weight:600">巡检节流与互斥</td><td>成功开始间隔 ≥2s；单次超时约 45s；同集群后台与手动互斥</td></tr>
+                <tr><td style="font-weight:600">备份方式</td><td>备份 PVC /data（含库与 Hosts）即可</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>四、部署可行性分析</h2>
+
+      <div class="callout ok">
+        <strong>结论：部署简单、依赖少。</strong>单镜像 + PVC 即可上线，无外部 MySQL / Redis / 对象存储依赖；适合内网或已有 Ingress 的 K8s 环境。
+      </div>
+
+      <h3>部署方式</h3>
+      <div class="grid-2">
+        <div class="module">
+          <div class="icon">☸️</div>
+          <div class="name">Kubernetes 部署（推荐）</div>
+          <div class="desc">Deployment + Service + Ingress + PVC；滚动更新 maxUnavailable: 0，同节点亲和保证 RWO 挂载。</div>
+        </div>
+        <div class="module">
+          <div class="icon">💻</div>
+          <div class="name">本地单进程</div>
+          <div class="desc">go run ./cmd/server 或直接跑二进制；默认 :8080，数据目录 ./data，适合开发验证。</div>
+        </div>
+      </div>
+
+      <h3>部署步骤（概要）</h3>
+      <div class="timeline">
+        <div class="tl-item">
+          <div class="phase">步骤 1：构建镜像</div>
+          <div class="content">多阶段构建（Node 打前端 → Go 静态编译 → Alpine）；推送到镜像仓库</div>
+        </div>
+        <div class="tl-item">
+          <div class="phase">步骤 2：应用清单</div>
+          <div class="content">kubectl apply -f deploy/k8s/k8man.yaml，创建 Namespace / Deploy / SVC / Ingress / PVC</div>
+        </div>
+        <div class="tl-item">
+          <div class="phase">步骤 3：滚动发布</div>
+          <div class="content">rollout restart 后等待 Ready；健康检查 GET /api/health</div>
+        </div>
+        <div class="tl-item">
+          <div class="phase">步骤 4：导入集群</div>
+          <div class="content">页面导入 kubeconfig → 测试连通与权限 → 选用后进入工作负载 / 监控 / 诊断</div>
+        </div>
+        <div class="tl-item">
+          <div class="phase">步骤 5：开启写操作（按需）</div>
+          <div class="content">访问 /igokey 取钥，在 /ops 验证后获得写会话</div>
+        </div>
+      </div>
+
+      <h3>风险与注意事项</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:30%">事项</th>
+              <th style="width:50%">说明</th>
+              <th style="width:20%">建议</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>PVC 与滚动</td>
+              <td>RWO 卷依赖同节点挂载，跨节点可能 Pending</td>
+              <td>保持 podAffinity；观察调度</td>
+            </tr>
+            <tr>
+              <td>metrics-server</td>
+              <td>监控页节点/Pod 指标依赖目标集群 metrics-server</td>
+              <td>目标集群提前安装</td>
+            </tr>
+            <tr>
+              <td>凭证权限</td>
+              <td>Project 凭证无法 List Node，节点类诊断会跳过</td>
+              <td>按需使用 Cluster 凭证</td>
+            </tr>
+            <tr>
+              <td>写操作密钥</td>
+              <td>igokey 非用户体系 / SSO，适合小范围运维</td>
+              <td>控制 /igokey 可达范围</td>
+            </tr>
+            <tr>
+              <td>巡检并发</td>
+              <td>默认 4～8 路并行 Probe/Diagnose，会增加对目标 API Server 与本机出口的压力</td>
+              <td>按规模调整 conf / 环境变量</td>
+            </tr>
+            <tr>
+              <td>数据备份</td>
+              <td>SQLite 与 Hosts 在 PVC /data</td>
+              <td>定期备份 PVC 或库文件</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>五、后续规划</h2>
+
+      <div class="timeline">
+        <div class="tl-item">
+          <div class="phase">第一阶段：核心运维闭环（已完成）</div>
+          <div class="content">多集群接入、工作负载常用操作、诊断与有界并发后台巡检、读写分离鉴权、K8s 部署清单</div>
+        </div>
+        <div class="tl-item">
+          <div class="phase">第二阶段：体验与稳定性（当前）</div>
+          <div class="content">巡检摘要与一键巡检体验打磨、UI 对齐与运维文档完善、部署与升级路径固化</div>
+        </div>
+        <div class="tl-item">
+          <div class="phase">第三阶段：资源面扩展（规划）</div>
+          <div class="content">
+            <ul style="margin-top:4px;margin-bottom:0">
+              <li>按需扩展更多资源类型的只读与受限写操作</li>
+              <li>巡检规则与告警通知（如邮件 / Webhook）</li>
+              <li>更细的操作审计与变更留痕</li>
+            </ul>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="phase">第四阶段：协同与认证（规划）</div>
+          <div class="content">
+            <ul style="margin-top:4px;margin-bottom:0">
+              <li>可选对接统一身份认证（SSO）</li>
+              <li>多操作员角色与写权限分级</li>
+              <li>与现有监控 / 工单体系集成</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>六、使用与运维要点</h2>
+
+      <div class="grid-2">
+        <div>
+          <h3>日常使用</h3>
+          <ul>
+            <li>导入 Rancher Cluster / Project kubeconfig</li>
+            <li>点「测试」完成连通、权限与入口探测</li>
+            <li>域名解析不到时用页面 Hosts（约 2 秒生效）</li>
+            <li>「选用」后进入工作负载 / 监控 / 诊断</li>
+          </ul>
+        </div>
+        <div>
+          <h3>运维部署</h3>
+          <ul>
+            <li>保留 PVC 升级，避免丢失库与 Hosts</li>
+            <li>健康检查：<code>/api/health</code></li>
+            <li>可选自有 icon / banner 放入 etc 目录</li>
+            <li>详情见仓库 <code>docs/deploy.md</code>、<code>docs/api.md</code></li>
+          </ul>
+        </div>
+        <div>
+          <h3>安全建议</h3>
+          <ul>
+            <li>生产环境通过 Ingress HTTPS 暴露</li>
+            <li>限制 /igokey、/ops 仅内网可达</li>
+            <li>kubeconfig 按最小权限原则导入</li>
+            <li>定期备份 /data（SQLite + Hosts）</li>
+          </ul>
+        </div>
+        <div>
+          <h3>不在范围内</h3>
+          <ul>
+            <li>非多租户企业门户 / 计费平台</li>
+            <li>非完整 kubectl / YAML 任意资源编辑器</li>
+            <li>非替代 Rancher / 云厂商全量控制台</li>
+            <li>目标集群侧能力仍受凭证限制</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="callout">
+        <strong>一句话总结：</strong>把「有权限的 kubeconfig」变成可浏览器操作的多集群运维台——接入快、依赖少、读写可控，适合日常巡检与轻量变更。
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    k8man · 容器云管理系统 · 2026年9月
+  </footer>
+
+</div>
+</body>
+</html>

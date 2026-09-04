@@ -8,7 +8,7 @@
 - 轻量入口探测：ingress-nginx / 外置 nginx / Rancher（点「测试」后写在状态列）
 - 页面 Hosts（`IP hostname`）：kubeconfig 域名解析不到时用，约 2 秒生效
 - 工作负载查看与运维：Pod 日志/重启、Deployment/StatefulSet 扩缩容、ConfigMap 键值编辑、控制器常用字段（镜像/环境变量/资源）编辑、受限 YAML 查看与应用
-- 节点与基础监控（依赖目标集群 metrics-server）；后台约 2 小时巡检全部 kubeconfig 有效性与集群异常，监控页底部摘要；可在监控页选择配置后一键巡检（先展示缓存再实时更新）
+- 节点与基础监控（依赖目标集群 metrics-server）；后台约 2 小时巡检（有界并发默认 4、积压可扩至 8），监控页底部摘要；可一键巡检（先缓存再实时更新）
 - 产品内运维文档（Markdown）
 - 内置 SQLite + PVC 持久化，无独立数据库
 - API 读写分离：`/api/v1/read` 只读；`/api/v1/write` 须在 `/ops` 用 igokey 验证后携带 `X-Igo-Token`
@@ -32,6 +32,8 @@ go run ./cmd/server
 | `K8MAN_DATA_DIR` | `./data` | 数据目录 |
 | `K8MAN_DB_PATH` | `$DATA_DIR/k8man.db` | SQLite 路径 |
 | `K8MAN_ETC_DIR` | `./etc` | 配置与可选自有 icon / banner 目录（容器内 `/etc/k8man`） |
+| `K8MAN_INSPECT_CONCURRENCY` | `4` | 巡检基础并发 |
+| `K8MAN_INSPECT_CONCURRENCY_MAX` | `8` | 巡检积压时扩容上限 |
 
 `etc/k8man.conf`：头部为生效配置，尾部为说明与示例（含巡检行为）；缺失或无效时启动自动生成。`title` 为页眉左侧品牌名（兼浏览器标签页标题）。站名下方 slogan 固定为 `practice makes perfect`（不可配置；双击复制 igokey）。将自有 `icon.jpg` / `icon.png` 放入 `etc` 即作为 favicon 与页眉图标；无文件则使用内置马里奥风格（红白蓝）数字 8。将自有 `banner.jpg`（或 png/webp/gif）放入 `etc` 即启用头部 banner；无文件则默认浅青面板风格（配色/布局参考同类站点，不使用外部 banner 图）。
 
@@ -68,7 +70,15 @@ npm run dev   # Vite 代理 /api -> :8080
 
 ## 巡检
 
-进程内对每个已保存 kubeconfig **独立计时**，约 **2 小时** 一轮（完成后 ±6 分钟抖动），**串行**执行，避免同时打满 API Server。无独立配置项，说明写在 `etc/k8man.conf` 注释里。
+进程内对每个已保存 kubeconfig **独立计时**，约 **2 小时** 一轮（完成后 ±6 分钟抖动）。
+
+| 项 | 说明 |
+|----|------|
+| 有界并发 | 默认同时 **4** 路；到期积压超过基础并发时自动扩容，上限默认 **8** |
+| 配置 | `inspect_concurrency` / `inspect_concurrency_max`（`etc/k8man.conf`），或 `K8MAN_INSPECT_CONCURRENCY` / `K8MAN_INSPECT_CONCURRENCY_MAX`；`max < base` 时自动抬到 ≥ base |
+| 启动节流 | 两次**成功开始**巡检至少间隔约 **2 秒**（忙/在途集群直接跳过，不消耗间隔） |
+| 同集群互斥 | 后台与手动「一键巡检」同一集群同时只跑一轮 |
+| 单次超时 | 后台单次约 **45 秒**；HTTP 一键巡检请求超时约 **90 秒** |
 
 每轮先做与页面「测试」相同的 Probe（并回写状态），成功再跑诊断扫描（节点/负载/Pod/事件；project 凭证跳过节点）。进程退出或请求取消时不落库。
 
@@ -80,7 +90,7 @@ npm run dev   # Vite 代理 /api -> :8080
 cmd/server/          入口与嵌入前端
 etc/                 k8man.conf、可选 icon / banner 图片
 internal/api/read|write  读写 API 分包
-internal/inspect     后台巡检（2h 错开）
+internal/inspect     后台巡检（2h、有界并发）
 internal/kube        client-go 封装
 internal/store       SQLite
 web/                 Vue3 前端
