@@ -12,7 +12,6 @@ import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import TextDrawer from '../components/TextDrawer.vue'
 import FilterSelect from '../components/FilterSelect.vue'
-import InspectRules from '../components/InspectRules.vue'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 const route = useRoute()
@@ -41,9 +40,6 @@ const EXPLAIN_LOG_TAIL = 40
 const logsDrawer = ref(null)
 const yamlDrawer = ref(null)
 const explainDrawer = ref(null)
-const RULES_KEY = 'k8man.diagnoseRulesOpen'
-const rulesOpen = ref(true)
-const rulesEl = ref(null)
 
 const isProject = computed(() => currentCluster.value?.permType === 'project')
 
@@ -674,16 +670,6 @@ function onChildError(msg) {
   error.value = msg
 }
 
-function onRulesToggle(e) {
-  const open = !!e.target.open
-  rulesOpen.value = open
-  try {
-    localStorage.setItem(RULES_KEY, open ? '1' : '0')
-  } catch {
-    /* ignore */
-  }
-}
-
 watch(summaryFull, () => {
   nextTick(measureSummary)
 })
@@ -701,14 +687,6 @@ watch(currentClusterId, () => {
 })
 watch(() => String(route.query.category || ''), applyQueryCategory)
 onMounted(() => {
-  try {
-    const v = localStorage.getItem(RULES_KEY)
-    if (v === '0') rulesOpen.value = false
-    if (v === '1') rulesOpen.value = true
-  } catch {
-    /* ignore */
-  }
-  rulesEl.value?.setOpen(rulesOpen.value)
   window.addEventListener('resize', measureSummary)
   applyQueryCategory()
   load()
@@ -723,7 +701,7 @@ onUnmounted(() => {
 <template>
   <div>
     <h1>诊断</h1>
-    <p class="page-desc">列出当前仍成立的问题。滚动发布中的副本缺口、探针未达阈值的 Warning 事件不计入。Restarts 例外：Pod 已 Ready，但计入重启 ≥ 3（Completed / exit=0 不计）且上次异常退出在 30 天内仍会列出。同一会话内 90 秒内再次打开沿用上次扫描；需要最新结果时点「刷新」。判定规则见页底。全配置约 2 小时一轮的定时巡检在「监控」页底部，不替代本页即时扫描。</p>
+    <p class="page-desc">对当前选用集群即时扫描仍成立的问题；定级与降级规则见「巡检」页「基线与降级机制」。</p>
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
       <div class="panel stats-strip">
@@ -901,8 +879,6 @@ onUnmounted(() => {
         @keydown.enter.prevent="showSummary"
       >{{ summaryFull }}</div>
     </div>
-
-    <InspectRules ref="rulesEl" class="panel" title="判定规则" @toggle="onRulesToggle" />
 
     <PodLogsDrawer ref="logsDrawer" :cluster-id="currentClusterId" />
     <YamlDrawer ref="yamlDrawer" :cluster-id="currentClusterId" read-only @error="onChildError" />

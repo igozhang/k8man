@@ -676,7 +676,7 @@ onMounted(enterPage)
         </div>
       </div>
       <p class="inspect-intro muted">
-        对每个 kubeconfig 约 2 小时一轮、错开串行：先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。定级与「诊断」页相同（含 Restarts）。下方按集群分块展示摘要（每块最多 3 条，只含严重/错误/警告；仅有提示时不单独成块）；点击块在右侧抽屉查看该配置详情<template v-if="canWrite">并触发实时巡检</template>。
+        对每个 kubeconfig 约 2 小时一轮。后台<strong>有界并发</strong>（默认同时 4 路，积压可扩至 8）；两次成功开始至少间隔约 2 秒；同一集群同时只跑一轮。每轮先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。定级见下方「基线与降级机制」（含 Restarts）。下方按集群分块展示摘要（每块最多 3 条，只含严重/错误/警告；仅有提示时不单独成块）；点击块在右侧抽屉查看该配置详情<template v-if="canWrite">并触发实时巡检</template>。
       </p>
       <div class="toolbar toolbar-start inspect-actions">
         <select v-model="inspectTargetId" aria-label="巡检目标 kubeconfig">
