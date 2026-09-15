@@ -101,6 +101,13 @@ const inspectIssueBlocks = computed(() => {
       error: errorN,
       warning,
       summary: it.summary,
+      largePods: it.largePodSkipped ? null : Number(it.largePods) || 0,
+      nfsUsagePercent: (() => {
+        if (it.nfsSkipped || it.nfsUsagePercent == null || it.nfsUsagePercent === '') return null
+        const n = Number(it.nfsUsagePercent)
+        return Number.isNaN(n) ? null : n
+      })(),
+      nfsStorageClass: it.nfsStorageClass || '',
       lines,
       more: Math.max(0, total - lines.length),
       inspecting: inspectingId.value === it.clusterId
@@ -728,6 +735,16 @@ onMounted(enterPage)
               <span v-if="block.critical" class="tag sev-critical">{{ block.critical }} 严重</span>
               <span v-if="block.error" class="tag sev-error">{{ block.error }} 错误</span>
               <span v-if="block.warning" class="tag sev-warning">{{ block.warning }} 警告</span>
+              <span
+                v-if="block.largePods != null && block.largePods > 0"
+                class="tag sev-warning"
+              >大 POD {{ block.largePods }}</span>
+              <span
+                v-if="block.nfsUsagePercent != null"
+                class="tag"
+                :class="block.nfsUsagePercent >= 80 ? 'sev-critical' : 'sev-info'"
+                :title="block.nfsStorageClass ? `SC=${block.nfsStorageClass}` : ''"
+              >NFS {{ Math.round(block.nfsUsagePercent) }}%</span>
             </div>
             <ul class="inspect-lines">
               <li v-for="(row, idx) in block.lines" :key="idx">

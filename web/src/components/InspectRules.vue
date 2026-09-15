@@ -21,17 +21,17 @@ defineExpose({ setOpen })
 
     <h3>一、基线四级（刚出现、尚未降级）</h3>
     <ul>
-      <li><strong>严重：</strong>kubeconfig 不通；节点 Ready≠True；负载 ready=0；Pod CrashLoop / ImagePull / CreateContainerError / OOMKilled / Failed（排除 Evicted 等残留）。</li>
+      <li><strong>严重：</strong>kubeconfig 不通；节点 Ready≠True；负载 ready=0；Pod CrashLoop / ImagePull / CreateContainerError / OOMKilled / Failed（排除 Evicted 等残留）；NFS 使用率 ≥ 80%。</li>
       <li><strong>错误：</strong>负载 0&lt;ready&lt;desired；节点 Disk/Memory/PID/Network 压力；Pod Running 未就绪或 Unknown；Pending Unschedulable 超过 2 分钟。</li>
-      <li><strong>警告：</strong>CPU/内存 ≥ 90%；DaemonSet 仅 misscheduled；其它 Pending 超过 15 分钟；Restarts；独立成行的调度/挂载失败。从严重/错误降下来的项也会落在警告。</li>
-      <li><strong>提示：</strong>不是新的事件类型，而是可降级问题的终点。诊断表默认隐藏（勾选「显示提示」或筛「提示」可见）；巡检摘要在仅有提示时写「N 提示」，不当故障成块。kubeconfig / 用量 / 压力 / Restarts / 独立事件不降级，到不了提示。</li>
+      <li><strong>警告：</strong>CPU/内存 ≥ 90%；DaemonSet 仅 misscheduled；其它 Pending 超过 15 分钟；Restarts；独立成行的调度/挂载失败；大 POD（非持久化 &gt;5Gi）。从严重/错误降下来的项也会落在警告。</li>
+      <li><strong>提示：</strong>不是新的事件类型，而是可降级问题的终点。诊断表默认隐藏（勾选「显示提示」或筛「提示」可见）；巡检摘要在仅有提示时写「N 提示」，不当故障成块。kubeconfig / 用量 / 压力 / Restarts / 独立事件 / 大 POD / NFS 使用率不降级，到不了提示。</li>
     </ul>
 
     <h3>二、时间降级</h3>
     <ul>
       <li>同一问题连续成立满 <strong>30 天降 1 级</strong>，满 <strong>60 天再降 1 级</strong>，最低到提示。时钟用条件首次成立时间（如 Ready=False 的 LastTransitionTime），不随每次重启刷新。</li>
       <li>例：普通命名空间 ImagePullBackOff 基线为严重 → 满 60 天可收敛为警告；系统命名空间最多降 1 级且不低于错误，不会落到警告/提示。</li>
-      <li><strong>不降级：</strong>kubeconfig、节点 CPU/内存用量、节点压力、Restarts、独立事件。其中 Restarts 满 30 天从列表消失，不会变成提示。</li>
+      <li><strong>不降级：</strong>kubeconfig、节点 CPU/内存用量、节点压力、Restarts、独立事件、大 POD、NFS 使用率。其中 Restarts 满 30 天从列表消失，不会变成提示。</li>
       <li>节点 NotReady 可降；Ready 节点为 0 或未就绪 ≥ 半数时，该组节点问题整组不降。</li>
       <li>仍在 CrashLoop / OOM 的，降级下限是错误。kube-system / kube-public / kube-node-lease / istio-system / istio-operator / cattle-* / calico-* 最多降 1 级且不低于错误。</li>
     </ul>
@@ -43,6 +43,8 @@ defineExpose({ setOpen })
       <li><strong>Pod：</strong>CrashLoop / 拉镜像失败 / CreateContainerError / OOMKilled → 严重；Failed（非 Evicted/Shutdown 等）→ 严重；Unknown、Running 未就绪 → 错误。Pending Unschedulable 超过 2 分钟 → 错误；其它 Pending 超过 15 分钟 → 警告。Succeeded、刚创建的 Pending 不算。</li>
       <li><strong>Restarts（警告）：</strong>当前 Ready 的 Pod，计入次数 ≥ 3 且上次异常退出在 30 天内才占行。计入看容器 <code>restartCount</code>，上次退出若 Completed / Success / exit=0 则该容器按 0。超过 30 天或计入不足 3 不占行；退出时间缺失时，计入 ≥ 3 仍占行。只报 Pod 行：控制器已 Ready 不另占负载 Restarts；已有 NotReady 时只把重启时间线挂到该行说明。</li>
       <li>说明里的「近 2h 内有/无重启」只描述最近 2 小时；「计入重启 N 次」是剔除 Completed/exit=0 后的次数。占行门槛是上次异常退出 ≤ 30 天，不是近 2h。</li>
+      <li><strong>存储 · 大 POD（警告）：</strong>kubelet <code>stats/summary</code> 中 Pod 非持久化占用（ephemeral-storage，含 rootfs / logs / emptyDir，不含 PVC）超过 <strong>5Gi</strong>。依赖 nodes/proxy；项目凭证或采不到 summary 时概览显示「—」，不误报。不降级。</li>
+      <li><strong>存储 · NFS 使用率（≥80% 严重）：</strong>仅探测 NFS 形式 StorageClass。优先取<strong>默认 SC</strong>；若无默认且集群<strong>仅有一个 SC</strong>则用该唯一 SC（避免未标 default 时漏检）。用量优先读 kubelet volume stats，回退对挂载该 SC 的 Running Pod 做一次短超时 <code>df -P</code>。&lt;80% 只在概览染色、不占巡检行；≥80% 严重、不降级。非 NFS / 多 SC 无默认 / 无挂载 PVC 时显示「—」。</li>
     </ul>
 
     <h3>四、事件怎么挂</h3>

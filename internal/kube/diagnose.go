@@ -89,6 +89,7 @@ type DiagnoseCounts struct {
 	Workloads int `json:"workloads"`
 	Pods      int `json:"pods"`
 	Events    int `json:"events"`
+	Storage   int `json:"storage"`
 	Critical  int `json:"critical"`
 	Error     int `json:"error"`
 	Warning   int `json:"warning"`
@@ -108,6 +109,16 @@ type DiagnoseScan struct {
 	ElapsedMs      int64  `json:"elapsedMs"`
 	FromCache      bool   `json:"fromCache"`
 	MetricsSkipped string `json:"metricsSkipped,omitempty"`
+	// LargePods / NFS*: filled by storage scan (kubelet summary + default/unique NFS SC).
+	LargePods         int      `json:"largePods"`
+	LargePodSkipped   string   `json:"largePodSkipped,omitempty"`
+	NFSUsagePercent   *float64 `json:"nfsUsagePercent,omitempty"`
+	NFSUsedBytes      int64    `json:"nfsUsedBytes,omitempty"`
+	NFSCapacityBytes  int64    `json:"nfsCapacityBytes,omitempty"`
+	NFSStorageClass   string   `json:"nfsStorageClass,omitempty"`
+	NFSSource         string   `json:"nfsSource,omitempty"` // default | unique
+	NFSProbe          string   `json:"nfsProbe,omitempty"`  // summary | exec-df
+	NFSSkipped        string   `json:"nfsSkipped,omitempty"`
 }
 
 // DiagnoseReport is the diagnose API payload: standing problems only.
@@ -315,6 +326,33 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 	fetched := c.attachCriticalPodLogs(ctx, rep.Issues)
 	rep.Scan.LogsFetched = fetched
 	rep.Scan.EventsAttached = attached
+
+	// Storage is best-effort after core diagnose + logs, so it only consumes leftover budget.
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				msg := clipRunes(fmt.Sprintf("panic: %v", rec), 240)
+				if rep.Scan.LargePodSkipped == "" {
+					rep.Scan.LargePodSkipped = msg
+				}
+				if rep.Scan.NFSSkipped == "" {
+					rep.Scan.NFSSkipped = msg
+				}
+			}
+		}()
+		storageIssues, storageTrunc := c.scanStorage(ctx, opt, listedPods, &rep.Scan)
+		if storageTrunc {
+			rep.Truncated = true
+		}
+		if len(storageIssues) > 0 {
+			rep.Issues = append(rep.Issues, storageIssues...)
+			sortIssues(rep.Issues)
+			if overflow := capCategory(&rep.Issues, diagnoseMaxIssues*4); overflow {
+				rep.Truncated = true
+			}
+		}
+	}()
+
 	rep.Scan.ElapsedMs = time.Since(started).Milliseconds()
 
 	rep.Counts = countIssues(rep.Issues)
@@ -1708,6 +1746,8 @@ func countIssues(items []Issue) DiagnoseCounts {
 			c.Pods++
 		case "event":
 			c.Events++
+		case "storage":
+			c.Storage++
 		}
 		if it.Severity == "critical" {
 			c.Critical++
@@ -1724,7 +1764,7 @@ func countIssues(items []Issue) DiagnoseCounts {
 
 func sortIssues(items []Issue) {
 	sev := map[string]int{"critical": 0, "error": 1, "warning": 2, "info": 3}
-	cat := map[string]int{"node": 0, "workload": 1, "pod": 2, "event": 3}
+	cat := map[string]int{"node": 0, "workload": 1, "pod": 2, "storage": 3, "event": 4}
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
 		if sev[a.Severity] != sev[b.Severity] {

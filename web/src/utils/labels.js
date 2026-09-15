@@ -42,7 +42,7 @@ export function severityClass(s) {
 }
 
 export function issueCategoryLabel(c) {
-  return { kubeconfig: '配置', node: '节点', workload: '负载', pod: 'Pod', event: '事件' }[c] || c || ''
+  return { kubeconfig: '配置', node: '节点', workload: '负载', pod: 'Pod', event: '事件', storage: '存储' }[c] || c || ''
 }
 
 /** 原因码 → 业务可读短名（未知则原样返回） */
@@ -83,7 +83,9 @@ export function issueReasonLabel(reason) {
       FailedAttachVolume: '卷挂载失败',
       FailedCreate: '创建失败',
       FailedBinding: '绑定失败',
-      ProbeWarning: '探针告警'
+      ProbeWarning: '探针告警',
+      LargeEphemeral: '大 POD',
+      NFSHighUsage: 'NFS 使用率偏高'
     }[r] || r
   )
 }

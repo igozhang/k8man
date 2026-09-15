@@ -52,6 +52,12 @@ const emptyStats = () => ({
   nodes: 0,
   pods: 0,
   badPods: 0,
+  largePods: null,
+  largePodSkipped: '',
+  nfsUsagePercent: null,
+  nfsStorageClass: '',
+  nfsSource: '',
+  nfsSkipped: '',
   podsSource: '', // inspect | sample
   inspectAt: null,
   truncated: false
@@ -146,12 +152,20 @@ function autoPodsRefreshKey(id, insp) {
 
 function inspFromDetail(data) {
   if (!data) return null
+  const rawPct = data.nfsUsagePercent ?? data.diagnose?.scan?.nfsUsagePercent
+  const pct = rawPct == null || rawPct === '' ? null : Number(rawPct)
   return {
     hasScan: !!data.hasScan || !!data.diagnose,
     scanPods: Number(data.scanPods ?? data.diagnose?.scan?.pods) || 0,
     podIssues: Number(data.podIssues ?? data.diagnose?.counts?.pods) || 0,
     truncated: !!(data.truncated ?? data.diagnose?.truncated),
-    checkedAt: data.checkedAt || null
+    checkedAt: data.checkedAt || null,
+    largePods: Number(data.largePods ?? data.diagnose?.scan?.largePods) || 0,
+    largePodSkipped: data.largePodSkipped || data.diagnose?.scan?.largePodSkipped || '',
+    nfsUsagePercent: pct == null || Number.isNaN(pct) ? null : pct,
+    nfsStorageClass: data.nfsStorageClass || data.diagnose?.scan?.nfsStorageClass || '',
+    nfsSource: data.nfsSource || data.diagnose?.scan?.nfsSource || '',
+    nfsSkipped: data.nfsSkipped || data.diagnose?.scan?.nfsSkipped || ''
   }
 }
 
@@ -248,7 +262,17 @@ async function loadInspectIndex({ force = false } = {}) {
         scanPods: Number(it.scanPods) || 0,
         podIssues: Number(it.podIssues) || 0,
         truncated: !!it.truncated,
-        checkedAt: it.checkedAt || null
+        checkedAt: it.checkedAt || null,
+        largePods: Number(it.largePods) || 0,
+        largePodSkipped: it.largePodSkipped || '',
+        nfsUsagePercent: (() => {
+          if (it.nfsUsagePercent == null || it.nfsUsagePercent === '') return null
+          const n = Number(it.nfsUsagePercent)
+          return Number.isNaN(n) ? null : n
+        })(),
+        nfsStorageClass: it.nfsStorageClass || '',
+        nfsSource: it.nfsSource || '',
+        nfsSkipped: it.nfsSkipped || ''
       }
     }
     inspectById.value = map
@@ -262,10 +286,20 @@ async function loadInspectIndex({ force = false } = {}) {
 
 function applyInspectToStats(stats, insp) {
   if (!insp?.hasScan) return { ...stats, podsSource: stats.podsSource || '' }
+  const pct =
+    insp.nfsSkipped || insp.nfsUsagePercent == null || Number.isNaN(Number(insp.nfsUsagePercent))
+      ? null
+      : Number(insp.nfsUsagePercent)
   return {
     ...stats,
     pods: insp.scanPods,
     badPods: insp.podIssues,
+    largePods: insp.largePodSkipped ? null : Number(insp.largePods) || 0,
+    largePodSkipped: insp.largePodSkipped || '',
+    nfsUsagePercent: pct,
+    nfsStorageClass: insp.nfsStorageClass || '',
+    nfsSource: insp.nfsSource || '',
+    nfsSkipped: insp.nfsSkipped || '',
     podsSource: 'inspect',
     inspectAt: insp.checkedAt || null,
     truncated: !!insp.truncated
@@ -480,7 +514,7 @@ async function collectSamplePods(cluster, { force = false, selected = true, badO
 }
 
 async function collectInspectPodIssues(clusterId) {
-  const data = await readApi.getInspection(clusterId)
+  const data = await readApi.getInspection(clusterId, { timeout: 12000 })
   return asArray(data?.issues)
     .filter((it) => it?.category === 'pod')
     .map((it) => ({
@@ -488,6 +522,143 @@ async function collectInspectPodIssues(clusterId) {
       status: issueBrief(it),
       severity: it.severity
     }))
+}
+
+async function collectInspectStorageIssues(clusterId, reason) {
+  const local = inspectById.value[clusterId] || {}
+  const stats = cardOf(clusterId).stats
+  const skipped = stats.largePodSkipped || local.largePodSkipped || ''
+  if (skipped) {
+    return [
+      {
+        name: '—',
+        namespace: '',
+        status: `未探测：${skipped}`,
+        severity: ''
+      }
+    ]
+  }
+  const data = await readApi.getInspection(clusterId, { timeout: 12000 })
+  return asArray(data?.issues)
+    .filter((it) => it?.category === 'storage' && (!reason || it.reason === reason))
+    .map((it) => ({
+      ...it,
+      status: issueBrief(it),
+      severity: it.severity
+    }))
+}
+
+async function collectInspectNFSRows(clusterId) {
+  // Prefer card / inspect-index cache — avoid pulling the full diagnose blob for a single cell.
+  const local = inspectById.value[clusterId] || {}
+  const stats = cardOf(clusterId).stats
+  const pct = stats.nfsUsagePercent ?? local.nfsUsagePercent
+  const sc = stats.nfsStorageClass || local.nfsStorageClass || ''
+  const skipped = stats.nfsSkipped || local.nfsSkipped || ''
+  const source = stats.nfsSource || local.nfsSource || ''
+
+  let issueRow = null
+  if (pct != null && Number(pct) >= 80) {
+    try {
+      const data = await readApi.getInspection(clusterId, { timeout: 10000 })
+      const hit = asArray(data?.issues).find((it) => it?.reason === 'NFSHighUsage')
+      if (hit) {
+        issueRow = {
+          ...hit,
+          status: issueBrief(hit),
+          severity: hit.severity
+        }
+      }
+      const scan = data?.diagnose?.scan || {}
+      return [
+        issueRow || {
+          name: data?.nfsStorageClass || scan.nfsStorageClass || sc || 'NFS',
+          namespace: '',
+          status: formatNFSStatusLine({
+            pct: data?.nfsUsagePercent ?? scan.nfsUsagePercent ?? pct,
+            skipped: data?.nfsSkipped || scan.nfsSkipped || skipped,
+            source: data?.nfsSource || scan.nfsSource || source,
+            probe: scan.nfsProbe || '',
+            used: scan.nfsUsedBytes,
+            cap: scan.nfsCapacityBytes
+          }),
+          severity: 'critical'
+        }
+      ]
+    } catch {
+      // fall through to local summary
+    }
+  }
+
+  return [
+    {
+      name: sc || 'NFS',
+      namespace: '',
+      status: formatNFSStatusLine({ pct, skipped, source, probe: '', used: null, cap: null }),
+      severity: pct != null && Number(pct) >= 80 ? 'critical' : ''
+    }
+  ]
+}
+
+function formatNFSStatusLine({ pct, skipped, source, probe, used, cap }) {
+  if (skipped) return `未探测：${skipped}`
+  if (pct == null) return '尚无用量数据'
+  let line = `使用率 ${Number(pct).toFixed(0)}%`
+  if (used != null && cap != null) line += `（已用 ${fmtBytesUI(used)} / ${fmtBytesUI(cap)}）`
+  if (source) line += ` · ${source === 'unique' ? '唯一 SC' : '默认 SC'}`
+  if (probe) line += ` · ${probe}`
+  return line
+}
+
+function fmtBytesUI(n) {
+  const v = Number(n) || 0
+  const gi = 1024 * 1024 * 1024
+  const mi = 1024 * 1024
+  if (v >= gi) return `${(v / gi).toFixed(2)}Gi`
+  return `${Math.round(v / mi)}Mi`
+}
+
+function largePodsDisplay(id) {
+  const s = cardOf(id).stats
+  if (cardOf(id).loading) return '…'
+  if (s.podsSource !== 'inspect' || s.largePods == null) return '—'
+  return s.largePods
+}
+
+function nfsUsageDisplay(id) {
+  const s = cardOf(id).stats
+  if (cardOf(id).loading) return '…'
+  if (s.podsSource !== 'inspect' || s.nfsUsagePercent == null) return '—'
+  return `${Math.round(Number(s.nfsUsagePercent))}%`
+}
+
+function nfsCellStyle(id) {
+  const pct = cardOf(id).stats.nfsUsagePercent
+  if (pct == null || Number.isNaN(Number(pct))) return {}
+  const p = Math.max(0, Math.min(100, Number(pct))) / 100
+  const hue = Math.round(120 * (1 - p))
+  return {
+    background: `linear-gradient(180deg, hsla(${hue}, 70%, 46%, 0.12), hsla(${hue}, 72%, 36%, 0.26))`
+  }
+}
+
+function nfsStatTitle(id) {
+  const s = cardOf(id).stats
+  if (s.podsSource !== 'inspect') return '需巡检后显示'
+  if (s.nfsSkipped) return `未探测：${s.nfsSkipped}`
+  if (s.nfsUsagePercent == null) return '尚无 NFS 用量'
+  const sc = s.nfsStorageClass ? `SC=${s.nfsStorageClass}` : ''
+  const src = s.nfsSource === 'unique' ? '唯一 SC' : s.nfsSource === 'default' ? '默认 SC' : ''
+  const t = fmtInspectTime(s.inspectAt)
+  return [sc, src, t ? `巡检 ${t}` : ''].filter(Boolean).join(' · ') || 'NFS 使用率'
+}
+
+function largePodsStatTitle(id) {
+  const s = cardOf(id).stats
+  if (s.podsSource !== 'inspect') return '需巡检后显示'
+  if (s.largePodSkipped) return `未探测：${s.largePodSkipped}`
+  const t = fmtInspectTime(s.inspectAt)
+  return t ? `非持久化 >5Gi · 巡检 ${t}` : '非持久化存储占用超过 5Gi 的 Pod'
 }
 
 async function loadStatRows(cluster, kind, selected, fromInspect) {
@@ -505,6 +676,12 @@ async function loadStatRows(cluster, kind, selected, fromInspect) {
     if (fromInspect) return collectInspectPodIssues(id)
     return collectSamplePods(cluster, { selected, badOnly: true })
   }
+  if (kind === 'largePods') {
+    return collectInspectStorageIssues(id, 'LargeEphemeral')
+  }
+  if (kind === 'nfsUsage') {
+    return collectInspectNFSRows(id)
+  }
   return []
 }
 
@@ -518,6 +695,8 @@ function statTitle(kind, fromInspect) {
   if (kind === 'nodes') return 'Nodes'
   if (kind === 'pods') return fromInspect ? 'Pods' : 'Pods（抽样）'
   if (kind === 'badPods') return fromInspect ? '异常 Pod' : '异常 Pod（抽样）'
+  if (kind === 'largePods') return '大 POD'
+  if (kind === 'nfsUsage') return 'NFS 使用率'
   return kind
 }
 
@@ -527,7 +706,9 @@ async function openStat(cluster, kind) {
   if (cardOf(cluster.id).loading) return
   const selected = cluster.id === currentClusterId.value
   const stats = cardOf(cluster.id).stats
-  const fromInspect = stats.podsSource === 'inspect' && (kind === 'pods' || kind === 'badPods')
+  const fromInspect =
+    stats.podsSource === 'inspect' &&
+    (kind === 'pods' || kind === 'badPods' || kind === 'largePods' || kind === 'nfsUsage')
   setCurrentClusterId(cluster.id)
   const seq = ++detailSeq
   detail.value = {
@@ -552,13 +733,13 @@ async function openStat(cluster, kind) {
     detail.value = { ...detail.value, rows, loading: false }
   } catch (e) {
     if (seq !== detailSeq) return
-    detail.value = { ...detail.value, error: errMessage(e), loading: false }
+    detail.value = { ...detail.value, error: errMessage(e), loading: false, rows: [] }
   }
 }
 
 function moreLabel(kind) {
   if (kind === 'nodes') return '去监控'
-  if (kind === 'badPods') return '去诊断'
+  if (kind === 'badPods' || kind === 'largePods' || kind === 'nfsUsage') return '去诊断'
   return '去工作负载'
 }
 
@@ -573,6 +754,10 @@ function goMore() {
   }
   if (d.kind === 'badPods') {
     router.push({ path: '/diagnose', query: { category: 'pod' } })
+    return
+  }
+  if (d.kind === 'largePods' || d.kind === 'nfsUsage') {
+    router.push({ path: '/diagnose', query: { category: 'storage' } })
     return
   }
   setViewPref('workloads', id, { ns: '', tab: 'pods' })
@@ -733,6 +918,31 @@ onUnmounted(() => {
               :class="{ 'is-critical': !cardOf(c.id).loading && cardOf(c.id).stats.badPods > 0 }"
             >{{ cardOf(c.id).loading ? '…' : cardOf(c.id).stats.badPods }}</div>
           </button>
+          <button
+            type="button"
+            class="stat"
+            :title="largePodsStatTitle(c.id)"
+            :disabled="cardOf(c.id).loading"
+            @click="openStat(c, 'largePods')"
+          >
+            <div class="label">大 POD</div>
+            <div
+              class="value"
+              :class="{ 'is-warning': !cardOf(c.id).loading && Number(cardOf(c.id).stats.largePods) > 0 }"
+            >{{ largePodsDisplay(c.id) }}</div>
+          </button>
+          <button
+            type="button"
+            class="stat nfs-usage"
+            :class="{ 'is-critical': !cardOf(c.id).loading && Number(cardOf(c.id).stats.nfsUsagePercent) >= 80 }"
+            :title="nfsStatTitle(c.id)"
+            :style="nfsCellStyle(c.id)"
+            :disabled="cardOf(c.id).loading"
+            @click="openStat(c, 'nfsUsage')"
+          >
+            <div class="label">NFS 使用率</div>
+            <div class="value">{{ nfsUsageDisplay(c.id) }}</div>
+          </button>
         </div>
       </div>
     </div>
@@ -754,6 +964,14 @@ onUnmounted(() => {
       </p>
       <p v-else-if="detail.fromInspect && detail.kind === 'badPods'" class="muted sample-hint">
         来自定时巡检的 Pod 问题（含 CrashLoop / 未就绪等，不限于 Phase）。
+        <template v-if="fmtInspectTime(detail.inspectAt)">巡检时间 {{ fmtInspectTime(detail.inspectAt) }}。</template>
+      </p>
+      <p v-else-if="detail.kind === 'largePods'" class="muted sample-hint">
+        非持久化存储（ephemeral）占用超过 5Gi 的 Pod，级别为警告。
+        <template v-if="fmtInspectTime(detail.inspectAt)">巡检时间 {{ fmtInspectTime(detail.inspectAt) }}。</template>
+      </p>
+      <p v-else-if="detail.kind === 'nfsUsage'" class="muted sample-hint">
+        默认 NFS SC（或唯一 NFS SC）的共享盘使用率；≥80% 为严重。
         <template v-if="fmtInspectTime(detail.inspectAt)">巡检时间 {{ fmtInspectTime(detail.inspectAt) }}。</template>
       </p>
       <p v-if="detail.error" class="error">{{ detail.error }}</p>
@@ -778,6 +996,18 @@ onUnmounted(() => {
               <th>问题</th>
               <th>操作</th>
             </tr>
+            <tr v-else-if="detail.kind === 'largePods'">
+              <th>严重度</th>
+              <th>命名空间</th>
+              <th>名称</th>
+              <th>问题</th>
+              <th>操作</th>
+            </tr>
+            <tr v-else-if="detail.kind === 'nfsUsage'">
+              <th>严重度</th>
+              <th>名称</th>
+              <th>说明</th>
+            </tr>
             <tr v-else>
               <th>命名空间</th>
               <th>名称</th>
@@ -799,14 +1029,25 @@ onUnmounted(() => {
                 <td>{{ row.status || '—' }}</td>
                 <td>{{ row.internalIP || '—' }}</td>
               </template>
-              <template v-else-if="detail.fromInspect && detail.kind === 'badPods'">
+              <template v-else-if="detail.fromInspect && (detail.kind === 'badPods' || detail.kind === 'largePods')">
                 <td>{{ severityLabel(row.severity) }}</td>
                 <td>{{ row.namespace || '—' }}</td>
                 <td>{{ row.name }}</td>
                 <td>{{ row.status || '—' }}</td>
                 <td class="actions">
-                  <button type="button" class="btn btn-sm" @click="openWorkloadNs(row.namespace)">查看</button>
+                  <button
+                    v-if="row.namespace"
+                    type="button"
+                    class="btn btn-sm"
+                    @click="openWorkloadNs(row.namespace)"
+                  >查看</button>
+                  <span v-else class="muted">—</span>
                 </td>
+              </template>
+              <template v-else-if="detail.kind === 'nfsUsage'">
+                <td>{{ row.severity ? severityLabel(row.severity) : '—' }}</td>
+                <td>{{ row.name || '—' }}</td>
+                <td>{{ row.status || row.message || '—' }}</td>
               </template>
               <template v-else>
                 <td>{{ row.namespace || '—' }}</td>
@@ -820,6 +1061,11 @@ onUnmounted(() => {
           </tbody>
         </table>
         <div v-else-if="detail.fromInspect && detail.kind === 'pods'" class="empty">完整 Pod 列表请到「工作负载」查看。</div>
+        <div v-else-if="detail.kind === 'largePods'" class="empty">
+          {{ cardOf(detail.clusterId).stats.largePodSkipped
+            ? `未探测：${cardOf(detail.clusterId).stats.largePodSkipped}`
+            : '当前没有超过 5Gi 非持久化占用的 Pod。' }}
+        </div>
         <div v-else class="empty">暂无数据。</div>
       </template>
     </div>

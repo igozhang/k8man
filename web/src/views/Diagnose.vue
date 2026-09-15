@@ -15,7 +15,7 @@ import FilterSelect from '../components/FilterSelect.vue'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 const route = useRoute()
-const DIAG_CATS = new Set(['node', 'workload', 'pod', 'event'])
+const DIAG_CATS = new Set(['node', 'workload', 'pod', 'event', 'storage'])
 
 const busy = ref(false)
 const hasReport = ref(false)
@@ -77,7 +77,7 @@ function emptyTableHint() {
 }
 
 function emptyCounts() {
-  return { nodes: 0, workloads: 0, pods: 0, events: 0, critical: 0, error: 0, warning: 0, info: 0 }
+  return { nodes: 0, workloads: 0, pods: 0, events: 0, storage: 0, critical: 0, error: 0, warning: 0, info: 0 }
 }
 
 function emptyReport() {
@@ -161,6 +161,8 @@ function sourceTitle(row) {
       return '控制器副本状态'
     case 'pod':
       return 'Pod 状态'
+    case 'storage':
+      return '存储用量（大 POD / NFS）'
     default:
       return row.category || '诊断扫描'
   }
@@ -463,6 +465,8 @@ const scanLine = computed(() => {
   parts.push(`${s.events ?? 0} 条 Warning`)
   if (s.eventsAttached) parts.push(`${s.eventsAttached} 条已挂到异常`)
   if (s.logsFetched) parts.push(`${s.logsFetched} 份日志摘录`)
+  if (s.largePods) parts.push(`${s.largePods} 大 POD`)
+  if (s.nfsUsagePercent != null) parts.push(`NFS ${Math.round(Number(s.nfsUsagePercent))}%`)
   if (s.metricsSkipped) parts.push('指标未采集')
   if (s.elapsedMs != null && s.elapsedMs !== '') parts.push(`${(Number(s.elapsedMs) / 1000).toFixed(1)}s`)
   if (s.fromCache) parts.push('读缓存')
@@ -529,6 +533,19 @@ function healthyCheckLines() {
 
   if (!scanHasError('events')) {
     lines.push(`- 事件: 已看 ${ev} 条 Warning，无近 2 小时独立成行的调度/挂载/绑定失败`)
+  }
+
+  if (s.largePodSkipped) {
+    lines.push(`- 大 POD: 未检查（${s.largePodSkipped}）`)
+  } else if ((s.largePods ?? 0) === 0) {
+    lines.push('- 大 POD: 无非持久化占用超过 5Gi 的 Pod')
+  }
+
+  if (s.nfsSkipped) {
+    lines.push(`- NFS: 未检查（${s.nfsSkipped}）`)
+  } else if (s.nfsUsagePercent != null) {
+    const sc = s.nfsStorageClass ? ` SC=${s.nfsStorageClass}` : ''
+    lines.push(`- NFS: 使用率 ${Math.round(Number(s.nfsUsagePercent))}%${sc}（阈值 80%）`)
   }
 
   return lines
@@ -704,7 +721,7 @@ onUnmounted(() => {
     <p class="page-desc">对当前选用集群即时扫描仍成立的问题；定级与降级规则见「巡检」页「基线与降级机制」。</p>
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
-      <div class="panel stats-strip">
+      <div class="panel stats-strip stats-strip-5">
         <button
           v-if="!isProject"
           type="button"
@@ -758,6 +775,18 @@ onUnmounted(() => {
             {{ loading ? '…' : counts.events }}
           </div>
         </button>
+        <button
+          type="button"
+          class="stat"
+          :class="{ 'is-active': category === 'storage' }"
+          :disabled="loading"
+          @click="toggleCategory('storage')"
+        >
+          <div class="label">存储异常</div>
+          <div class="value" :class="{ 'is-critical': !loading && counts.storage > 0 }">
+            {{ loading ? '…' : counts.storage }}
+          </div>
+        </button>
       </div>
 
       <div class="toolbar toolbar-start">
@@ -773,6 +802,7 @@ onUnmounted(() => {
           <button class="tab" :class="{ active: category === 'workload' }" type="button" @click="category = 'workload'">负载</button>
           <button class="tab" :class="{ active: category === 'pod' }" type="button" @click="category = 'pod'">Pod</button>
           <button class="tab" :class="{ active: category === 'event' }" type="button" @click="category = 'event'">事件</button>
+          <button class="tab" :class="{ active: category === 'storage' }" type="button" @click="category = 'storage'">存储</button>
         </div>
         <FilterSelect
           v-model="nsFilter"

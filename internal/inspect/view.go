@@ -43,6 +43,13 @@ type ListItem struct {
 	ScanPods  int  `json:"scanPods"`
 	PodIssues int  `json:"podIssues"`
 	Truncated bool `json:"truncated,omitempty"`
+	// Storage summary for overview: large ephemeral pods + default/unique NFS SC usage.
+	LargePods         int      `json:"largePods"`
+	LargePodSkipped   string   `json:"largePodSkipped,omitempty"`
+	NFSUsagePercent   *float64 `json:"nfsUsagePercent,omitempty"`
+	NFSStorageClass   string   `json:"nfsStorageClass,omitempty"`
+	NFSSource         string   `json:"nfsSource,omitempty"`
+	NFSSkipped        string   `json:"nfsSkipped,omitempty"`
 }
 
 // ListResult is GET /inspections.
@@ -99,11 +106,28 @@ func listItemFromRow(name string, row *store.InspectionRow, issues []kube.Issue,
 		item.ScanPods = diag.Scan.Pods
 		item.PodIssues = diag.Counts.Pods
 		item.Truncated = diag.Truncated
+		item.LargePods = diag.Scan.LargePods
+		item.LargePodSkipped = diag.Scan.LargePodSkipped
+		item.NFSUsagePercent = diag.Scan.NFSUsagePercent
+		item.NFSStorageClass = diag.Scan.NFSStorageClass
+		item.NFSSource = diag.Scan.NFSSource
+		item.NFSSkipped = diag.Scan.NFSSkipped
+		// Prefer scan.largePods; if older reports lack the field, count from issues.
+		if item.LargePods == 0 && item.LargePodSkipped == "" {
+			for _, it := range issues {
+				if it.Category == "storage" && it.Reason == "LargeEphemeral" {
+					item.LargePods++
+				}
+			}
+		}
 	} else {
 		// Probe-only / diagnose failed: still surface pod issues from the issue list.
 		for _, it := range issues {
 			if it.Category == "pod" {
 				item.PodIssues++
+			}
+			if it.Category == "storage" && it.Reason == "LargeEphemeral" {
+				item.LargePods++
 			}
 		}
 	}
