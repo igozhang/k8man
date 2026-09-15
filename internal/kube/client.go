@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -512,6 +513,17 @@ func (c *Clients) ListStatefulSets(ctx context.Context, ns string) (interface{},
 func (c *Clients) ListDaemonSets(ctx context.Context, ns string) (interface{}, error) {
 	return listViaWatchCache(1000, func(opts metav1.ListOptions) (interface{}, error) {
 		list, err := c.Clientset.AppsV1().DaemonSets(ns).List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return list.Items, nil
+	})
+}
+
+// ListReplicaSets returns ReplicaSets in ns (used to resolve Pod → Deployment owners).
+func (c *Clients) ListReplicaSets(ctx context.Context, ns string) ([]appsv1.ReplicaSet, error) {
+	return listViaWatchCache(1000, func(opts metav1.ListOptions) ([]appsv1.ReplicaSet, error) {
+		list, err := c.Clientset.AppsV1().ReplicaSets(ns).List(ctx, opts)
 		if err != nil {
 			return nil, err
 		}

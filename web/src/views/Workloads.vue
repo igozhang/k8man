@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { fmtCPU, fmtMemory } from '../utils/quantity'
@@ -19,6 +19,7 @@ import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import ConfigMapEditor from '../components/ConfigMapEditor.vue'
 import FilterSelect from '../components/FilterSelect.vue'
+import FilterMultiSelect from '../components/FilterMultiSelect.vue'
 import { canWrite } from '../stores/opsAuth'
 
 const { currentClusterId } = useClusterStore()
@@ -26,6 +27,10 @@ const namespaces = ref([])
 const ns = ref('')
 /** pods | controllers | services | configmaps | metrics */
 const tab = ref('pods')
+/** 控制器多选：'Deployment/name'；空=不过滤 */
+const selectedControllers = ref([])
+const controllerOptions = ref([])
+const ctrlOptSeq = createSeq()
 const rows = ref([])
 const podMetrics = ref([])
 const metricsTip = ref('')
@@ -78,13 +83,20 @@ function persistWorkloadsPref() {
 
 function applyCachedRows(data) {
   if (tab.value === 'metrics') podMetrics.value = asArray(data)
-  else rows.value = asArray(data)
+  else {
+    rows.value = asArray(data)
+    if (tab.value === 'pods') refreshPodOwnerMap(rows.value)
+    if (tab.value === 'controllers') {
+      controllerOptions.value = rows.value.map(controllerOptionFromRow)
+    }
+  }
 }
 
 function clearRows() {
   rows.value = []
   podMetrics.value = []
   metricsTip.value = ''
+  podOwnerMap.value = new Map()
 }
 
 async function loadNamespaces({ force = false } = {}) {
@@ -159,6 +171,140 @@ function mapDaemonSet(ds) {
     extra: `可用 ${ds.status?.numberAvailable ?? 0} · 更新 ${ds.status?.updatedNumberScheduled ?? 0}`,
     canScale: false,
     replicas: desired
+  }
+}
+
+
+function controllerKey(kind, name) {
+  return `${kind}/${name}`
+}
+
+function controllerOptionFromRow(r) {
+  return {
+    value: controllerKey(r.kind, r.name),
+    label: `${shortKind(r.kind)} / ${r.name}`
+  }
+}
+
+function shortKind(kind) {
+  const k = String(kind || '')
+  if (k === 'Deployment') return 'Deploy'
+  if (k === 'StatefulSet') return 'STS'
+  if (k === 'DaemonSet') return 'Daemon'
+  return k
+}
+
+/**
+ * 实际生效的控制器过滤集。
+ * - 未选 / 选空 → 不过滤（显示全部，含无主 Pod）
+ * - 勾选了「当前全部控制器选项」→ 视为不过滤（与空选同义，避免无主 Pod 被误藏）
+ */
+const activeControllerFilter = computed(() => {
+  const selected = (selectedControllers.value || []).map(String)
+  if (!selected.length) return null
+  const opts = controllerOptions.value || []
+  if (opts.length) {
+    const all = new Set(opts.map((o) => o.value))
+    if (selected.length === all.size && selected.every((v) => all.has(v))) return null
+  }
+  return new Set(selected)
+})
+
+const filterActive = computed(() => !!activeControllerFilter.value)
+
+const displayRows = computed(() => {
+  const list = rows.value || []
+  const set = activeControllerFilter.value
+  if (!set) return list
+  if (tab.value === 'controllers') {
+    return list.filter((r) => set.has(controllerKey(r.kind, r.name)))
+  }
+  if (tab.value === 'pods') {
+    return list.filter((p) => p.ownerKind && p.ownerName && set.has(controllerKey(p.ownerKind, p.ownerName)))
+  }
+  return list
+})
+
+/** pod name → controllerKey，供指标 Tab 过滤（需主动 refresh） */
+const podOwnerMap = ref(new Map())
+
+function refreshPodOwnerMap(pods) {
+  const map = new Map()
+  for (const p of asArray(pods)) {
+    if (p?.name && p.ownerKind && p.ownerName) {
+      map.set(p.name, controllerKey(p.ownerKind, p.ownerName))
+    }
+  }
+  podOwnerMap.value = map
+}
+
+/** 旧缓存可能没有 ownerKind；有 Pod 却全无归属字段时需强刷 */
+function podsMissingOwnerFields(pods) {
+  const list = asArray(pods)
+  if (!list.length) return false
+  return list.every((p) => !p.ownerKind || !p.ownerName)
+}
+
+const displayMetrics = computed(() => {
+  const list = podMetrics.value || []
+  const set = activeControllerFilter.value
+  if (!set) return list
+  const owners = podOwnerMap.value
+  // 过滤已启用但归属表未就绪：不回退成「显示全部」，避免误导
+  if (!owners.size) return []
+  return list.filter((m) => {
+    const name = m?.metadata?.name
+    if (!name) return false
+    const key = owners.get(name)
+    return key && set.has(key)
+  })
+})
+
+async function loadControllerOptions({ force = false } = {}) {
+  const seq = ctrlOptSeq.next()
+  const clusterId = currentClusterId.value
+  const namespace = ns.value
+  if (!clusterId || !namespace) {
+    controllerOptions.value = []
+    selectedControllers.value = []
+    return
+  }
+  const key = cacheKey('controllers', clusterId, namespace)
+  const ttl = TTL.controllers
+  try {
+    const list = asArray(
+      await cacheLoad(key, ttl, () => loadControllers(clusterId, namespace), { force })
+    )
+    if (!ctrlOptSeq.is(seq)) return
+    controllerOptions.value = list.map(controllerOptionFromRow)
+    // 剔除失效选中
+    const valid = new Set(controllerOptions.value.map((o) => o.value))
+    selectedControllers.value = (selectedControllers.value || []).filter((v) => valid.has(v))
+  } catch (e) {
+    if (!ctrlOptSeq.is(seq)) return
+    // 失败时保留上次 options，避免「界面像全部、实际仍在筛」
+  }
+}
+
+async function ensurePodsForOwnerFilter() {
+  if (!filterActive.value) return
+  const clusterId = currentClusterId.value
+  const namespace = ns.value
+  if (!clusterId || !namespace) return
+  const key = cacheKey('pods', clusterId, namespace)
+  const hit = cacheGet(key)
+  const cached = hit ? asArray(hit.data) : tab.value === 'pods' ? asArray(rows.value) : []
+  const force = podsMissingOwnerFields(cached)
+  try {
+    const pods = asArray(
+      await cacheLoad(key, TTL.pods, () => readApi.listPods(clusterId, namespace), { force })
+    )
+    refreshPodOwnerMap(pods)
+    if (tab.value === 'pods' && force) {
+      rows.value = pods
+    }
+  } catch {
+    /* 保留已有 map；指标侧会显示空而非误显示全部 */
   }
 }
 
@@ -274,6 +420,7 @@ async function loadRows({ force = false } = {}) {
 
 function afterWrite() {
   invalidateNsLists(currentClusterId.value, ns.value)
+  loadControllerOptions({ force: true })
   return loadRows({ force: true })
 }
 
@@ -523,11 +670,17 @@ watch(canWrite, (ok) => {
 
 watch(currentClusterId, async () => {
   closeAllEditors()
+  // ns 名可能跨集群相同，必须先清控制器筛选，避免串用
+  selectedControllers.value = []
+  controllerOptions.value = []
+  podOwnerMap.value = new Map()
   applyWorkloadsPref()
   await loadNamespaces()
   persistWorkloadsPref()
-  if (ns.value) loadRows()
-  else {
+  if (ns.value) {
+    loadControllerOptions()
+    loadRows()
+  } else {
     rowsSeq.bump()
     clearRows()
     loading.value = false
@@ -536,12 +689,23 @@ watch(currentClusterId, async () => {
 }, { immediate: true })
 watch(ns, () => {
   closeAllEditors()
+  selectedControllers.value = []
+  controllerOptions.value = []
+  if (ns.value) loadControllerOptions()
 })
 watch(tab, () => {
   // 同命名空间切 Tab 只关日志；保留 YAML/ConfigMap 未保存编辑
   closeLogsOnly()
 })
-watch([ns, tab], () => {
+
+watch(selectedControllers, async () => {
+  if (!filterActive.value) return
+  if (tab.value === 'metrics' || tab.value === 'pods') {
+    await ensurePodsForOwnerFilter()
+  }
+})
+
+watch([ns, tab], async () => {
   persistWorkloadsPref()
   if (!ns.value) {
     rowsSeq.bump()
@@ -549,6 +713,9 @@ watch([ns, tab], () => {
     loading.value = false
     refreshing.value = false
     return
+  }
+  if (filterActive.value && (tab.value === 'metrics' || tab.value === 'pods')) {
+    await ensurePodsForOwnerFilter()
   }
   loadRows()
 })
@@ -569,6 +736,15 @@ watch([ns, tab], () => {
           empty-label="请选择命名空间"
           placeholder="输入 1–3 个字母筛选命名空间"
           aria-label="选择命名空间"
+        />
+        <FilterMultiSelect
+          v-if="ns"
+          v-model="selectedControllers"
+          :options="controllerOptions"
+          all-label="控制器 · 全部"
+          empty-label="控制器未筛选（全部）"
+          placeholder="筛选 Deploy / STS / Daemon"
+          aria-label="按控制器筛选"
         />
         <div class="tabs">
           <button class="tab" :class="{ active: tab === 'pods' }" @click="tab = 'pods'">Pods</button>
@@ -598,10 +774,10 @@ watch([ns, tab], () => {
       <p v-else-if="refreshing" class="muted">更新中…</p>
 
       <template v-if="tab === 'pods'">
-        <table v-if="rows.length" class="table">
+        <table v-if="displayRows.length" class="table">
           <thead><tr><th>名称</th><th>状态</th><th>Ready</th><th>重启</th><th>节点</th><th>操作</th></tr></thead>
           <tbody>
-            <tr v-for="p in rows" :key="p.name">
+            <tr v-for="p in displayRows" :key="p.name">
               <td>{{ p.name }}</td>
               <td>{{ p.status }}</td>
               <td>{{ p.ready }}</td>
@@ -615,11 +791,11 @@ watch([ns, tab], () => {
             </tr>
           </tbody>
         </table>
-        <div v-else-if="!loading" class="empty">该命名空间下暂无 Pod。</div>
+        <div v-else-if="!loading" class="empty">{{ filterActive && rows.length ? '所选控制器下暂无 Pod。' : '该命名空间下暂无 Pod。' }}</div>
       </template>
 
       <template v-else-if="tab === 'controllers'">
-        <table v-if="rows.length" class="table">
+        <table v-if="displayRows.length" class="table">
           <thead>
             <tr>
               <th>名称</th>
@@ -630,7 +806,7 @@ watch([ns, tab], () => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in rows" :key="r.kind + '/' + r.name">
+            <tr v-for="r in displayRows" :key="r.kind + '/' + r.name">
               <td><strong>{{ r.name }}</strong></td>
               <td><span class="tag">{{ r.kind }}</span></td>
               <td>{{ r.ready }}</td>
@@ -651,7 +827,7 @@ watch([ns, tab], () => {
           </tbody>
         </table>
         <div v-else-if="!loading" class="empty">
-          该命名空间下暂无 Deployment / StatefulSet / DaemonSet。
+          {{ filterActive && rows.length ? '没有匹配所选条件的控制器。' : '该命名空间下暂无 Deployment / StatefulSet / DaemonSet。' }}
         </div>
       </template>
 
@@ -700,10 +876,10 @@ watch([ns, tab], () => {
 
       <template v-else-if="tab === 'metrics'">
         <p v-if="metricsTip" class="muted">{{ metricsTip }}</p>
-        <table v-if="podMetrics.length" class="table">
+        <table v-if="displayMetrics.length" class="table">
           <thead><tr><th>Pod</th><th>容器</th><th>CPU</th><th>内存</th></tr></thead>
           <tbody>
-            <template v-for="m in podMetrics" :key="m.metadata?.name">
+            <template v-for="m in displayMetrics" :key="m.metadata?.name">
               <tr v-for="c in asArray(m.containers)" :key="(m.metadata?.name || '') + c.name">
                 <td>{{ m.metadata?.name }}</td>
                 <td>{{ c.name }}</td>
@@ -714,7 +890,7 @@ watch([ns, tab], () => {
           </tbody>
         </table>
         <div v-else-if="!loading" class="empty">
-          {{ metricsTip ? '无法加载 Pod 指标。' : '该命名空间下暂无 Pod 指标数据。' }}
+          {{ metricsTip ? '无法加载 Pod 指标。' : (filterActive && podMetrics.length ? '所选控制器下暂无 Pod 指标。' : '该命名空间下暂无 Pod 指标数据。') }}
         </div>
       </template>
       </template>

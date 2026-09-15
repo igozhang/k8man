@@ -1462,6 +1462,26 @@ body.is-drawer-resizing {
   font-size: 12px;
 }
 
+.filter-multi-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.filter-multi-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filter-multi-check {
+  flex-shrink: 0;
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+
 .ops-panel,
 .igokey-panel {
   max-width: 28rem;

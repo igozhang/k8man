@@ -10,11 +10,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"gitee.com/k8man/internal/api/respond"
 	"gitee.com/k8man/internal/auth"
 	"gitee.com/k8man/internal/hostsfile"
 	"gitee.com/k8man/internal/inspect"
 	"gitee.com/k8man/internal/kube"
+	"gitee.com/k8man/internal/kube/owner"
 	"gitee.com/k8man/internal/store"
 )
 
@@ -236,6 +239,14 @@ func (h *Handler) ListPods(c *gin.Context) {
 		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
 		return
 	}
+	rsToDeploy := map[string]string{}
+	if rsList, rsErr := clients.ListReplicaSets(ctx, ns); rsErr == nil {
+		owners := make(map[string][]metav1.OwnerReference, len(rsList))
+		for _, rs := range rsList {
+			owners[rs.Name] = rs.OwnerReferences
+		}
+		rsToDeploy = owner.BuildRSDeployMap(owners)
+	}
 	type podView struct {
 		Name      string `json:"name"`
 		Namespace string `json:"namespace"`
@@ -244,6 +255,8 @@ func (h *Handler) ListPods(c *gin.Context) {
 		Restarts  int32  `json:"restarts"`
 		Node      string `json:"node"`
 		Age       string `json:"age"`
+		OwnerKind string `json:"ownerKind,omitempty"`
+		OwnerName string `json:"ownerName,omitempty"`
 	}
 	out := make([]podView, 0, len(items))
 	for _, p := range items {
@@ -256,6 +269,7 @@ func (h *Handler) ListPods(c *gin.Context) {
 			}
 			restarts += cs.RestartCount
 		}
+		ownerKind, ownerName := owner.ResolvePodController(p.OwnerReferences, rsToDeploy)
 		out = append(out, podView{
 			Name:      p.Name,
 			Namespace: p.Namespace,
@@ -264,6 +278,8 @@ func (h *Handler) ListPods(c *gin.Context) {
 			Restarts:  restarts,
 			Node:      p.Spec.NodeName,
 			Age:       formatAge(p.CreationTimestamp.Time),
+			OwnerKind: ownerKind,
+			OwnerName: ownerName,
 		})
 	}
 	respond.OK(c, out)
