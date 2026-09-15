@@ -25,6 +25,10 @@ const error = ref('')
 const connecting = ref(false)
 const execWidth = ref(720)
 const termHost = ref(null)
+const dlPath = ref('')
+const downloading = ref(false)
+const dlStatus = ref('')
+const dlError = ref('')
 
 const openSeq = createSeq()
 let term = null
@@ -129,6 +133,10 @@ function close() {
   status.value = ''
   error.value = ''
   connecting.value = false
+  dlPath.value = ''
+  downloading.value = false
+  dlStatus.value = ''
+  dlError.value = ''
 }
 
 function fitAndNotify() {
@@ -302,6 +310,9 @@ async function openExec(name, resourceNs) {
   status.value = '准备中…'
   error.value = ''
   connecting.value = true
+  dlError.value = ''
+  dlStatus.value = ''
+  downloading.value = false
 
   try {
     const pod = await readApi.getPod(props.clusterId, activeNs.value, name)
@@ -343,6 +354,44 @@ function reconnect() {
   if (!open.value || !podName.value) return
   const seq = openSeq.next()
   connectSession(seq)
+}
+
+async function startDownload() {
+  if (!canWrite.value) {
+    dlError.value = '需要可操作权限'
+    return
+  }
+  const path = dlPath.value.trim()
+  if (!path) {
+    dlError.value = '请填写容器内绝对路径'
+    return
+  }
+  if (!path.startsWith('/')) {
+    dlError.value = '路径必须是绝对路径（以 / 开头）'
+    return
+  }
+  const cid = props.clusterId
+  const ns = activeNs.value || props.ns
+  const name = podName.value
+  if (!cid || !ns || !name) {
+    dlError.value = '缺少集群 / 命名空间 / Pod'
+    return
+  }
+  downloading.value = true
+  dlError.value = ''
+  dlStatus.value = '下载中…'
+  try {
+    const saved = await writeApi.downloadPodPath(cid, ns, name, {
+      container: container.value || undefined,
+      path
+    })
+    dlStatus.value = saved ? `已保存 ${saved}` : '已完成'
+  } catch (e) {
+    dlError.value = errMessage(e)
+    dlStatus.value = ''
+  } finally {
+    downloading.value = false
+  }
 }
 
 watch(
@@ -403,5 +452,34 @@ defineExpose({ open: openExec, close })
     </p>
     <p v-if="error" class="error">{{ error }}</p>
     <div ref="termHost" class="exec-term"></div>
+    <div class="exec-download">
+      <div class="toolbar toolbar-start">
+        <span class="exec-download-label">下载</span>
+        <input
+          v-model="dlPath"
+          type="text"
+          class="exec-download-path"
+          placeholder="容器内绝对路径，如 /var/log 或 /etc/hosts"
+          :disabled="downloading"
+          @keydown.enter.prevent="startDownload"
+        />
+        <div class="actions">
+          <button
+            class="btn btn-sm"
+            type="button"
+            :disabled="downloading || !dlPath.trim()"
+            @click="startDownload"
+          >
+            {{ downloading ? '下载中…' : '下载' }}
+          </button>
+        </div>
+      </div>
+      <p class="muted log-hint">
+        文件直接下载；目录 tar.gz 打包（包内一层目录名，递归内容）·
+        包名：目录名+北京年月日小时+序号
+        <template v-if="dlStatus"> · {{ dlStatus }}</template>
+      </p>
+      <p v-if="dlError" class="error">{{ dlError }}</p>
+    </div>
   </div>
 </template>

@@ -13,6 +13,52 @@ function wsURL(path, query = {}) {
   return `${proto}//${window.location.host}/api/v1${path}${q ? `?${q}` : ''}`
 }
 
+function parseFilename(cd) {
+  if (!cd) return ''
+  const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(cd)
+  if (star?.[1]) {
+    try {
+      return decodeURIComponent(star[1].trim())
+    } catch {
+      /* ignore */
+    }
+  }
+  const plain = /filename\s*=\s*"([^"]+)"/i.exec(cd) || /filename\s*=\s*([^;]+)/i.exec(cd)
+  return plain?.[1]?.trim() || ''
+}
+
+async function downloadBlob(url, { headers } = {}) {
+  const res = await fetch(url, { headers: headers || {}, credentials: 'same-origin' })
+  const ct = (res.headers.get('content-type') || '').toLowerCase()
+  if (!res.ok || ct.includes('application/json')) {
+    let msg = `下载失败 (${res.status})`
+    try {
+      const body = await res.json()
+      if (body?.message) msg = body.message
+    } catch {
+      /* ignore */
+    }
+    const e = new Error(msg)
+    e.code = res.status
+    throw e
+  }
+  const blob = await res.blob()
+  const name = parseFilename(res.headers.get('content-disposition')) || 'download'
+  const obj = URL.createObjectURL(blob)
+  try {
+    const a = document.createElement('a')
+    a.href = obj
+    a.download = name
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  } finally {
+    URL.revokeObjectURL(obj)
+  }
+  return name
+}
+
 export const writeApi = {
   createCluster: (payload) => http.post('/write/clusters', payload),
   probeCluster: (payload) => http.post('/write/clusters/probe', payload),
@@ -29,6 +75,18 @@ export const writeApi = {
       cols,
       rows
     }),
+  /** Download a file or tar.gz directory from a container. */
+  downloadPodPath: (id, ns, name, { container, path } = {}) => {
+    const params = new URLSearchParams()
+    if (container) params.set('container', container)
+    if (path) params.set('path', path)
+    const q = params.toString()
+    const url = `/api/v1/write/clusters/${id}/namespaces/${ns}/pods/${encodeURIComponent(name)}/download${q ? `?${q}` : ''}`
+    const headers = {}
+    const token = getWriteToken()
+    if (token) headers['X-Igo-Token'] = token
+    return downloadBlob(url, { headers })
+  },
   scaleDeployment: (id, ns, name, replicas) =>
     http.patch(`/write/clusters/${id}/namespaces/${ns}/deployments/${name}/scale`, { replicas }),
   scaleStatefulSet: (id, ns, name, replicas) =>

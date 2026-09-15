@@ -758,6 +758,32 @@ body.is-drawer-resizing {
 .drawer-exec .exec-term .xterm-viewport {
   overflow-y: auto !important;
 }
+.drawer-exec .exec-download {
+  flex-shrink: 0;
+  margin-top: 10px;
+}
+.drawer-exec .exec-download > .toolbar {
+  margin-bottom: 6px;
+  gap: 8px;
+}
+.drawer-exec .exec-download .actions {
+  margin-top: 0;
+}
+.drawer-exec .exec-download-label {
+  flex-shrink: 0;
+  font-weight: 600;
+  font-size: 13px;
+}
+.drawer-exec .exec-download-path {
+  flex: 1;
+  min-width: 0;
+}
+.drawer-exec .exec-download .log-hint {
+  margin-bottom: 0;
+}
+.drawer-exec .exec-download > .error {
+  margin: 6px 0 0;
+}
 .kv-list {
   display: flex;
   flex-direction: column;

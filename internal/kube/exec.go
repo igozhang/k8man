@@ -20,7 +20,7 @@ import (
 	clienttransport "k8s.io/client-go/transport"
 )
 
-// ExecOptions drives an interactive pod exec session (TTY).
+// ExecOptions drives a pod exec session (TTY or non-TTY).
 type ExecOptions struct {
 	Namespace string
 	Pod       string
@@ -35,6 +35,22 @@ type ExecOptions struct {
 // ExecTTY streams an interactive shell into the pod.
 // Default command is ["/bin/sh"]; caller may pass Command explicitly.
 func (c *Clients) ExecTTY(ctx context.Context, opt ExecOptions) error {
+	if len(opt.Command) == 0 {
+		opt.Command = []string{"/bin/sh"}
+	}
+	return c.execStream(ctx, opt, true)
+}
+
+// Exec runs a non-interactive command in the pod (no TTY).
+// Stdout/Stderr are kept separate. Command is required.
+func (c *Clients) Exec(ctx context.Context, opt ExecOptions) error {
+	if len(opt.Command) == 0 {
+		return fmt.Errorf("command required")
+	}
+	return c.execStream(ctx, opt, false)
+}
+
+func (c *Clients) execStream(ctx context.Context, opt ExecOptions, tty bool) error {
 	if c == nil || c.Clientset == nil || c.Config == nil {
 		return fmt.Errorf("kube clients not ready")
 	}
@@ -44,9 +60,6 @@ func (c *Clients) ExecTTY(ctx context.Context, opt ExecOptions) error {
 		return fmt.Errorf("namespace and pod required")
 	}
 	cmd := opt.Command
-	if len(cmd) == 0 {
-		cmd = []string{"/bin/sh"}
-	}
 	container := strings.TrimSpace(opt.Container)
 
 	// Streaming exec must not inherit rest.Config.Timeout (prepareRESTConfig sets 30s),
@@ -63,7 +76,7 @@ func (c *Clients) ExecTTY(ctx context.Context, opt ExecOptions) error {
 			Stdin:     opt.Stdin != nil,
 			Stdout:    true,
 			Stderr:    true,
-			TTY:       true,
+			TTY:       tty,
 		}, scheme.ParameterCodec)
 
 	cfg := rest.CopyConfig(c.Config)
@@ -74,13 +87,17 @@ func (c *Clients) ExecTTY(ctx context.Context, opt ExecOptions) error {
 	}
 
 	stream := remotecommand.StreamOptions{
-		Stdin:             opt.Stdin,
-		Stdout:            opt.Stdout,
-		Tty:               true,
-		TerminalSizeQueue: opt.Resize,
+		Stdin:  opt.Stdin,
+		Stdout: opt.Stdout,
+		Tty:    tty,
 	}
-	// With TTY, apiserver merges stderr into stdout; do not attach a separate stderr.
-	if opt.Stderr != nil && opt.Stdout == nil {
+	if tty {
+		stream.TerminalSizeQueue = opt.Resize
+		// With TTY, apiserver merges stderr into stdout; do not attach a separate stderr.
+		if opt.Stderr != nil && opt.Stdout == nil {
+			stream.Stderr = opt.Stderr
+		}
+	} else {
 		stream.Stderr = opt.Stderr
 	}
 
