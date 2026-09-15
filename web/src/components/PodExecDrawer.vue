@@ -227,7 +227,8 @@ async function connectSession(seq) {
   sock.onopen = () => {
     if (!openSeq.is(seq) || ws !== sock) return
     connecting.value = false
-    status.value = '已连接'
+    // 浏览器 WS 已通，但 apiserver SPDY/exec 可能仍在握手
+    status.value = '正在进入容器…'
     fitAndNotify()
   }
 
@@ -242,13 +243,19 @@ async function connectSession(seq) {
           return
         }
         if (msg?.type === 'status') {
-          status.value = msg.data === 'connected' ? '已连接' : String(msg.data || '')
+          if (msg.data === 'connected') {
+            if (status.value !== '已连接') status.value = '正在进入容器…'
+          } else {
+            status.value = String(msg.data || '')
+          }
           return
         }
         if (msg?.type === 'stdout' && msg.data) {
+          status.value = '已连接'
           term.write(msg.data)
         }
       } catch {
+        status.value = '已连接'
         term.write(ev.data)
       }
       return
@@ -256,11 +263,15 @@ async function connectSession(seq) {
     if (ev.data instanceof Blob) {
       const buf = await ev.data.arrayBuffer()
       if (!openSeq.is(seq) || ws !== sock || !term) return
+      status.value = '已连接'
       term.write(new TextDecoder().decode(buf))
       return
     }
     const text = decodeWSData(ev.data)
-    if (text != null) term.write(text)
+    if (text != null) {
+      status.value = '已连接'
+      term.write(text)
+    }
   }
 
   sock.onerror = () => {

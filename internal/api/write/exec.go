@@ -162,7 +162,7 @@ func (h *Handler) PodExec(c *gin.Context) {
 		return
 	}
 	if container == "" {
-		container = names[0]
+		container = preferReadyContainer(pod, names)
 	} else {
 		found := false
 		for _, n := range names {
@@ -307,7 +307,7 @@ func (h *Handler) PodExec(c *gin.Context) {
 		Resize:    sizes,
 	})
 	if !idleTimedOut.Load() && err != nil && execCtx.Err() == nil {
-		_ = ws.writeJSON(execCtrlMsg{Type: "error", Data: err.Error()})
+		_ = ws.writeJSON(execCtrlMsg{Type: "error", Data: kube.FriendlyConnectivityError(err)})
 	}
 	ws.mu.Lock()
 	_ = conn.WriteControl(websocket.CloseMessage,
@@ -337,4 +337,25 @@ func parseUint16(s string) uint16 {
 		}
 	}
 	return uint16(n)
+}
+
+// preferReadyContainer picks a Ready container when possible (multi-container pods).
+func preferReadyContainer(pod *corev1.Pod, names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	if pod != nil {
+		ready := map[string]bool{}
+		for _, st := range pod.Status.ContainerStatuses {
+			if st.Ready && strings.TrimSpace(st.Name) != "" {
+				ready[st.Name] = true
+			}
+		}
+		for _, n := range names {
+			if ready[n] {
+				return n
+			}
+		}
+	}
+	return names[0]
 }
