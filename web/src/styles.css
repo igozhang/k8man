@@ -732,6 +732,32 @@ body.is-drawer-resizing {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.drawer-exec .toolbar .actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 0;
+}
+.drawer-exec .toolbar .actions select {
+  min-width: 7rem;
+  max-width: 12rem;
+}
+.drawer-exec .exec-term {
+  flex: 1;
+  min-height: 0;
+  background: #1e2a1e;
+  border: 1px solid #2a3a2a;
+  border-radius: 8px;
+  overflow: hidden;
+  padding: 4px;
+  box-sizing: border-box;
+}
+.drawer-exec .exec-term .xterm {
+  height: 100%;
+}
+.drawer-exec .exec-term .xterm-viewport {
+  overflow-y: auto !important;
+}
 .kv-list {
   display: flex;
   flex-direction: column;

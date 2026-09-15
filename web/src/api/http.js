@@ -12,6 +12,10 @@ export function setWriteToken(token) {
   writeToken = typeof token === 'string' ? token : ''
 }
 
+export function getWriteToken() {
+  return writeToken
+}
+
 export function onWriteAuthLost(fn) {
   onWriteUnauthorized = typeof fn === 'function' ? fn : () => {}
 }

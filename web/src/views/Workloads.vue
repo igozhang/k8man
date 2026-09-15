@@ -16,6 +16,7 @@ import {
   setViewPref
 } from '../utils/resourceCache'
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
+import PodExecDrawer from '../components/PodExecDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import ConfigMapEditor from '../components/ConfigMapEditor.vue'
 import FilterSelect from '../components/FilterSelect.vue'
@@ -42,6 +43,7 @@ const rowsSeq = createSeq()
 const nsSeq = createSeq()
 
 const logsDrawer = ref(null)
+const execDrawer = ref(null)
 const yamlDrawer = ref(null)
 const cmEditor = ref(null)
 
@@ -442,6 +444,11 @@ function showLogs(pod) {
   logsDrawer.value?.open(pod.name)
 }
 
+function showExec(pod) {
+  if (!canWrite.value) return
+  execDrawer.value?.open(pod.name)
+}
+
 function openYAML(kind, name) {
   yamlDrawer.value?.open(kind, name)
 }
@@ -452,11 +459,13 @@ function openConfigMap(name) {
 
 function closeLogsOnly() {
   logsDrawer.value?.close()
+  execDrawer.value?.close()
 }
 
 /** 换集群 / 换命名空间时关闭全部编辑抽屉，避免对着旧上下文保存 */
 function closeAllEditors() {
   logsDrawer.value?.close()
+  execDrawer.value?.close()
   yamlDrawer.value?.close()
   cmEditor.value?.close()
   scaleForm.value.open = false
@@ -665,6 +674,7 @@ function onChildError(msg) {
 watch(canWrite, (ok) => {
   if (ok) return
   scaleForm.value.open = false
+  execDrawer.value?.close()
   if (specEditor.value.open) closeSpecEdit()
 })
 
@@ -786,6 +796,7 @@ watch([ns, tab], async () => {
               <td class="actions">
                 <button class="btn btn-sm" @click="showLogs(p)">日志</button>
                 <button class="btn btn-sm" @click="openYAML('pod', p.name)">YAML</button>
+                <button v-if="canWrite" class="btn btn-sm" @click="showExec(p)">终端</button>
                 <button v-if="canWrite" class="btn btn-sm btn-danger" @click="restart(p)">重启</button>
               </td>
             </tr>
@@ -898,6 +909,11 @@ watch([ns, tab], async () => {
 
     <PodLogsDrawer
       ref="logsDrawer"
+      :cluster-id="currentClusterId"
+      :ns="ns"
+    />
+    <PodExecDrawer
+      ref="execDrawer"
       :cluster-id="currentClusterId"
       :ns="ns"
     />

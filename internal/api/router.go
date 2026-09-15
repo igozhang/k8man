@@ -136,6 +136,7 @@ func NewRouter(d Deps) *gin.Engine {
 		writeGroup.POST("/clusters/:id/test", wh.TestCluster)
 		writeGroup.POST("/clusters/:id/inspect", wh.InspectCluster)
 		writeGroup.POST("/clusters/:id/namespaces/:ns/pods/:name/restart", wh.RestartPod)
+		writeGroup.GET("/clusters/:id/namespaces/:ns/pods/:name/exec", wh.PodExec)
 		writeGroup.PATCH("/clusters/:id/namespaces/:ns/deployments/:name/scale", wh.ScaleDeployment)
 		writeGroup.PATCH("/clusters/:id/namespaces/:ns/statefulsets/:name/scale", wh.ScaleStatefulSet)
 		writeGroup.PUT("/clusters/:id/namespaces/:ns/resources/:kind/:name/yaml", wh.ApplyYAML)
