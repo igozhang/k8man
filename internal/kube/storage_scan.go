@@ -249,6 +249,100 @@ func largePodIssuesFromSummaries(summaries map[string]nodeStatsSummary) []Issue 
 	return out
 }
 
+// PodEphemeralUsage is one Pod's non-persistent (ephemeral) storage usage from kubelet summary.
+type PodEphemeralUsage struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Node      string `json:"node"`
+	UsedBytes int64  `json:"usedBytes"`
+}
+
+// ListPodEphemeralUsage returns non-persistent storage usage for Pods in ns (full list, not only >5Gi).
+// skipped explains soft failures (project credential, timeout, no summary); trunc is partial node coverage.
+func (c *Clients) ListPodEphemeralUsage(ctx context.Context, ns, permType string) (items []PodEphemeralUsage, skipped string, trunc bool, err error) {
+	ns = strings.TrimSpace(ns)
+	if ns == "" {
+		return nil, "namespace required", false, nil
+	}
+	if permType == "project" {
+		return nil, "project credential", false, nil
+	}
+	if c == nil || c.Clientset == nil {
+		return nil, "clients not ready", false, nil
+	}
+
+	pods, listErr := c.ListPods(ctx, ns)
+	if listErr != nil {
+		return nil, "", false, listErr
+	}
+	// NS 内无已调度 Pod 时不要回退扫全集群节点（diagnose 的 fetchNodeSummaries 会这么做）。
+	if len(nodeNamesForSummary(pods)) == 0 {
+		return []PodEphemeralUsage{}, "", false, nil
+	}
+
+	sctx, cancel, skip := storageScanContext(ctx)
+	if skip != "" {
+		return nil, skip, false, nil
+	}
+	defer cancel()
+
+	summaries, sumTrunc, sumErr := c.fetchNodeSummaries(sctx, pods)
+	if sumErr != nil && len(summaries) == 0 {
+		return nil, clipRunes(sumErr.Error(), 240), sumTrunc, nil
+	}
+	if len(summaries) == 0 {
+		if sctx.Err() != nil {
+			return nil, "timeout budget exhausted", sumTrunc, nil
+		}
+		return nil, "no kubelet summary", sumTrunc, nil
+	}
+	items = podEphemeralUsagesFromSummaries(summaries, ns)
+	return items, "", sumTrunc, nil
+}
+
+// podEphemeralUsagesFromSummaries lists all Pods with measurable non-persistent usage in ns (empty ns = all).
+func podEphemeralUsagesFromSummaries(summaries map[string]nodeStatsSummary, ns string) []PodEphemeralUsage {
+	var out []PodEphemeralUsage
+	seen := map[string]bool{}
+	for nodeName, sum := range summaries {
+		for _, p := range sum.Pods {
+			pns := strings.TrimSpace(p.PodRef.Namespace)
+			name := strings.TrimSpace(p.PodRef.Name)
+			if pns == "" || name == "" {
+				continue
+			}
+			if ns != "" && pns != ns {
+				continue
+			}
+			used, ok := podNonPersistentUsedBytes(p)
+			if !ok {
+				continue
+			}
+			key := pns + "/" + name
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, PodEphemeralUsage{
+				Name:      name,
+				Namespace: pns,
+				Node:      nodeName,
+				UsedBytes: used,
+			})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].UsedBytes != out[j].UsedBytes {
+			return out[i].UsedBytes > out[j].UsedBytes
+		}
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
 // podNonPersistentUsedBytes reads non-PVC usage from kubelet summary.
 // Use pod ephemeral-storage when it reports a positive value; otherwise fall back to
 // container rootfs/logs + non-PVC volumes (covers missing/zero pod-level fields).

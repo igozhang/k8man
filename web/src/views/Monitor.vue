@@ -2,7 +2,7 @@
 import { ref, watch, onMounted, computed } from 'vue'
 import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
-import { fmtCPU, fmtMemory, fmtTime, mergeNodeUsage } from '../utils/quantity'
+import { fmtCPU, fmtMemory, fmtTime, mergeNodeUsage, parseQuantity } from '../utils/quantity'
 import { metricsErrorTip } from '../utils/metrics'
 import { asArray, createSeq, errMessage } from '../utils/safe'
 import { severityLabel, severityClass } from '../utils/labels'
@@ -22,25 +22,39 @@ import {
 import InspectionDrawer from '../components/InspectionDrawer.vue'
 import InspectRules from '../components/InspectRules.vue'
 import FilterSelect from '../components/FilterSelect.vue'
+import FilterMultiSelect from '../components/FilterMultiSelect.vue'
+import PodNameCell from '../components/PodNameCell.vue'
 import { canWrite } from '../stores/opsAuth'
 
 const INSPECT_KEY = cacheKey('inspections', 'local')
 const BLOCK_LINES = 3
+/** Pod 级指标 Tab（不含节点） */
+const POD_METRIC_TABS = new Set(['cpu', 'memory', 'storage'])
 
 const { currentClusterId, currentCluster, refreshClusters } = useClusterStore()
 const namespaces = ref([])
 const ns = ref('')
-/** '' | nodes | pods */
+/** '' | nodes | cpu | memory | storage；兼容旧 pref「pods」→ cpu */
 const tab = ref('')
+const selectedControllers = ref([])
+const controllerOptions = ref([])
+const ctrlOptSeq = createSeq()
+const podOwnerMap = ref(new Map())
+/** 'desc' | 'asc'；各 Tab 独立 */
+const sortDir = ref({ cpu: 'desc', memory: 'desc', storage: 'desc' })
 const nodeRows = ref([])
 const podMetrics = ref([])
+const storageRows = ref([])
 const error = ref('')
 const nodeTip = ref('')
 const podTip = ref('')
+const storageTip = ref('')
 const nodeLoading = ref(false)
 const nodeRefreshing = ref(false)
 const podLoading = ref(false)
 const podRefreshing = ref(false)
+const storageLoading = ref(false)
+const storageRefreshing = ref(false)
 const nsLoading = ref(false)
 
 const inspectItems = ref(asArray(cacheGet(INSPECT_KEY)?.data?.items))
@@ -55,11 +69,260 @@ const inspecting = computed(() => !!inspectingId.value)
 
 const nodesSeq = createSeq()
 const podsSeq = createSeq()
+const storageSeq = createSeq()
 const inspectSeq = createSeq()
 const inspectRunSeq = createSeq()
 
 const isProject = computed(() => currentCluster.value?.permType === 'project')
 const showNodesTab = computed(() => !isProject.value)
+const isPodMetricTab = computed(() => POD_METRIC_TABS.has(tab.value))
+
+function controllerKey(kind, name) {
+  return `${kind}/${name}`
+}
+
+function shortKind(kind) {
+  const k = String(kind || '')
+  if (k === 'Deployment') return 'Deploy'
+  if (k === 'StatefulSet') return 'STS'
+  if (k === 'DaemonSet') return 'Daemon'
+  return k
+}
+
+function controllerOptionFromRow(r) {
+  return {
+    value: controllerKey(r.kind, r.name),
+    label: `${shortKind(r.kind)} / ${r.name}`
+  }
+}
+
+const activeControllerFilter = computed(() => {
+  const selected = (selectedControllers.value || []).map(String)
+  if (!selected.length) return null
+  const opts = controllerOptions.value || []
+  if (opts.length) {
+    const all = new Set(opts.map((o) => o.value))
+    if (selected.length === all.size && selected.every((v) => all.has(v))) return null
+  }
+  return new Set(selected)
+})
+
+const filterActive = computed(() => !!activeControllerFilter.value)
+
+function refreshPodOwnerMap(pods) {
+  const map = new Map()
+  for (const p of asArray(pods)) {
+    if (p?.name && p.ownerKind && p.ownerName) {
+      map.set(p.name, controllerKey(p.ownerKind, p.ownerName))
+    }
+  }
+  podOwnerMap.value = map
+}
+
+function podsMissingOwnerFields(pods) {
+  const list = asArray(pods)
+  if (!list.length) return false
+  return list.every((p) => !p.ownerKind || !p.ownerName)
+}
+
+function mapDeployment(d) {
+  const name = d.metadata?.name || d.name || ''
+  const ready = d.status?.readyReplicas ?? 0
+  const desired = d.spec?.replicas ?? d.status?.replicas ?? 0
+  return { kind: 'Deployment', name, ready: `${ready}/${desired}` }
+}
+
+function mapStatefulSet(ss) {
+  const name = ss.metadata?.name || ss.name || ''
+  const ready = ss.status?.readyReplicas ?? 0
+  const desired = ss.spec?.replicas ?? ss.status?.replicas ?? 0
+  return { kind: 'StatefulSet', name, ready: `${ready}/${desired}` }
+}
+
+function mapDaemonSet(ds) {
+  const name = ds.metadata?.name || ds.name || ''
+  const ready = ds.status?.numberReady ?? 0
+  const desired = ds.status?.desiredNumberScheduled ?? 0
+  return { kind: 'DaemonSet', name, ready: `${ready}/${desired}` }
+}
+
+async function loadControllers(clusterId, namespace) {
+  const settled = await Promise.allSettled([
+    readApi.listDeployments(clusterId, namespace),
+    readApi.listStatefulSets(clusterId, namespace),
+    readApi.listDaemonSets(clusterId, namespace)
+  ])
+  const deps = settled[0].status === 'fulfilled' ? asArray(settled[0].value) : []
+  const sts = settled[1].status === 'fulfilled' ? asArray(settled[1].value) : []
+  const dss = settled[2].status === 'fulfilled' ? asArray(settled[2].value) : []
+  const failed = settled.filter((s) => s.status === 'rejected')
+  if (failed.length === settled.length) {
+    throw failed[0].reason || new Error('控制器列表加载失败')
+  }
+  const list = [
+    ...deps.map(mapDeployment),
+    ...sts.map(mapStatefulSet),
+    ...dss.map(mapDaemonSet)
+  ]
+	list.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name))
+  return list.filter((r) => r.name)
+}
+
+async function loadControllerOptions({ force = false } = {}) {
+  const seq = ctrlOptSeq.next()
+  const clusterId = currentClusterId.value
+  const namespace = ns.value
+  if (!clusterId || !namespace) {
+    controllerOptions.value = []
+    selectedControllers.value = []
+    return
+  }
+  const key = cacheKey('controllers', clusterId, namespace)
+  try {
+    const list = asArray(
+      await cacheLoad(key, TTL.controllers, () => loadControllers(clusterId, namespace), { force })
+    )
+    if (!ctrlOptSeq.is(seq)) return
+    controllerOptions.value = list.map(controllerOptionFromRow)
+    const valid = new Set(controllerOptions.value.map((o) => o.value))
+    selectedControllers.value = (selectedControllers.value || []).filter((v) => valid.has(v))
+  } catch {
+    if (!ctrlOptSeq.is(seq)) return
+  }
+}
+
+async function ensurePodsForOwnerFilter() {
+  if (!filterActive.value) return
+  const clusterId = currentClusterId.value
+  const namespace = ns.value
+  if (!clusterId || !namespace) return
+  const key = cacheKey('pods', clusterId, namespace)
+  const hit = cacheGet(key)
+  const cached = hit ? asArray(hit.data) : []
+  const force = podsMissingOwnerFields(cached)
+  if (!force && cached.length) {
+    refreshPodOwnerMap(cached)
+    return
+  }
+  try {
+    const list = asArray(
+      await cacheLoad(key, TTL.pods, () => readApi.listPods(clusterId, namespace), { force })
+    )
+    // 切集群 / NS 后丢弃过期归属表，避免筛错
+    if (currentClusterId.value !== clusterId || ns.value !== namespace) return
+    refreshPodOwnerMap(list)
+  } catch {
+    /* 过滤启用时 owner 空 → 表为空，不回退全部 */
+  }
+}
+
+/** 将 metrics-server 容器行聚合成 Pod 级 CPU/内存 */
+function aggregatePodMetricRows(items) {
+  const out = []
+  for (const m of asArray(items)) {
+    const name = m?.metadata?.name || m?.name || ''
+    if (!name) continue
+    let cpu = 0
+    let mem = 0
+    let hasCpu = false
+    let hasMem = false
+    for (const c of asArray(m.containers)) {
+      const cCpu = parseQuantity(c?.usage?.cpu, { asCPU: true })
+      const cMem = parseQuantity(c?.usage?.memory)
+      if (cCpu != null && !Number.isNaN(cCpu)) {
+        cpu += cCpu
+        hasCpu = true
+      }
+      if (cMem != null && !Number.isNaN(cMem)) {
+        mem += cMem
+        hasMem = true
+      }
+    }
+    out.push({
+      name,
+      cpuCores: hasCpu ? cpu : null,
+      memoryBytes: hasMem ? mem : null
+    })
+  }
+  return out
+}
+
+function passControllerFilter(podName) {
+  const set = activeControllerFilter.value
+  if (!set) return true
+  const owners = podOwnerMap.value
+  if (!owners.size) return false
+  const key = owners.get(podName)
+  return !!(key && set.has(key))
+}
+
+function cmpNullableNum(a, b, dir) {
+  const aNull = a == null || Number.isNaN(a)
+  const bNull = b == null || Number.isNaN(b)
+  if (aNull && bNull) return 0
+  if (aNull) return 1
+  if (bNull) return -1
+  const d = a - b
+  if (d === 0) return 0
+  return dir === 'asc' ? d : -d
+}
+
+const displayCpuRows = computed(() => {
+  const rows = aggregatePodMetricRows(podMetrics.value).filter((r) => passControllerFilter(r.name))
+  const dir = sortDir.value.cpu || 'desc'
+  rows.sort((a, b) => {
+    const d = cmpNullableNum(a.cpuCores, b.cpuCores, dir)
+    if (d) return d
+    return String(a.name).localeCompare(String(b.name), 'zh')
+  })
+  return rows
+})
+
+const displayMemoryRows = computed(() => {
+  const rows = aggregatePodMetricRows(podMetrics.value).filter((r) => passControllerFilter(r.name))
+  const dir = sortDir.value.memory || 'desc'
+  rows.sort((a, b) => {
+    const d = cmpNullableNum(a.memoryBytes, b.memoryBytes, dir)
+    if (d) return d
+    return String(a.name).localeCompare(String(b.name), 'zh')
+  })
+  return rows
+})
+
+const displayStorageRows = computed(() => {
+  const rows = asArray(storageRows.value)
+    .filter((r) => r?.name && passControllerFilter(r.name))
+    .map((r) => {
+      const n = Number(r.usedBytes)
+      return {
+        name: r.name,
+        node: r.node || '',
+        usedBytes: r.usedBytes == null || Number.isNaN(n) ? null : n
+      }
+    })
+  const dir = sortDir.value.storage || 'desc'
+  rows.sort((a, b) => {
+    const d = cmpNullableNum(a.usedBytes, b.usedBytes, dir)
+    if (d) return d
+    return String(a.name).localeCompare(String(b.name), 'zh')
+  })
+  return rows
+})
+
+function toggleSort(kind) {
+  if (!POD_METRIC_TABS.has(kind)) return
+  const cur = sortDir.value[kind] || 'desc'
+  sortDir.value = { ...sortDir.value, [kind]: cur === 'desc' ? 'asc' : 'desc' }
+}
+
+function sortArrow(kind) {
+  return (sortDir.value[kind] || 'desc') === 'asc' ? '↑' : '↓'
+}
+
+function fmtBytesNum(bytes) {
+  if (bytes == null || Number.isNaN(Number(bytes))) return '-'
+  return fmtMemory(Number(bytes))
+}
 
 function issueRank(severity) {
   if (severity === 'critical') return 0
@@ -345,27 +608,43 @@ async function runInspect() {
 function resetView() {
   nodesSeq.bump()
   podsSeq.bump()
+  storageSeq.bump()
+  ctrlOptSeq.bump()
   nodeRows.value = []
   podMetrics.value = []
+  storageRows.value = []
   nodeTip.value = ''
   podTip.value = ''
+  storageTip.value = ''
   nodeLoading.value = false
   nodeRefreshing.value = false
   podLoading.value = false
   podRefreshing.value = false
+  storageLoading.value = false
+  storageRefreshing.value = false
   nsLoading.value = false
   namespaces.value = []
   ns.value = ''
   tab.value = ''
+  selectedControllers.value = []
+  controllerOptions.value = []
+  podOwnerMap.value = new Map()
   error.value = ''
+}
+
+function normalizeMonitorTab(raw) {
+  if (raw === 'pods') return 'cpu'
+  if (raw === 'nodes' || POD_METRIC_TABS.has(raw)) return raw
+  return ''
 }
 
 function applyMonitorPref() {
   const pref = getViewPref('monitor', currentClusterId.value)
   ns.value = pref?.ns || ''
-  if (pref?.tab === 'pods') tab.value = 'pods'
-  else if (pref?.tab === 'nodes' && showNodesTab.value) tab.value = 'nodes'
-  else tab.value = showNodesTab.value ? 'nodes' : ''
+  const next = normalizeMonitorTab(pref?.tab)
+  if (next === 'nodes' && showNodesTab.value) tab.value = 'nodes'
+  else if (POD_METRIC_TABS.has(next)) tab.value = next
+  else tab.value = showNodesTab.value ? 'nodes' : 'cpu'
 }
 
 function persistMonitorPref() {
@@ -486,21 +765,153 @@ async function loadPodMetrics({ force = false } = {}) {
   }
 }
 
+function storageSkipTip(skipped) {
+  const s = String(skipped || '').trim()
+  if (!s) return ''
+  if (s === 'project credential') return 'Project 凭证无法读取节点 kubelet summary，存储用量不可用。'
+  if (s === 'timeout budget exhausted') return '读取存储用量超时，请稍后重试。'
+  if (s === 'no kubelet summary') return '无法获取 kubelet summary（权限或节点代理不可用）。'
+  if (s === 'clients not ready') return '集群客户端未就绪。'
+  if (s === 'namespace required') return '请选择命名空间。'
+  return s
+}
+
+/** 超时等瞬时失败不要占满 TTL，否则短时间重试仍看到旧 skip */
+function isTransientStorageSkip(skipped) {
+  const s = String(skipped || '')
+  return s === 'timeout budget exhausted' || /timeout/i.test(s)
+}
+
+async function loadStorageMetrics({ force = false } = {}) {
+  const seq = storageSeq.next()
+  storageTip.value = ''
+  if (!currentClusterId.value || !ns.value) {
+    storageRows.value = []
+    storageLoading.value = false
+    storageRefreshing.value = false
+    return
+  }
+  if (isProject.value) {
+    storageRows.value = []
+    storageTip.value = storageSkipTip('project credential')
+    storageLoading.value = false
+    storageRefreshing.value = false
+    return
+  }
+  const id = currentClusterId.value
+  const namespace = ns.value
+  const key = cacheKey('podStorageMetrics', id, namespace)
+  const hit = cacheGet(key)
+  if (hit) {
+    const data = hit.data || {}
+    storageRows.value = asArray(data.items)
+    if (data.skipped) storageTip.value = storageSkipTip(data.skipped)
+    else if (data.truncated) storageTip.value = '部分节点 summary 未取到，列表可能不完整。'
+  } else {
+    storageRows.value = []
+  }
+  // 瞬时 skip 的缓存不当作新鲜命中，允许立刻重试
+  if (!force && cacheFresh(key, TTL.podStorageMetrics) && !isTransientStorageSkip(hit?.data?.skipped)) {
+    storageLoading.value = false
+    storageRefreshing.value = false
+    return
+  }
+  storageLoading.value = !storageRows.value.length
+  storageRefreshing.value = storageRows.value.length > 0
+  try {
+    const data = await cacheLoad(
+      key,
+      TTL.podStorageMetrics,
+      async () => {
+        const raw = await readApi.podStorageMetrics(id, namespace)
+        return {
+          items: asArray(raw?.items),
+          skipped: raw?.skipped || '',
+          truncated: !!raw?.truncated
+        }
+      },
+      { force: force || isTransientStorageSkip(hit?.data?.skipped) }
+    )
+    if (!storageSeq.is(seq)) return
+    storageRows.value = asArray(data?.items)
+    if (data?.skipped) {
+      storageTip.value = storageSkipTip(data.skipped)
+    } else if (data?.truncated) {
+      storageTip.value = '部分节点 summary 未取到，列表可能不完整。'
+    } else {
+      storageTip.value = ''
+    }
+    if (isTransientStorageSkip(data?.skipped)) {
+      cacheInvalidate(key)
+    }
+  } catch (e) {
+    if (!storageSeq.is(seq)) return
+    storageTip.value = errMessage(e)
+    if (!hit) storageRows.value = []
+    cacheInvalidate(key)
+  } finally {
+    if (storageSeq.is(seq)) {
+      storageLoading.value = false
+      storageRefreshing.value = false
+    }
+  }
+}
+
+function stopPodLoads() {
+  podsSeq.bump()
+  storageSeq.bump()
+  podLoading.value = false
+  podRefreshing.value = false
+  storageLoading.value = false
+  storageRefreshing.value = false
+}
+
+async function loadActivePodTab() {
+  if (!POD_METRIC_TABS.has(tab.value) || !ns.value) return
+  const clusterId = currentClusterId.value
+  const namespace = ns.value
+  const kind = tab.value
+  await ensureNamespaces()
+  if (currentClusterId.value !== clusterId || ns.value !== namespace || tab.value !== kind) return
+  loadControllerOptions()
+  if (kind === 'storage') {
+    await Promise.all([loadStorageMetrics(), ensurePodsForOwnerFilter()])
+    return
+  }
+  await Promise.all([loadPodMetrics(), ensurePodsForOwnerFilter()])
+}
+
 function selectTab(next) {
   if (next === 'nodes' && !showNodesTab.value) return
   tab.value = next
   persistMonitorPref()
   if (next === 'nodes') {
-    podsSeq.bump()
-    podLoading.value = false
-    podRefreshing.value = false
+    stopPodLoads()
     loadNodes()
     return
   }
-  if (next === 'pods') {
-    ensureNamespaces()
-    if (ns.value) loadPodMetrics()
+  if (POD_METRIC_TABS.has(next)) {
+    ensureNamespaces().then(() => {
+      if (tab.value !== next) return
+      if (ns.value) loadActivePodTab()
+    })
   }
+}
+
+function clearMetricViews() {
+  stopPodLoads()
+  nodesSeq.bump()
+  nodeRows.value = []
+  podMetrics.value = []
+  storageRows.value = []
+  nodeTip.value = ''
+  podTip.value = ''
+  storageTip.value = ''
+  nodeLoading.value = false
+  nodeRefreshing.value = false
+  selectedControllers.value = []
+  controllerOptions.value = []
+  podOwnerMap.value = new Map()
 }
 
 function enterPage() {
@@ -510,21 +921,27 @@ function enterPage() {
     resetView()
     return
   }
+  // 切集群时先清掉上一集群的表数据，避免短暂串显
+  clearMetricViews()
   applyMonitorPref()
   persistMonitorPref()
   if (!currentCluster.value) return
   if (tab.value === 'nodes') {
     if (!showNodesTab.value) {
-      tab.value = ''
+      tab.value = 'cpu'
       persistMonitorPref()
+      ensureNamespaces().then(() => {
+        if (ns.value) loadActivePodTab()
+      })
       return
     }
     loadNodes()
     return
   }
-  if (tab.value === 'pods') {
-    ensureNamespaces()
-    if (ns.value) loadPodMetrics()
+  if (POD_METRIC_TABS.has(tab.value)) {
+    ensureNamespaces().then(() => {
+      if (ns.value) loadActivePodTab()
+    })
   }
 }
 
@@ -538,8 +955,14 @@ watch(
         nodesSeq.bump()
         nodeLoading.value = false
         nodeRefreshing.value = false
-        tab.value = ''
+        tab.value = 'cpu'
         persistMonitorPref()
+        ensureNamespaces().then(() => {
+          if (ns.value) loadActivePodTab()
+        })
+      } else if (tab.value === 'storage') {
+        storageRows.value = []
+        storageTip.value = storageSkipTip('project credential')
       }
       return
     }
@@ -547,20 +970,31 @@ watch(
       tab.value = 'nodes'
       persistMonitorPref()
     }
+    // 集群列表晚于 clusterId 就绪时，补拉当前 Tab
     if (tab.value === 'nodes') loadNodes()
+    else if (POD_METRIC_TABS.has(tab.value) && ns.value) loadActivePodTab()
   }
 )
 watch(ns, (v) => {
   persistMonitorPref()
-  if (tab.value !== 'pods') return
-  if (v) loadPodMetrics()
-  else {
-    podsSeq.bump()
+  selectedControllers.value = []
+  controllerOptions.value = []
+  podOwnerMap.value = new Map()
+  if (!isPodMetricTab.value) return
+  if (v) {
+    loadControllerOptions()
+    loadActivePodTab()
+  } else {
+    stopPodLoads()
     podMetrics.value = []
+    storageRows.value = []
     podTip.value = ''
-    podLoading.value = false
-    podRefreshing.value = false
+    storageTip.value = ''
   }
+})
+watch(selectedControllers, () => {
+  if (!isPodMetricTab.value || !ns.value) return
+  ensurePodsForOwnerFilter()
 })
 watch(inspectItems, (items) => {
   if (inspectTargetId.value && !items.some((it) => it.clusterId === inspectTargetId.value)) {
@@ -575,7 +1009,7 @@ onMounted(enterPage)
   <div>
     <h1>监控</h1>
     <p class="page-desc">
-      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。当前选用集群在 TTL 内复用并合并重复请求；过期后后台更新，不先清空。Pod 指标需选择命名空间。未安装或权限不足时降级提示。
+      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。CPU / 内存按 Pod 聚合容器用量；存储为非持久化（ephemeral）用量，来源与巡检「大 POD」相同（kubelet summary）。Pod 相关标签需选择命名空间，并可按控制器筛选。表头可点击切换排序（默认从大到小）。未安装 metrics-server 或权限不足时降级提示。
     </p>
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
@@ -590,12 +1024,22 @@ onMounted(enterPage)
         >节点</button>
         <button
           class="tab"
-          :class="{ active: tab === 'pods' }"
-          @click="selectTab('pods')"
-        >Pod 指标</button>
+          :class="{ active: tab === 'cpu' }"
+          @click="selectTab('cpu')"
+        >CPU</button>
+        <button
+          class="tab"
+          :class="{ active: tab === 'memory' }"
+          @click="selectTab('memory')"
+        >内存</button>
+        <button
+          class="tab"
+          :class="{ active: tab === 'storage' }"
+          @click="selectTab('storage')"
+        >存储</button>
       </div>
 
-      <div v-if="!tab" class="empty">请选择「Pod 指标」并指定命名空间。</div>
+      <div v-if="!tab" class="empty">请选择 CPU / 内存 / 存储并指定命名空间。</div>
 
       <template v-else-if="tab === 'nodes' && showNodesTab">
         <p v-if="nodeTip" class="muted">{{ nodeTip }}</p>
@@ -638,7 +1082,7 @@ onMounted(enterPage)
         </div>
       </template>
 
-      <template v-else-if="tab === 'pods'">
+      <template v-else-if="isPodMetricTab">
         <div class="toolbar toolbar-start" style="margin-bottom:12px">
           <FilterSelect
             v-model="ns"
@@ -647,29 +1091,110 @@ onMounted(enterPage)
             placeholder="输入 1–3 个字母筛选命名空间"
             aria-label="选择命名空间"
           />
+          <FilterMultiSelect
+            v-if="ns"
+            v-model="selectedControllers"
+            :options="controllerOptions"
+            all-label="控制器 · 全部"
+            empty-label="控制器未筛选（全部）"
+            placeholder="筛选 Deploy / STS / Daemon"
+            aria-label="按控制器筛选"
+          />
         </div>
         <p v-if="nsLoading" class="muted">加载命名空间列表…</p>
-        <div v-else-if="!ns" class="empty">请选择命名空间后再加载 Pod 指标。</div>
+        <div v-else-if="!ns" class="empty">请选择命名空间后再加载指标。</div>
         <template v-else>
-          <p v-if="podTip" class="muted">{{ podTip }}</p>
-          <p v-if="podLoading" class="muted">加载中…</p>
-          <p v-else-if="podRefreshing" class="muted">更新中…</p>
-          <table v-if="podMetrics.length" class="table">
-            <thead><tr><th>Pod</th><th>容器</th><th>CPU</th><th>内存</th></tr></thead>
-            <tbody>
-              <template v-for="m in podMetrics" :key="m.metadata?.name || m.name">
-                <tr v-for="c in asArray(m.containers)" :key="(m.metadata?.name || '') + c.name">
-                  <td>{{ m.metadata?.name }}</td>
-                  <td>{{ c.name }}</td>
-                  <td>{{ fmtCPU(c.usage?.cpu) }}</td>
-                  <td>{{ fmtMemory(c.usage?.memory) }}</td>
+          <template v-if="tab === 'cpu'">
+            <p v-if="podTip" class="muted">{{ podTip }}</p>
+            <p v-if="podLoading" class="muted">加载中…</p>
+            <p v-else-if="podRefreshing" class="muted">更新中…</p>
+            <table v-if="displayCpuRows.length" class="table">
+              <thead>
+                <tr>
+                  <th>Pod</th>
+                  <th>
+                    <button
+                      type="button"
+                      class="th-sort"
+                      :aria-sort="sortDir.cpu === 'asc' ? 'ascending' : 'descending'"
+                      @click="toggleSort('cpu')"
+                    >CPU {{ sortArrow('cpu') }}</button>
+                  </th>
                 </tr>
-              </template>
-            </tbody>
-          </table>
-          <div v-else-if="!podLoading" class="muted">
-            {{ podTip ? '无法加载 Pod 指标。' : '暂无 Pod 指标数据。' }}
-          </div>
+              </thead>
+              <tbody>
+                <tr v-for="r in displayCpuRows" :key="r.name">
+                  <td><PodNameCell :name="r.name" /></td>
+                  <td>{{ r.cpuCores == null ? '-' : fmtCPU(r.cpuCores) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else-if="!podLoading && (filterActive || !podTip)" class="muted">
+              {{ filterActive ? '当前控制器筛选下无 Pod。' : '暂无 Pod 指标数据。' }}
+            </div>
+          </template>
+
+          <template v-else-if="tab === 'memory'">
+            <p v-if="podTip" class="muted">{{ podTip }}</p>
+            <p v-if="podLoading" class="muted">加载中…</p>
+            <p v-else-if="podRefreshing" class="muted">更新中…</p>
+            <table v-if="displayMemoryRows.length" class="table">
+              <thead>
+                <tr>
+                  <th>Pod</th>
+                  <th>
+                    <button
+                      type="button"
+                      class="th-sort"
+                      :aria-sort="sortDir.memory === 'asc' ? 'ascending' : 'descending'"
+                      @click="toggleSort('memory')"
+                    >内存 {{ sortArrow('memory') }}</button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in displayMemoryRows" :key="r.name">
+                  <td><PodNameCell :name="r.name" /></td>
+                  <td>{{ r.memoryBytes == null ? '-' : fmtMemory(r.memoryBytes) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else-if="!podLoading && (filterActive || !podTip)" class="muted">
+              {{ filterActive ? '当前控制器筛选下无 Pod。' : '暂无 Pod 指标数据。' }}
+            </div>
+          </template>
+
+          <template v-else-if="tab === 'storage'">
+            <p v-if="storageTip" class="muted">{{ storageTip }}</p>
+            <p v-if="storageLoading" class="muted">加载中…</p>
+            <p v-else-if="storageRefreshing" class="muted">更新中…</p>
+            <table v-if="displayStorageRows.length" class="table">
+              <thead>
+                <tr>
+                  <th>Pod</th>
+                  <th>节点</th>
+                  <th>
+                    <button
+                      type="button"
+                      class="th-sort"
+                      :aria-sort="sortDir.storage === 'asc' ? 'ascending' : 'descending'"
+                      @click="toggleSort('storage')"
+                    >非持久化用量 {{ sortArrow('storage') }}</button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in displayStorageRows" :key="r.name">
+                  <td><PodNameCell :name="r.name" /></td>
+                  <td>{{ r.node || '-' }}</td>
+                  <td>{{ fmtBytesNum(r.usedBytes) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else-if="!storageLoading && (filterActive || !storageTip)" class="muted">
+              {{ filterActive ? '当前控制器筛选下无 Pod。' : '暂无存储用量数据。' }}
+            </div>
+          </template>
         </template>
       </template>
     </template>

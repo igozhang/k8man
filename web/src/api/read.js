@@ -30,6 +30,8 @@ export const readApi = {
   nodeMetrics: (id) => http.get(`/read/clusters/${id}/metrics/nodes`),
   podMetrics: (id, namespace) =>
     http.get(`/read/clusters/${id}/metrics/pods`, { params: { namespace } }),
+  podStorageMetrics: (id, namespace) =>
+    http.get(`/read/clusters/${id}/metrics/pods/storage`, { params: { namespace }, timeout: 45000 }),
   diagnose: (id, params) => http.get(`/read/clusters/${id}/diagnose`, { params, timeout: 90000 }),
   getInspection: (clusterId, { timeout = 12000, signal } = {}) =>
     http.get(`/read/inspections/${clusterId}`, { timeout, signal }),

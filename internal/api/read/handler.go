@@ -481,6 +481,48 @@ func (h *Handler) PodMetrics(c *gin.Context) {
 	respond.OK(c, items)
 }
 
+// PodStorageMetrics lists Pod non-persistent (ephemeral) storage usage for a namespace.
+// Soft-skips (project / no summary) return 200 with skipped; hard list/proxy errors are Fail.
+func (h *Handler) PodStorageMetrics(c *gin.Context) {
+	cl, err := h.Store.GetCluster(c.Param("id"), true)
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	if cl == nil {
+		respond.NotFound(c, "cluster not found")
+		return
+	}
+	ns := c.Query("namespace")
+	if ns == "" {
+		ns = c.Param("ns")
+	}
+	if ns == "" {
+		respond.BadRequest(c, "namespace required")
+		return
+	}
+	clients, err := h.Pool.Get(cl.ID, cl.Kubeconfig)
+	if err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	ctx, cancel := h.ctx(c)
+	defer cancel()
+	items, skipped, trunc, err := clients.ListPodEphemeralUsage(ctx, ns, cl.PermType)
+	if err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	if items == nil {
+		items = []kube.PodEphemeralUsage{}
+	}
+	respond.OK(c, gin.H{
+		"items":     items,
+		"skipped":   skipped,
+		"truncated": trunc,
+	})
+}
+
 func (h *Handler) ListDocs(c *gin.Context) {
 	list, err := h.Store.ListDocs(c.Query("category"), c.Query("q"))
 	if err != nil {

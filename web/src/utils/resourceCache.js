@@ -23,6 +23,7 @@ export const TTL = {
   nodes: 30_000,
   nodeUsage: 20_000,
   podMetrics: 15_000,
+  podStorageMetrics: 45_000,
   overview: 45_000,
   diagnose: 90_000,
   inspections: 60_000,
@@ -40,6 +41,7 @@ export const TTL_IDLE = {
   nodes: 5 * 60_000,
   nodeUsage: 5 * 60_000,
   podMetrics: 5 * 60_000,
+  podStorageMetrics: 10 * 60_000,
   overview: 10 * 60_000,
   diagnose: 15 * 60_000
 }
@@ -231,7 +233,7 @@ export function invalidateNsLists(clusterId, ns) {
   const id = String(clusterId || '')
   const extra = String(ns || '')
   if (!id) return
-  for (const kind of ['pods', 'controllers', 'services', 'configmaps', 'podMetrics']) {
+  for (const kind of ['pods', 'controllers', 'services', 'configmaps', 'podMetrics', 'podStorageMetrics']) {
     cacheInvalidate(cacheKey(kind, id, extra))
   }
   cacheInvalidate(cacheKey('overview', id))

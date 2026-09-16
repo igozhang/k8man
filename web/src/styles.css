@@ -416,6 +416,24 @@ h4 {
   color: var(--muted);
   font-weight: 600;
 }
+.table th .th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  line-height: inherit;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.table th .th-sort:hover {
+  color: var(--text);
+}
 .table tr:last-child td { border-bottom: none; }
 .table tbody tr.is-current td {
   background: rgba(61, 107, 74, 0.08);

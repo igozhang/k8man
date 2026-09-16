@@ -120,6 +120,8 @@ func NewRouter(d Deps) *gin.Engine {
 		readGroup.GET("/clusters/:id/namespaces/:ns/workloads/:kind/:name/spec-edit", rh.GetWorkloadSpecEdit)
 		readGroup.GET("/clusters/:id/namespaces/:ns/resources/:kind/:name/yaml", rh.GetYAML)
 		readGroup.GET("/clusters/:id/metrics/nodes", rh.NodeMetrics)
+		// 更具体的 /pods/storage 须写在 /pods 之前，避免部分路由实现歧义
+		readGroup.GET("/clusters/:id/metrics/pods/storage", rh.PodStorageMetrics)
 		readGroup.GET("/clusters/:id/metrics/pods", rh.PodMetrics)
 		readGroup.GET("/docs", rh.ListDocs)
 		readGroup.GET("/docs/:docId", rh.GetDoc)

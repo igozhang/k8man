@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -141,6 +142,72 @@ func TestLargePodIssuesFromSummaries(t *testing.T) {
 	got := largePodIssuesFromSummaries(sum)
 	if len(got) != 1 || got[0].Name != "big" || got[0].Reason != "LargeEphemeral" || got[0].Severity != sevWarning {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestPodEphemeralUsagesFromSummaries(t *testing.T) {
+	small := uint64(100)
+	mid := uint64(2 * 1024 * 1024 * 1024)
+	big := uint64(diagnoseLargePodBytes + 10)
+	sum := map[string]nodeStatsSummary{
+		"n1": {
+			Pods: []podStatsSummary{
+				{
+					PodRef:           podStatsRef{Namespace: "ns-a", Name: "tiny"},
+					EphemeralStorage: &fsStats{UsedBytes: &small},
+				},
+				{
+					PodRef:           podStatsRef{Namespace: "ns-a", Name: "big"},
+					EphemeralStorage: &fsStats{UsedBytes: &big},
+				},
+				{
+					PodRef:           podStatsRef{Namespace: "other", Name: "skip"},
+					EphemeralStorage: &fsStats{UsedBytes: &mid},
+				},
+			},
+		},
+		"n2": {
+			Pods: []podStatsSummary{
+				{
+					PodRef:           podStatsRef{Namespace: "ns-a", Name: "mid"},
+					EphemeralStorage: &fsStats{UsedBytes: &mid},
+				},
+			},
+		},
+	}
+	got := podEphemeralUsagesFromSummaries(sum, "ns-a")
+	if len(got) != 3 {
+		t.Fatalf("len=%d want 3: %+v", len(got), got)
+	}
+	if got[0].Name != "big" || got[0].UsedBytes != int64(big) || got[0].Node != "n1" {
+		t.Fatalf("first=%+v", got[0])
+	}
+	if got[1].Name != "mid" || got[2].Name != "tiny" {
+		t.Fatalf("order=%+v", got)
+	}
+	all := podEphemeralUsagesFromSummaries(sum, "")
+	if len(all) != 4 {
+		t.Fatalf("all len=%d", len(all))
+	}
+	empty := podEphemeralUsagesFromSummaries(nil, "ns-a")
+	if len(empty) != 0 {
+		t.Fatalf("nil summaries should be empty, got %+v", empty)
+	}
+}
+
+func TestNodeNamesForSummarySkipsUnscheduled(t *testing.T) {
+	pods := []corev1.Pod{
+		{Spec: corev1.PodSpec{NodeName: ""}},
+		{Spec: corev1.PodSpec{NodeName: "n1"}},
+		{Spec: corev1.PodSpec{NodeName: "n1"}},
+		{Spec: corev1.PodSpec{NodeName: "n2"}},
+	}
+	names := nodeNamesForSummary(pods)
+	if len(names) != 2 || names[0] != "n1" || names[1] != "n2" {
+		t.Fatalf("names=%v", names)
+	}
+	if len(nodeNamesForSummary(nil)) != 0 {
+		t.Fatal("expected empty")
 	}
 }
 
