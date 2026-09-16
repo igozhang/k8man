@@ -51,12 +51,20 @@ export function parseQuantity(q, { asCPU = false } = {}) {
   return n
 }
 
-/** @returns {string} 如 990m、4 核、1.50 核 */
+/** @returns {string} 如 990m、4 核、1.50 核；最小单位为 m（不用 µ） */
 export function fmtCPU(q) {
-  const cores = parseQuantity(q, { asCPU: true })
+  let cores = null
+  if (typeof q === 'number') {
+    cores = Number.isFinite(q) ? q : null
+  } else {
+    cores = parseQuantity(q, { asCPU: true })
+  }
   if (cores == null || Number.isNaN(cores)) return '-'
-  if (cores < 0.001) return `${(cores * 1e6).toFixed(0)}µ`
-  if (cores < 1) return `${Math.round(cores * 1000)}m`
+  if (cores <= 0) return '0m'
+  if (cores < 1) {
+    const milli = Math.max(1, Math.round(cores * 1000))
+    return `${milli}m`
+  }
   if (cores < 10) return `${cores.toFixed(2)} 核`
   return `${cores.toFixed(1)} 核`
 }

@@ -28,20 +28,20 @@ import { canWrite } from '../stores/opsAuth'
 
 const INSPECT_KEY = cacheKey('inspections', 'local')
 const BLOCK_LINES = 3
-/** Pod 级指标 Tab（不含节点） */
-const POD_METRIC_TABS = new Set(['cpu', 'memory', 'storage'])
+const SORT_KEYS = new Set(['cpu', 'memory', 'storage'])
 
 const { currentClusterId, currentCluster, refreshClusters } = useClusterStore()
 const namespaces = ref([])
 const ns = ref('')
-/** '' | nodes | cpu | memory | storage；兼容旧 pref「pods」→ cpu */
+/** '' | nodes | pods；兼容旧 pref cpu/memory/storage → pods */
 const tab = ref('')
 const selectedControllers = ref([])
 const controllerOptions = ref([])
 const ctrlOptSeq = createSeq()
 const podOwnerMap = ref(new Map())
-/** 'desc' | 'asc'；各 Tab 独立 */
-const sortDir = ref({ cpu: 'desc', memory: 'desc', storage: 'desc' })
+/** 当前排序列；点击同列切换升降序 */
+const sortKey = ref('cpu')
+const sortDir = ref('desc')
 const nodeRows = ref([])
 const podMetrics = ref([])
 const storageRows = ref([])
@@ -75,7 +75,14 @@ const inspectRunSeq = createSeq()
 
 const isProject = computed(() => currentCluster.value?.permType === 'project')
 const showNodesTab = computed(() => !isProject.value)
-const isPodMetricTab = computed(() => POD_METRIC_TABS.has(tab.value))
+const isPodsTab = computed(() => tab.value === 'pods')
+const podsBusy = computed(() => podLoading.value || storageLoading.value)
+const podsRefreshing = computed(
+  () =>
+    (podRefreshing.value || storageRefreshing.value) &&
+    !podLoading.value &&
+    !storageLoading.value
+)
 
 function controllerKey(kind, name) {
   return `${kind}/${name}`
@@ -267,42 +274,45 @@ function cmpNullableNum(a, b, dir) {
   return dir === 'asc' ? d : -d
 }
 
-const displayCpuRows = computed(() => {
-  const rows = aggregatePodMetricRows(podMetrics.value).filter((r) => passControllerFilter(r.name))
-  const dir = sortDir.value.cpu || 'desc'
-  rows.sort((a, b) => {
-    const d = cmpNullableNum(a.cpuCores, b.cpuCores, dir)
-    if (d) return d
-    return String(a.name).localeCompare(String(b.name), 'zh')
-  })
-  return rows
-})
-
-const displayMemoryRows = computed(() => {
-  const rows = aggregatePodMetricRows(podMetrics.value).filter((r) => passControllerFilter(r.name))
-  const dir = sortDir.value.memory || 'desc'
-  rows.sort((a, b) => {
-    const d = cmpNullableNum(a.memoryBytes, b.memoryBytes, dir)
-    if (d) return d
-    return String(a.name).localeCompare(String(b.name), 'zh')
-  })
-  return rows
-})
-
-const displayStorageRows = computed(() => {
-  const rows = asArray(storageRows.value)
-    .filter((r) => r?.name && passControllerFilter(r.name))
-    .map((r) => {
-      const n = Number(r.usedBytes)
-      return {
-        name: r.name,
-        node: r.node || '',
-        usedBytes: r.usedBytes == null || Number.isNaN(n) ? null : n
-      }
+const displayPodRows = computed(() => {
+  const byName = new Map()
+  for (const r of aggregatePodMetricRows(podMetrics.value)) {
+    byName.set(r.name, {
+      name: r.name,
+      cpuCores: r.cpuCores,
+      memoryBytes: r.memoryBytes,
+      usedBytes: null,
+      node: ''
     })
-  const dir = sortDir.value.storage || 'desc'
+  }
+  for (const s of asArray(storageRows.value)) {
+    if (!s?.name) continue
+    const n = Number(s.usedBytes)
+    const usedBytes = s.usedBytes == null || Number.isNaN(n) ? null : n
+    const cur = byName.get(s.name)
+    if (cur) {
+      cur.usedBytes = usedBytes
+      cur.node = s.node || cur.node || ''
+    } else {
+      byName.set(s.name, {
+        name: s.name,
+        cpuCores: null,
+        memoryBytes: null,
+        usedBytes,
+        node: s.node || ''
+      })
+    }
+  }
+  const rows = [...byName.values()].filter((r) => passControllerFilter(r.name))
+  const key = SORT_KEYS.has(sortKey.value) ? sortKey.value : 'cpu'
+  const dir = sortDir.value === 'asc' ? 'asc' : 'desc'
+  const valOf = (r) => {
+    if (key === 'memory') return r.memoryBytes
+    if (key === 'storage') return r.usedBytes
+    return r.cpuCores
+  }
   rows.sort((a, b) => {
-    const d = cmpNullableNum(a.usedBytes, b.usedBytes, dir)
+    const d = cmpNullableNum(valOf(a), valOf(b), dir)
     if (d) return d
     return String(a.name).localeCompare(String(b.name), 'zh')
   })
@@ -310,13 +320,18 @@ const displayStorageRows = computed(() => {
 })
 
 function toggleSort(kind) {
-  if (!POD_METRIC_TABS.has(kind)) return
-  const cur = sortDir.value[kind] || 'desc'
-  sortDir.value = { ...sortDir.value, [kind]: cur === 'desc' ? 'asc' : 'desc' }
+  if (!SORT_KEYS.has(kind)) return
+  if (sortKey.value === kind) {
+    sortDir.value = sortDir.value === 'desc' ? 'asc' : 'desc'
+  } else {
+    sortKey.value = kind
+    sortDir.value = 'desc'
+  }
 }
 
 function sortArrow(kind) {
-  return (sortDir.value[kind] || 'desc') === 'asc' ? '↑' : '↓'
+  if (sortKey.value !== kind) return ''
+  return sortDir.value === 'asc' ? '↑' : '↓'
 }
 
 function fmtBytesNum(bytes) {
@@ -633,8 +648,8 @@ function resetView() {
 }
 
 function normalizeMonitorTab(raw) {
-  if (raw === 'pods') return 'cpu'
-  if (raw === 'nodes' || POD_METRIC_TABS.has(raw)) return raw
+  if (raw === 'cpu' || raw === 'memory' || raw === 'storage' || raw === 'pods') return 'pods'
+  if (raw === 'nodes') return 'nodes'
   return ''
 }
 
@@ -643,8 +658,8 @@ function applyMonitorPref() {
   ns.value = pref?.ns || ''
   const next = normalizeMonitorTab(pref?.tab)
   if (next === 'nodes' && showNodesTab.value) tab.value = 'nodes'
-  else if (POD_METRIC_TABS.has(next)) tab.value = next
-  else tab.value = showNodesTab.value ? 'nodes' : 'cpu'
+  else if (next === 'pods') tab.value = 'pods'
+  else tab.value = showNodesTab.value ? 'nodes' : 'pods'
 }
 
 function persistMonitorPref() {
@@ -867,18 +882,13 @@ function stopPodLoads() {
 }
 
 async function loadActivePodTab() {
-  if (!POD_METRIC_TABS.has(tab.value) || !ns.value) return
+  if (tab.value !== 'pods' || !ns.value) return
   const clusterId = currentClusterId.value
   const namespace = ns.value
-  const kind = tab.value
   await ensureNamespaces()
-  if (currentClusterId.value !== clusterId || ns.value !== namespace || tab.value !== kind) return
+  if (currentClusterId.value !== clusterId || ns.value !== namespace || tab.value !== 'pods') return
   loadControllerOptions()
-  if (kind === 'storage') {
-    await Promise.all([loadStorageMetrics(), ensurePodsForOwnerFilter()])
-    return
-  }
-  await Promise.all([loadPodMetrics(), ensurePodsForOwnerFilter()])
+  await Promise.all([loadPodMetrics(), loadStorageMetrics(), ensurePodsForOwnerFilter()])
 }
 
 function selectTab(next) {
@@ -890,9 +900,9 @@ function selectTab(next) {
     loadNodes()
     return
   }
-  if (POD_METRIC_TABS.has(next)) {
+  if (next === 'pods') {
     ensureNamespaces().then(() => {
-      if (tab.value !== next) return
+      if (tab.value !== 'pods') return
       if (ns.value) loadActivePodTab()
     })
   }
@@ -928,7 +938,7 @@ function enterPage() {
   if (!currentCluster.value) return
   if (tab.value === 'nodes') {
     if (!showNodesTab.value) {
-      tab.value = 'cpu'
+      tab.value = 'pods'
       persistMonitorPref()
       ensureNamespaces().then(() => {
         if (ns.value) loadActivePodTab()
@@ -938,7 +948,7 @@ function enterPage() {
     loadNodes()
     return
   }
-  if (POD_METRIC_TABS.has(tab.value)) {
+  if (tab.value === 'pods') {
     ensureNamespaces().then(() => {
       if (ns.value) loadActivePodTab()
     })
@@ -955,14 +965,14 @@ watch(
         nodesSeq.bump()
         nodeLoading.value = false
         nodeRefreshing.value = false
-        tab.value = 'cpu'
+        tab.value = 'pods'
         persistMonitorPref()
         ensureNamespaces().then(() => {
           if (ns.value) loadActivePodTab()
         })
-      } else if (tab.value === 'storage') {
-        storageRows.value = []
-        storageTip.value = storageSkipTip('project credential')
+      } else if (tab.value === 'pods') {
+        // Project 仍可看 CPU/内存；存储软跳过
+        if (ns.value) loadStorageMetrics()
       }
       return
     }
@@ -972,7 +982,7 @@ watch(
     }
     // 集群列表晚于 clusterId 就绪时，补拉当前 Tab
     if (tab.value === 'nodes') loadNodes()
-    else if (POD_METRIC_TABS.has(tab.value) && ns.value) loadActivePodTab()
+    else if (tab.value === 'pods' && ns.value) loadActivePodTab()
   }
 )
 watch(ns, (v) => {
@@ -980,7 +990,7 @@ watch(ns, (v) => {
   selectedControllers.value = []
   controllerOptions.value = []
   podOwnerMap.value = new Map()
-  if (!isPodMetricTab.value) return
+  if (!isPodsTab.value) return
   if (v) {
     loadControllerOptions()
     loadActivePodTab()
@@ -993,7 +1003,7 @@ watch(ns, (v) => {
   }
 })
 watch(selectedControllers, () => {
-  if (!isPodMetricTab.value || !ns.value) return
+  if (!isPodsTab.value || !ns.value) return
   ensurePodsForOwnerFilter()
 })
 watch(inspectItems, (items) => {
@@ -1009,7 +1019,7 @@ onMounted(enterPage)
   <div>
     <h1>监控</h1>
     <p class="page-desc">
-      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。CPU / 内存按 Pod 聚合容器用量；存储为非持久化（ephemeral）用量，来源与巡检「大 POD」相同（kubelet summary）。Pod 相关标签需选择命名空间，并可按控制器筛选。表头可点击切换排序（默认从大到小）。未安装 metrics-server 或权限不足时降级提示。
+      节点列表含状态、IP、版本与 CPU / 内存（可分配 / 已使用，依赖 metrics-server）。PODs：CPU / 内存按 Pod 聚合容器用量；存储为非持久化（ephemeral）用量，来源与巡检「大 POD」相同（kubelet summary）。需选择命名空间，并可按控制器筛选。CPU / 内存 / 存储表头可点击排序（默认从大到小）。未安装 metrics-server 或权限不足时降级提示。
     </p>
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
@@ -1024,22 +1034,12 @@ onMounted(enterPage)
         >节点</button>
         <button
           class="tab"
-          :class="{ active: tab === 'cpu' }"
-          @click="selectTab('cpu')"
-        >CPU</button>
-        <button
-          class="tab"
-          :class="{ active: tab === 'memory' }"
-          @click="selectTab('memory')"
-        >内存</button>
-        <button
-          class="tab"
-          :class="{ active: tab === 'storage' }"
-          @click="selectTab('storage')"
-        >存储</button>
+          :class="{ active: tab === 'pods' }"
+          @click="selectTab('pods')"
+        >PODs</button>
       </div>
 
-      <div v-if="!tab" class="empty">请选择 CPU / 内存 / 存储并指定命名空间。</div>
+      <div v-if="!tab" class="empty">请选择「PODs」并指定命名空间。</div>
 
       <template v-else-if="tab === 'nodes' && showNodesTab">
         <p v-if="nodeTip" class="muted">{{ nodeTip }}</p>
@@ -1082,7 +1082,7 @@ onMounted(enterPage)
         </div>
       </template>
 
-      <template v-else-if="isPodMetricTab">
+      <template v-else-if="isPodsTab">
         <div class="toolbar toolbar-start" style="margin-bottom:12px">
           <FilterSelect
             v-model="ns"
@@ -1104,97 +1104,52 @@ onMounted(enterPage)
         <p v-if="nsLoading" class="muted">加载命名空间列表…</p>
         <div v-else-if="!ns" class="empty">请选择命名空间后再加载指标。</div>
         <template v-else>
-          <template v-if="tab === 'cpu'">
-            <p v-if="podTip" class="muted">{{ podTip }}</p>
-            <p v-if="podLoading" class="muted">加载中…</p>
-            <p v-else-if="podRefreshing" class="muted">更新中…</p>
-            <table v-if="displayCpuRows.length" class="table">
-              <thead>
-                <tr>
-                  <th>Pod</th>
-                  <th>
-                    <button
-                      type="button"
-                      class="th-sort"
-                      :aria-sort="sortDir.cpu === 'asc' ? 'ascending' : 'descending'"
-                      @click="toggleSort('cpu')"
-                    >CPU {{ sortArrow('cpu') }}</button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="r in displayCpuRows" :key="r.name">
-                  <td><PodNameCell :name="r.name" /></td>
-                  <td>{{ r.cpuCores == null ? '-' : fmtCPU(r.cpuCores) }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div v-else-if="!podLoading && (filterActive || !podTip)" class="muted">
-              {{ filterActive ? '当前控制器筛选下无 Pod。' : '暂无 Pod 指标数据。' }}
-            </div>
-          </template>
-
-          <template v-else-if="tab === 'memory'">
-            <p v-if="podTip" class="muted">{{ podTip }}</p>
-            <p v-if="podLoading" class="muted">加载中…</p>
-            <p v-else-if="podRefreshing" class="muted">更新中…</p>
-            <table v-if="displayMemoryRows.length" class="table">
-              <thead>
-                <tr>
-                  <th>Pod</th>
-                  <th>
-                    <button
-                      type="button"
-                      class="th-sort"
-                      :aria-sort="sortDir.memory === 'asc' ? 'ascending' : 'descending'"
-                      @click="toggleSort('memory')"
-                    >内存 {{ sortArrow('memory') }}</button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="r in displayMemoryRows" :key="r.name">
-                  <td><PodNameCell :name="r.name" /></td>
-                  <td>{{ r.memoryBytes == null ? '-' : fmtMemory(r.memoryBytes) }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div v-else-if="!podLoading && (filterActive || !podTip)" class="muted">
-              {{ filterActive ? '当前控制器筛选下无 Pod。' : '暂无 Pod 指标数据。' }}
-            </div>
-          </template>
-
-          <template v-else-if="tab === 'storage'">
-            <p v-if="storageTip" class="muted">{{ storageTip }}</p>
-            <p v-if="storageLoading" class="muted">加载中…</p>
-            <p v-else-if="storageRefreshing" class="muted">更新中…</p>
-            <table v-if="displayStorageRows.length" class="table">
-              <thead>
-                <tr>
-                  <th>Pod</th>
-                  <th>节点</th>
-                  <th>
-                    <button
-                      type="button"
-                      class="th-sort"
-                      :aria-sort="sortDir.storage === 'asc' ? 'ascending' : 'descending'"
-                      @click="toggleSort('storage')"
-                    >非持久化用量 {{ sortArrow('storage') }}</button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="r in displayStorageRows" :key="r.name">
-                  <td><PodNameCell :name="r.name" /></td>
-                  <td>{{ r.node || '-' }}</td>
-                  <td>{{ fmtBytesNum(r.usedBytes) }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div v-else-if="!storageLoading && (filterActive || !storageTip)" class="muted">
-              {{ filterActive ? '当前控制器筛选下无 Pod。' : '暂无存储用量数据。' }}
-            </div>
-          </template>
+          <p v-if="podTip" class="muted">{{ podTip }}</p>
+          <p v-if="storageTip" class="muted">{{ storageTip }}</p>
+          <p v-if="podsBusy" class="muted">加载中…</p>
+          <p v-else-if="podsRefreshing" class="muted">更新中…</p>
+          <table v-if="displayPodRows.length" class="table">
+            <thead>
+              <tr>
+                <th>Pod</th>
+                <th>
+                  <button
+                    type="button"
+                    class="th-sort"
+                    :aria-sort="sortKey === 'cpu' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+                    @click="toggleSort('cpu')"
+                  >CPU {{ sortArrow('cpu') }}</button>
+                </th>
+                <th>
+                  <button
+                    type="button"
+                    class="th-sort"
+                    :aria-sort="sortKey === 'memory' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+                    @click="toggleSort('memory')"
+                  >内存 {{ sortArrow('memory') }}</button>
+                </th>
+                <th>
+                  <button
+                    type="button"
+                    class="th-sort"
+                    :aria-sort="sortKey === 'storage' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'"
+                    @click="toggleSort('storage')"
+                  >存储 {{ sortArrow('storage') }}</button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in displayPodRows" :key="r.name">
+                <td><PodNameCell :name="r.name" /></td>
+                <td>{{ r.cpuCores == null ? '-' : fmtCPU(r.cpuCores) }}</td>
+                <td>{{ r.memoryBytes == null ? '-' : fmtMemory(r.memoryBytes) }}</td>
+                <td :title="r.node ? `节点 ${r.node}` : undefined">{{ fmtBytesNum(r.usedBytes) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else-if="!podsBusy && (filterActive || (!podTip && !storageTip))" class="muted">
+            {{ filterActive ? '当前控制器筛选下无 Pod。' : '暂无 Pod 指标数据。' }}
+          </div>
         </template>
       </template>
     </template>
