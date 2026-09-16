@@ -42,6 +42,16 @@ func TestPickNFSStorageClass(t *testing.T) {
 			t.Fatalf("got %+v skip=%q", pick, skip)
 		}
 	})
+	t.Run("unique fuseim nfs-client", func(t *testing.T) {
+		sc := storagev1.StorageClass{
+			ObjectMeta:  metav1.ObjectMeta{Name: "managed-nfs-storage"},
+			Provisioner: "fuseim.pri/ifs",
+		}
+		pick, skip := pickNFSStorageClass([]storagev1.StorageClass{sc})
+		if skip != "" || pick.Source != "unique" || pick.Name != "managed-nfs-storage" {
+			t.Fatalf("got %+v skip=%q", pick, skip)
+		}
+	})
 	t.Run("unique not nfs", func(t *testing.T) {
 		_, skip := pickNFSStorageClass([]storagev1.StorageClass{local})
 		if skip != "unique SC is not NFS" {
@@ -65,6 +75,33 @@ func TestPickNFSStorageClass(t *testing.T) {
 func TestIsNFSSC(t *testing.T) {
 	if !isNFSSC(storagev1.StorageClass{Provisioner: "cluster.local/nfs-subdir-external-provisioner"}) {
 		t.Fatal("expected nfs provisioner")
+	}
+	if !isNFSSC(storagev1.StorageClass{Provisioner: "fuseim.pri/ifs"}) {
+		t.Fatal("expected fuseim.pri/ifs (nfs-client-provisioner)")
+	}
+	if !isNFSSC(storagev1.StorageClass{
+		ObjectMeta:  metav1.ObjectMeta{Name: "managed-nfs-storage"},
+		Provisioner: "fuseim.pri/ifs",
+	}) {
+		t.Fatal("expected managed-nfs-storage + fuseim")
+	}
+	if !isNFSSC(storagev1.StorageClass{
+		ObjectMeta:  metav1.ObjectMeta{Name: "managed-nfs-storage"},
+		Provisioner: "example.com/custom",
+	}) {
+		t.Fatal("SC name containing nfs should count for unknown provisioner")
+	}
+	if isNFSSC(storagev1.StorageClass{
+		ObjectMeta:  metav1.ObjectMeta{Name: "managed-nfs-storage"},
+		Provisioner: "rancher.io/local-path",
+	}) {
+		t.Fatal("name hint must not override local-path")
+	}
+	if isNFSSC(storagev1.StorageClass{
+		ObjectMeta:  metav1.ObjectMeta{Name: "non-nfs-backup"},
+		Provisioner: "example.com/custom",
+	}) {
+		t.Fatal("non-nfs name should not count")
 	}
 	if isNFSSC(storagev1.StorageClass{Provisioner: "rancher.io/local-path"}) {
 		t.Fatal("local-path is not nfs")
@@ -104,6 +141,68 @@ func TestLargePodIssuesFromSummaries(t *testing.T) {
 	got := largePodIssuesFromSummaries(sum)
 	if len(got) != 1 || got[0].Name != "big" || got[0].Reason != "LargeEphemeral" || got[0].Severity != sevWarning {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestPodNonPersistentUsedBytesFallbackContainers(t *testing.T) {
+	// Older kubelet: no pod-level ephemeral-storage; use rootfs+logs+non-PVC.
+	rootfs := uint64(6 * 1024 * 1024 * 1024)
+	logs := uint64(2 * 1024 * 1024 * 1024)
+	pvcUsed := uint64(20 * 1024 * 1024 * 1024)
+	empty := uint64(1 * 1024 * 1024 * 1024)
+	p := podStatsSummary{
+		PodRef: podStatsRef{Namespace: "ns", Name: "app"},
+		Containers: []containerStatsSummary{
+			{Name: "c1", Rootfs: &fsStats{UsedBytes: &rootfs}, Logs: &fsStats{UsedBytes: &logs}},
+		},
+		VolumeStats: []volumeStatsSummary{
+			{Name: "data", UsedBytes: &pvcUsed, PVCRef: &pvcRef{Namespace: "ns", Name: "pvc1"}},
+			{Name: "tmp", UsedBytes: &empty},
+		},
+	}
+	used, ok := podNonPersistentUsedBytes(p)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	want := int64(rootfs + logs + empty)
+	if used != want {
+		t.Fatalf("used=%d want=%d", used, want)
+	}
+	issues := largePodIssuesFromSummaries(map[string]nodeStatsSummary{"n1": {Pods: []podStatsSummary{p}}})
+	if len(issues) != 1 || issues[0].Name != "app" {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
+func TestPodNonPersistentUsedBytesPrefersPodEphemeral(t *testing.T) {
+	small := uint64(100)
+	large := uint64(diagnoseLargePodBytes + 10)
+	p := podStatsSummary{
+		PodRef:           podStatsRef{Namespace: "ns", Name: "app"},
+		EphemeralStorage: &fsStats{UsedBytes: &large},
+		Containers: []containerStatsSummary{
+			{Name: "c1", Rootfs: &fsStats{UsedBytes: &small}},
+		},
+	}
+	used, ok := podNonPersistentUsedBytes(p)
+	if !ok || used != int64(large) {
+		t.Fatalf("used=%d ok=%v", used, ok)
+	}
+}
+
+func TestPodNonPersistentUsedBytesZeroEphemeralFallsBack(t *testing.T) {
+	zero := uint64(0)
+	rootfs := uint64(6 * 1024 * 1024 * 1024)
+	p := podStatsSummary{
+		PodRef:           podStatsRef{Namespace: "ns", Name: "app"},
+		EphemeralStorage: &fsStats{UsedBytes: &zero},
+		Containers: []containerStatsSummary{
+			{Name: "c1", Rootfs: &fsStats{UsedBytes: &rootfs}},
+		},
+	}
+	used, ok := podNonPersistentUsedBytes(p)
+	if !ok || used != int64(rootfs) {
+		t.Fatalf("used=%d ok=%v", used, ok)
 	}
 }
 

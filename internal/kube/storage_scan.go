@@ -48,9 +48,16 @@ type nodeStatsSummary struct {
 }
 
 type podStatsSummary struct {
-	PodRef           podStatsRef          `json:"podRef"`
-	EphemeralStorage *fsStats             `json:"ephemeral-storage"`
-	VolumeStats      []volumeStatsSummary `json:"volume"`
+	PodRef           podStatsRef            `json:"podRef"`
+	EphemeralStorage *fsStats               `json:"ephemeral-storage"`
+	Containers       []containerStatsSummary `json:"containers"`
+	VolumeStats      []volumeStatsSummary   `json:"volume"`
+}
+
+type containerStatsSummary struct {
+	Name   string   `json:"name"`
+	Rootfs *fsStats `json:"rootfs"`
+	Logs   *fsStats `json:"logs"`
 }
 
 type podStatsRef struct {
@@ -202,11 +209,11 @@ func largePodIssuesFromSummaries(summaries map[string]nodeStatsSummary) []Issue 
 		for _, p := range sum.Pods {
 			ns := strings.TrimSpace(p.PodRef.Namespace)
 			name := strings.TrimSpace(p.PodRef.Name)
-			if ns == "" || name == "" || p.EphemeralStorage == nil || p.EphemeralStorage.UsedBytes == nil {
+			if ns == "" || name == "" {
 				continue
 			}
-			used := int64(*p.EphemeralStorage.UsedBytes)
-			if used <= diagnoseLargePodBytes {
+			used, ok := podNonPersistentUsedBytes(p)
+			if !ok || used <= diagnoseLargePodBytes {
 				continue
 			}
 			key := ns + "/" + name
@@ -233,7 +240,6 @@ func largePodIssuesFromSummaries(summaries map[string]nodeStatsSummary) []Issue 
 			})
 		}
 	}
-	// Stable order so issue-cap truncation is deterministic across runs.
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Namespace != out[j].Namespace {
 			return out[i].Namespace < out[j].Namespace
@@ -241,6 +247,42 @@ func largePodIssuesFromSummaries(summaries map[string]nodeStatsSummary) []Issue 
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+// podNonPersistentUsedBytes reads non-PVC usage from kubelet summary.
+// Use pod ephemeral-storage when it reports a positive value; otherwise fall back to
+// container rootfs/logs + non-PVC volumes (covers missing/zero pod-level fields).
+func podNonPersistentUsedBytes(p podStatsSummary) (int64, bool) {
+	var sum int64
+	hasParts := false
+	for _, c := range p.Containers {
+		if c.Rootfs != nil && c.Rootfs.UsedBytes != nil {
+			sum += int64(*c.Rootfs.UsedBytes)
+			hasParts = true
+		}
+		if c.Logs != nil && c.Logs.UsedBytes != nil {
+			sum += int64(*c.Logs.UsedBytes)
+			hasParts = true
+		}
+	}
+	for _, vol := range p.VolumeStats {
+		if vol.PVCRef != nil || vol.UsedBytes == nil {
+			continue
+		}
+		sum += int64(*vol.UsedBytes)
+		hasParts = true
+	}
+	if p.EphemeralStorage != nil && p.EphemeralStorage.UsedBytes != nil {
+		eph := int64(*p.EphemeralStorage.UsedBytes)
+		if eph > 0 {
+			return eph, true
+		}
+		if hasParts {
+			return sum, true
+		}
+		return 0, true
+	}
+	return sum, hasParts
 }
 
 func (c *Clients) fetchNodeSummaries(ctx context.Context, pods []corev1.Pod) (map[string]nodeStatsSummary, bool, error) {
@@ -484,7 +526,58 @@ func isDefaultStorageClass(sc storagev1.StorageClass) bool {
 
 func isNFSSC(sc storagev1.StorageClass) bool {
 	p := strings.ToLower(strings.TrimSpace(sc.Provisioner))
-	return p != "" && strings.Contains(p, "nfs")
+	name := strings.ToLower(strings.TrimSpace(sc.Name))
+
+	// Strong signal: known NFS provisioners.
+	if isKnownNFSProvisioner(p) {
+		return true
+	}
+	// Name hint (e.g. managed-nfs-storage), but never override an obvious non-NFS driver.
+	if nameLooksLikeNFS(name) && !isKnownNonNFSProvisioner(p) {
+		return true
+	}
+	return false
+}
+
+func isKnownNFSProvisioner(p string) bool {
+	if p == "" {
+		return false
+	}
+	if strings.Contains(p, "nfs") {
+		return true
+	}
+	// nfs-client-provisioner / nfs-subdir-external-provisioner historical default.
+	return p == "fuseim.pri/ifs"
+}
+
+func nameLooksLikeNFS(name string) bool {
+	if name == "" || !strings.Contains(name, "nfs") {
+		return false
+	}
+	// Avoid obvious negatives: non-nfs / not-nfs / no-nfs.
+	for _, neg := range []string{"non-nfs", "not-nfs", "no-nfs"} {
+		if strings.Contains(name, neg) {
+			return false
+		}
+	}
+	return true
+}
+
+func isKnownNonNFSProvisioner(p string) bool {
+	if p == "" {
+		return false
+	}
+	for _, s := range []string{
+		"local-path", "no-provisioner", "hostpath", "local.csi",
+		"ebs.csi", "aws-ebs", "gce-pd", "azure-disk", "azure-file",
+		"cinder", "vsphere", "ceph", "rbd", "longhorn", "openebs",
+		"portworx", "lvm.csi",
+	} {
+		if strings.Contains(p, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func pvcStorageClassName(pvc corev1.PersistentVolumeClaim) string {
