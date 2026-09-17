@@ -70,7 +70,16 @@ http.interceptors.response.use(
     }
     const code = typeof data?.code === 'number' ? data.code : err.response?.status
     if (code === 401 && isWriteURL(err.config?.url)) {
-      onWriteUnauthorized(msg)
+      // 仅当失败请求仍是当前写 token 时清权，避免旧请求 401 误清新登录
+      const hdrs = err.config?.headers
+      const sent =
+        (typeof hdrs?.get === 'function' ? hdrs.get('X-Igo-Token') : null) ||
+        hdrs?.['X-Igo-Token'] ||
+        hdrs?.['x-igo-token'] ||
+        ''
+      if (!sent || sent === writeToken) {
+        onWriteUnauthorized(msg)
+      }
     }
     return Promise.reject(apiError(msg, code))
   }

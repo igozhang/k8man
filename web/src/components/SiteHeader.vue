@@ -2,7 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useSiteUI } from '../composables/useSiteUI'
-import { canWrite, login, useOpsAuth } from '../stores/opsAuth'
+import { canWrite, login, logout, useOpsAuth } from '../stores/opsAuth'
 import { authApi } from '../api'
 import { copyText } from '../utils/clipboard'
 
@@ -60,7 +60,11 @@ function close() {
 }
 
 function onPermDblclick() {
-  if (canWrite.value) return
+  if (canWrite.value) {
+    logout()
+    close()
+    return
+  }
   open.value = true
   nextTick(() => keyInput.value?.focus())
 }
