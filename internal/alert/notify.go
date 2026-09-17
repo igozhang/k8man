@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -244,26 +245,216 @@ func FormatMessage(clusterName string, issues []kube.Issue, now time.Time) strin
 		limit = maxLines
 	}
 	for i := 0; i < limit; i++ {
-		it := issues[i]
-		ns := it.Namespace
-		if ns == "" {
-			ns = "—"
-		}
-		b.WriteString(fmt.Sprintf(
-			"%d. [%s] %s %s/%s · %s · %s\n",
-			i+1,
-			severityCN(it.Severity),
-			it.Kind,
-			ns,
-			it.Name,
-			it.Reason,
-			clip(it.Message, 80),
-		))
+		b.WriteString(formatIssueBlock(i+1, issues[i]))
 	}
 	if len(issues) > maxLines {
 		b.WriteString(fmt.Sprintf("…另有 %d 条未列出\n", len(issues)-maxLines))
 	}
 	return b.String()
+}
+
+func formatIssueBlock(n int, it kube.Issue) string {
+	ctrl := controllerLabel(it.Kind)
+	where := it.Name
+	if ns := strings.TrimSpace(it.Namespace); ns != "" {
+		where = ns + "/" + it.Name
+	}
+	var b strings.Builder
+	// 1. [严重] sts ns/name
+	b.WriteString(fmt.Sprintf("%d. [%s] %s %s\n", n, severityCN(it.Severity), ctrl, where))
+
+	// 原因 + 说明 + 持续
+	var mid []string
+	if r := strings.TrimSpace(it.Reason); r != "" {
+		mid = append(mid, r)
+	}
+	if m := humanizeIssueMessage(it); m != "" {
+		mid = append(mid, m)
+	}
+	if s := strings.TrimSpace(it.Since); s != "" {
+		mid = append(mid, "已持续 "+s)
+	}
+	if len(mid) > 0 {
+		b.WriteString("   ")
+		b.WriteString(strings.Join(mid, " · "))
+		b.WriteString("\n")
+	}
+
+	// 1–2 条最重要相关信息（副本态 / 节点 / 条件 / 容器等待）
+	for _, line := range pickAlertDetails(it, 2) {
+		b.WriteString("   ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// controllerLabel shortens Kind for Feishu (deploy / sts / ds …).
+func controllerLabel(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case "Deployment":
+		return "deploy"
+	case "StatefulSet":
+		return "sts"
+	case "DaemonSet":
+		return "ds"
+	case "ReplicaSet":
+		return "rs"
+	case "Pod":
+		return "pod"
+	case "Node":
+		return "node"
+	case "":
+		return "obj"
+	default:
+		return kind
+	}
+}
+
+func humanizeIssueMessage(it kube.Issue) string {
+	msg := strings.TrimSpace(it.Message)
+	if msg == "" {
+		return ""
+	}
+	reason := strings.TrimSpace(it.Reason)
+	if msg == reason {
+		return ""
+	}
+	switch reason {
+	case "NotReady", "Misscheduled":
+		msg = strings.Replace(msg, "ready ", "Ready ", 1)
+		msg = strings.ReplaceAll(msg, "misscheduled ", "错位调度 ")
+	}
+	msg = strings.ReplaceAll(msg, " ago", " 前")
+	return clip(msg, 100)
+}
+
+func pickAlertDetails(it kube.Issue, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	msg := strings.ToLower(strings.TrimSpace(it.Message))
+	reason := strings.ToLower(strings.TrimSpace(it.Reason))
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		s := humanizeEvidenceLine(raw)
+		if s == "" {
+			return
+		}
+		low := strings.ToLower(s)
+		if low == msg || low == reason {
+			return
+		}
+		// 与主说明高度重复（如 ready 0/1）则跳过
+		if msg != "" && strings.Contains(low, msg) {
+			return
+		}
+		if _, ok := seen[low]; ok {
+			return
+		}
+		seen[low] = struct{}{}
+		out = append(out, clip(s, 120))
+	}
+
+	// 节点类：优先节点与用量/条件
+	if it.Category == "node" || it.Kind == "Node" {
+		if it.NodeIP != "" {
+			add("ip=" + it.NodeIP)
+		}
+	}
+	// Pod：节点位置
+	if it.Category == "pod" && (it.Node != "" || it.NodeIP != "") {
+		var parts []string
+		if it.Node != "" {
+			parts = append(parts, it.Node)
+		}
+		if it.NodeIP != "" {
+			parts = append(parts, "("+it.NodeIP+")")
+		}
+		add("节点 " + strings.Join(parts, " "))
+	}
+	if it.Container != "" {
+		add("容器 " + it.Container)
+	}
+
+	// evidence：按重要度挑
+	type scored struct {
+		score int
+		line  string
+	}
+	var ranked []scored
+	for _, e := range it.Evidence {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		if strings.HasPrefix(e, "severityNote:") {
+			continue
+		}
+		if strings.HasPrefix(e, "Warning ") {
+			continue // 事件挂靠噪音大，告警里不优先
+		}
+		sc := scoreEvidenceLine(e, it)
+		if sc <= 0 {
+			continue
+		}
+		ranked = append(ranked, scored{score: sc, line: e})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return ranked[i].score > ranked[j].score
+	})
+	for _, r := range ranked {
+		if len(out) >= limit {
+			break
+		}
+		add(r.line)
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func scoreEvidenceLine(line string, it kube.Issue) int {
+	low := strings.ToLower(line)
+	switch {
+	case strings.HasPrefix(low, "replicas ") || strings.HasPrefix(low, "desired="):
+		return 100
+	case strings.Contains(low, " waiting "):
+		return 90
+	case strings.Contains(low, "lastexit") || strings.Contains(low, "oomkilled"):
+		return 85
+	case strings.Contains(low, "=false"):
+		return 70
+	case strings.HasPrefix(low, "phase="):
+		return 60
+	case strings.HasPrefix(low, "node=") || strings.HasPrefix(low, "ip="):
+		if it.Category == "pod" {
+			return 40 // 已在上面单独写节点时可能重复，分低些
+		}
+		return 55
+	case strings.HasPrefix(low, "podip="):
+		return 20
+	default:
+		return 30
+	}
+}
+
+func humanizeEvidenceLine(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, " ago", " 前")
+	s = strings.ReplaceAll(s, "misscheduled=", "错位调度=")
+	if strings.HasPrefix(s, "replicas ") {
+		s = "副本 " + strings.TrimPrefix(s, "replicas ")
+	}
+	if strings.HasPrefix(s, "desired=") {
+		s = "调度 " + s
+	}
+	return s
 }
 
 func severityCN(s string) string {

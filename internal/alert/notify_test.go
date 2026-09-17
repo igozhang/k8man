@@ -80,11 +80,46 @@ func TestIssueFingerprint(t *testing.T) {
 
 func TestFormatMessage(t *testing.T) {
 	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)
-	msg := FormatMessage("prod", []kube.Issue{{
-		Severity: "critical", Kind: "Pod", Namespace: "default", Name: "api", Reason: "CrashLoopBackOff", Message: "back-off",
+	msg := FormatMessage("独资-PRO", []kube.Issue{{
+		Severity:  "critical",
+		Category:  "workload",
+		Kind:      "StatefulSet",
+		Namespace: "cattle-monitoring-system",
+		Name:      "prometheus-rancher-monitoring-prometheus",
+		Reason:    "NotReady",
+		Message:   "ready 0/1",
+		Since:     "2h",
+		Evidence: []string{
+			"replicas desired=1 ready=0 current=0 updated=0",
+			"Ready=False MinimumReplicasUnavailable: ...",
+		},
 	}}, now)
-	if !containsAll(msg, "【k8man 告警】", "prod", "严重", "api", "CrashLoopBackOff") {
-		t.Fatalf("unexpected message: %s", msg)
+	wantParts := []string{
+		"【k8man 告警】",
+		"独资-PRO",
+		"sts cattle-monitoring-system/prometheus-rancher-monitoring-prometheus",
+		"NotReady",
+		"Ready 0/1",
+		"已持续 2h",
+		"副本 desired=1 ready=0",
+	}
+	if !containsAll(msg, wantParts...) {
+		t.Fatalf("unexpected message:\n%s", msg)
+	}
+}
+
+func TestControllerLabel(t *testing.T) {
+	cases := map[string]string{
+		"Deployment":  "deploy",
+		"StatefulSet": "sts",
+		"DaemonSet":   "ds",
+		"Pod":         "pod",
+		"Node":        "node",
+	}
+	for in, want := range cases {
+		if got := controllerLabel(in); got != want {
+			t.Fatalf("%s: got %q want %q", in, got, want)
+		}
 	}
 }
 
