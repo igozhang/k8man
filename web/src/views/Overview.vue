@@ -795,7 +795,7 @@ onUnmounted(() => {
   <div>
     <h1>概览</h1>
     <p class="page-desc">查看已导入的全部 kubeconfig。点「选用」会设为顶部当前集群，供工作负载、监控、告警使用。Pods / 异常 Pod 优先展示巡检缓存<template v-if="canWrite">；当前选用集群缓存超过 10 分钟会自动实时巡检一次，也可点「刷新 Pods」立即更新</template>。尚未巡检时才退回命名空间抽样。全部配置的定时巡检摘要在「巡检」页底部。</p>
-    <div v-if="!clusters.length" class="empty">{{ canWrite ? '请先在「KubeConfig」导入集群。' : '暂无集群配置。' }}</div>
+    <div v-if="!clusters.length" class="empty">{{ canWrite ? '请先导入 kubeconfig（页脚双击 kubeconfig）。' : '暂无集群配置。' }}</div>
     <div v-else class="cluster-list">
       <div
         v-for="c in sortedClusters"
@@ -862,7 +862,8 @@ onUnmounted(() => {
           <p class="error" style="white-space: pre-wrap; margin: 0">{{ cardOf(c.id).error }}</p>
           <p v-if="isDNSError(cardOf(c.id).error)" class="hint">
             域名无法解析（走的是集群 DNS）。请到
-            <RouterLink to="/clusters">KubeConfig → Hosts</RouterLink>
+            <RouterLink v-if="canWrite" to="/clusters">Hosts</RouterLink>
+            <template v-else>Hosts（需可操作权限，页脚双击 kubeconfig）</template>
             添加映射，例如：
             <code>10.80.238.34 {{ dnsHostHint(c, cardOf(c.id).error) || 'api-host' }}</code>
             ，保存后再刷新本页。

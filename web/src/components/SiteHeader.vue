@@ -108,7 +108,6 @@ onUnmounted(() => {
         </div>
         <nav class="nav">
           <RouterLink to="/">概览</RouterLink>
-          <RouterLink to="/clusters">KubeConfig</RouterLink>
           <RouterLink to="/workloads">工作负载</RouterLink>
           <RouterLink to="/monitor">巡检</RouterLink>
           <RouterLink to="/diagnose">告警</RouterLink>

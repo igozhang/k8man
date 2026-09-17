@@ -318,6 +318,10 @@ a.brand {
   padding-top: 0.65rem;
   padding-bottom: 0.65rem;
 }
+.footer-kubeconfig {
+  cursor: inherit;
+  user-select: none;
+}
 h1 {
   font-size: 1.08rem;
   margin: 0 0 0.3rem;

@@ -121,6 +121,7 @@ watch(canWrite, (ok) => {
   if (ok) return
   if (showForm.value) closeForm()
   resetHostEdit()
+  router.replace('/')
 })
 
 function formProbeFingerprint() {

@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import SiteLayout from '../layouts/SiteLayout.vue'
+import { canWrite } from '../stores/opsAuth'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -16,7 +17,10 @@ const router = createRouter({
         {
           path: 'clusters',
           name: 'clusters',
-          component: () => import('../views/Clusters.vue')
+          component: () => import('../views/Clusters.vue'),
+          beforeEnter() {
+            if (!canWrite.value) return { path: '/' }
+          }
         },
         {
           path: 'workloads',
