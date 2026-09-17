@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"gitee.com/k8man/internal/alert"
 	"gitee.com/k8man/internal/api/respond"
 	"gitee.com/k8man/internal/hostsfile"
 	"gitee.com/k8man/internal/inspect"
@@ -609,4 +610,129 @@ func (h *Handler) DeleteHostAlias(c *gin.Context) {
 		return
 	}
 	respond.OK(c, gin.H{"deleted": id})
+}
+
+func (h *Handler) CreateAlertWebhook(c *gin.Context) {
+	var in model.AlertWebhookInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	url := strings.TrimSpace(in.URL)
+	if name == "" || url == "" {
+		respond.BadRequest(c, "name and url are required")
+		return
+	}
+	if err := alert.ValidateWebhookURL(url); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	enabled := true
+	if in.Enabled != nil {
+		enabled = *in.Enabled
+	}
+	now := time.Now().UTC()
+	w := &model.AlertWebhook{
+		ID:        uuid.NewString(),
+		Name:      name,
+		URL:       url,
+		Note:      strings.TrimSpace(in.Note),
+		Enabled:   enabled,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := h.Store.CreateAlertWebhook(w); err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, w)
+}
+
+func (h *Handler) UpdateAlertWebhook(c *gin.Context) {
+	id := c.Param("hookId")
+	existing, err := h.Store.GetAlertWebhook(id)
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	if existing == nil {
+		respond.NotFound(c, "alert webhook not found")
+		return
+	}
+	var in model.AlertWebhookUpdate
+	if err := c.ShouldBindJSON(&in); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	if in.Name != nil {
+		name := strings.TrimSpace(*in.Name)
+		if name == "" {
+			respond.BadRequest(c, "name is required")
+			return
+		}
+		existing.Name = name
+	}
+	if in.URL != nil {
+		url := strings.TrimSpace(*in.URL)
+		if url == "" {
+			respond.BadRequest(c, "url is required")
+			return
+		}
+		if err := alert.ValidateWebhookURL(url); err != nil {
+			respond.BadRequest(c, err.Error())
+			return
+		}
+		existing.URL = url
+	}
+	if in.Note != nil {
+		existing.Note = strings.TrimSpace(*in.Note)
+	}
+	if in.Enabled != nil {
+		existing.Enabled = *in.Enabled
+	}
+	existing.UpdatedAt = time.Now().UTC()
+	if err := h.Store.UpdateAlertWebhook(existing); err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, existing)
+}
+
+func (h *Handler) DeleteAlertWebhook(c *gin.Context) {
+	id := c.Param("hookId")
+	if err := h.Store.DeleteAlertWebhook(id); err != nil {
+		if err == sql.ErrNoRows {
+			respond.NotFound(c, "alert webhook not found")
+			return
+		}
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, gin.H{"deleted": id})
+}
+
+func (h *Handler) TestAlertWebhook(c *gin.Context) {
+	id := c.Param("hookId")
+	w, err := h.Store.GetAlertWebhook(id)
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	if w == nil {
+		respond.NotFound(c, "alert webhook not found")
+		return
+	}
+	if err := alert.ValidateWebhookURL(w.URL); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	n := alert.New(h.Store)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	if err := n.TestWebhook(ctx, w.URL); err != nil {
+		respond.Fail(c, http.StatusBadGateway, 502, err.Error())
+		return
+	}
+	respond.OK(c, gin.H{"ok": true, "id": id})
 }

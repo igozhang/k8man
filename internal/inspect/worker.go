@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitee.com/k8man/internal/alert"
 	"gitee.com/k8man/internal/hostsfile"
 	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/model"
@@ -23,9 +24,10 @@ type Options struct {
 
 // Worker runs per-cluster patrols on a 2h stagger and serves stored snapshots.
 type Worker struct {
-	Store *store.Store
-	Pool  *kube.Pool
-	Hosts *hostsfile.File
+	Store  *store.Store
+	Pool   *kube.Pool
+	Hosts  *hostsfile.File
+	Alerts *alert.Notifier
 
 	baseConcurrency int
 	maxConcurrency  int
@@ -53,10 +55,15 @@ func NewWithOptions(st *store.Store, pool *kube.Pool, hosts *hostsfile.File, opt
 	if max < base {
 		max = base
 	}
+	var notifier *alert.Notifier
+	if st != nil {
+		notifier = alert.New(st)
+	}
 	return &Worker{
 		Store:           st,
 		Pool:            pool,
 		Hosts:           hosts,
+		Alerts:          notifier,
 		baseConcurrency: base,
 		maxConcurrency:  max,
 		now:             time.Now,
@@ -267,6 +274,10 @@ func (w *Worker) runClusterBody(ctx context.Context, clusterID string, force boo
 	}
 	if err := w.Store.UpsertInspection(row); err != nil {
 		return nil, err
+	}
+	// Push after persist; Notifier uses its own timeout (does not depend on inspect ctx).
+	if w.Alerts != nil {
+		w.Alerts.NotifyCluster(ctx, cl, issues)
 	}
 	d := detailFromRow(cl.Name, row)
 	d.ClusterID = cl.ID

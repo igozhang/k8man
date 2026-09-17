@@ -235,6 +235,19 @@
 |------|------|------|
 | GET | `/hosts` | `{path, items}`；`items` 为 `{id,hostname,ip}` |
 
+### 告警 Webhook
+
+飞书机器人 webhook（可多条）。进程启动时若表为空则写入一条默认 hook。巡检落库后按规则推送：
+
+- **严重**（`critical`）：一律纳入推送候选
+- **错误及以上**且 `sinceAt` 在 **2 小时内**（无 `sinceAt` 视为新出现）：纳入推送候选
+- 同一问题指纹（类别/Kind/NS/名称/原因）成功推送后去重，消失后再出现会重新推；严重度升到 `critical` 会再推一次
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/alert-webhooks` | 列表 `{id,name,url,note,enabled,createdAt,updatedAt}` |
+| GET | `/alert-webhooks/:hookId` | 详情 |
+
 ## 鉴权 `/api/v1/auth`
 
 方案与站点 igokey 相同：8 位字母、约 1 小时有效；剩余 **>15 分钟** 刷新复用，不足 15 分钟或 `renew=1` 签发新密钥并作废旧密钥与已登录会话。活跃密钥落在 `<data_dir>/igokey-active.json`。同一 IP 1 分钟内登录失败 5 次锁定 1 分钟。
@@ -317,3 +330,12 @@
 | DELETE | `/hosts/:hostId` | 删除 |
 
 写入后约 2 秒内对后续「测试」与 API 请求生效（进程内解析器热加载）。
+
+### 告警 Webhook
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/alert-webhooks` | 新建 body: `{name,url,note?,enabled?}`（`enabled` 默认 true；`url` 须为 `https://open.feishu.cn` 或 `open.larksuite.com` 的 bot webhook） |
+| PUT | `/alert-webhooks/:hookId` | 更新 body: `{name?,url?,note?,enabled?}` |
+| DELETE | `/alert-webhooks/:hookId` | 删除 |
+| POST | `/alert-webhooks/:hookId/test` | 向该 hook 发一条测试文本；失败 502 |

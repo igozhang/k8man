@@ -104,6 +104,27 @@ CREATE TABLE IF NOT EXISTS cluster_inspections (
 	}
 	_, _ = s.db.Exec(`ALTER TABLE cluster_inspections ADD COLUMN error INTEGER NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE cluster_inspections ADD COLUMN info INTEGER NOT NULL DEFAULT 0`)
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS alert_webhooks (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS alert_sent (
+  cluster_id TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT '',
+  sent_at TEXT NOT NULL,
+  PRIMARY KEY (cluster_id, fingerprint)
+);
+`)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

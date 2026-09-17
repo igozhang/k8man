@@ -32,6 +32,9 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
+	if err := st.EnsureDefaultAlertWebhook(); err != nil {
+		log.Printf("ensure default alert webhook: %v", err)
+	}
 
 	hostsResolver := kube.NewHostsResolver()
 	pool := kube.NewPool(hostsResolver)

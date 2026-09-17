@@ -86,6 +86,31 @@ type HostAliasUpdate struct {
 	Note     *string `json:"note"`
 }
 
+// AlertWebhook is a Feishu (or compatible) bot webhook for cluster alerts.
+type AlertWebhook struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	URL       string    `json:"url"`
+	Note      string    `json:"note"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type AlertWebhookInput struct {
+	Name    string `json:"name" binding:"required"`
+	URL     string `json:"url" binding:"required"`
+	Note    string `json:"note"`
+	Enabled *bool  `json:"enabled"`
+}
+
+type AlertWebhookUpdate struct {
+	Name    *string `json:"name"`
+	URL     *string `json:"url"`
+	Note    *string `json:"note"`
+	Enabled *bool   `json:"enabled"`
+}
+
 type ScaleRequest struct {
 	Replicas *int32 `json:"replicas" binding:"required"`
 }

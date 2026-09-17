@@ -560,6 +560,28 @@ func (h *Handler) ListHostAliases(c *gin.Context) {
 	})
 }
 
+func (h *Handler) ListAlertWebhooks(c *gin.Context) {
+	list, err := h.Store.ListAlertWebhooks()
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, list)
+}
+
+func (h *Handler) GetAlertWebhook(c *gin.Context) {
+	w, err := h.Store.GetAlertWebhook(c.Param("hookId"))
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	if w == nil {
+		respond.NotFound(c, "alert webhook not found")
+		return
+	}
+	respond.OK(c, w)
+}
+
 func (h *Handler) ListConfigMaps(c *gin.Context) {
 	clients, ok := h.clients(c)
 	if !ok {

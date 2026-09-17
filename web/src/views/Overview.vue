@@ -753,11 +753,11 @@ function goMore() {
     return
   }
   if (d.kind === 'badPods') {
-    router.push({ path: '/diagnose', query: { category: 'pod' } })
+    router.push({ path: '/diagnose', query: { module: 'diagnose', category: 'pod' } })
     return
   }
   if (d.kind === 'largePods' || d.kind === 'nfsUsage') {
-    router.push({ path: '/diagnose', query: { category: 'storage' } })
+    router.push({ path: '/diagnose', query: { module: 'diagnose', category: 'storage' } })
     return
   }
   setViewPref('workloads', id, { ns: '', tab: 'pods' })
@@ -794,7 +794,7 @@ onUnmounted(() => {
 <template>
   <div>
     <h1>概览</h1>
-    <p class="page-desc">查看已导入的全部 kubeconfig。点「选用」会设为顶部当前集群，供工作负载、监控、诊断使用。Pods / 异常 Pod 优先展示巡检缓存<template v-if="canWrite">；当前选用集群缓存超过 10 分钟会自动实时巡检一次，也可点「刷新 Pods」立即更新</template>。尚未巡检时才退回命名空间抽样。全部配置的定时巡检摘要在「监控」页底部。</p>
+    <p class="page-desc">查看已导入的全部 kubeconfig。点「选用」会设为顶部当前集群，供工作负载、监控、告警使用。Pods / 异常 Pod 优先展示巡检缓存<template v-if="canWrite">；当前选用集群缓存超过 10 分钟会自动实时巡检一次，也可点「刷新 Pods」立即更新</template>。尚未巡检时才退回命名空间抽样。全部配置的定时巡检摘要在「巡检」页底部。</p>
     <div v-if="!clusters.length" class="empty">{{ canWrite ? '请先在「KubeConfig」导入集群。' : '暂无集群配置。' }}</div>
     <div v-else class="cluster-list">
       <div

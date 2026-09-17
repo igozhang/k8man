@@ -102,5 +102,9 @@ export const writeApi = {
   deleteDoc: (docId) => http.delete(`/write/docs/${docId}`),
   createHost: (payload) => http.post('/write/hosts', payload),
   updateHost: (id, payload) => http.put(`/write/hosts/${encodeURIComponent(id)}`, payload),
-  deleteHost: (id) => http.delete(`/write/hosts/${encodeURIComponent(id)}`)
+  deleteHost: (id) => http.delete(`/write/hosts/${encodeURIComponent(id)}`),
+  createAlertWebhook: (payload) => http.post('/write/alert-webhooks', payload),
+  updateAlertWebhook: (id, payload) => http.put(`/write/alert-webhooks/${id}`, payload),
+  deleteAlertWebhook: (id) => http.delete(`/write/alert-webhooks/${id}`),
+  testAlertWebhook: (id) => http.post(`/write/alert-webhooks/${id}/test`, {}, { timeout: 20000 })
 }

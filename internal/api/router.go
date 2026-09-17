@@ -126,6 +126,8 @@ func NewRouter(d Deps) *gin.Engine {
 		readGroup.GET("/docs", rh.ListDocs)
 		readGroup.GET("/docs/:docId", rh.GetDoc)
 		readGroup.GET("/hosts", rh.ListHostAliases)
+		readGroup.GET("/alert-webhooks", rh.ListAlertWebhooks)
+		readGroup.GET("/alert-webhooks/:hookId", rh.GetAlertWebhook)
 	}
 
 	writeGroup := r.Group("/api/v1/write")
@@ -151,6 +153,10 @@ func NewRouter(d Deps) *gin.Engine {
 		writeGroup.POST("/hosts", wh.CreateHostAlias)
 		writeGroup.PUT("/hosts/:hostId", wh.UpdateHostAlias)
 		writeGroup.DELETE("/hosts/:hostId", wh.DeleteHostAlias)
+		writeGroup.POST("/alert-webhooks", wh.CreateAlertWebhook)
+		writeGroup.PUT("/alert-webhooks/:hookId", wh.UpdateAlertWebhook)
+		writeGroup.DELETE("/alert-webhooks/:hookId", wh.DeleteAlertWebhook)
+		writeGroup.POST("/alert-webhooks/:hookId/test", wh.TestAlertWebhook)
 	}
 
 	if d.WebFS != nil {

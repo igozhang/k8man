@@ -38,5 +38,7 @@ export const readApi = {
   listInspections: () => http.get('/read/inspections', { timeout: 20000 }),
   listDocs: (params) => http.get('/read/docs', { params }),
   getDoc: (docId) => http.get(`/read/docs/${docId}`),
-  listHosts: () => http.get('/read/hosts')
+  listHosts: () => http.get('/read/hosts'),
+  listAlertWebhooks: () => http.get('/read/alert-webhooks'),
+  getAlertWebhook: (id) => http.get(`/read/alert-webhooks/${id}`)
 }

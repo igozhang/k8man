@@ -1,21 +1,27 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted, computed, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
-import { readApi } from '../api'
+import { useRoute, useRouter } from 'vue-router'
+import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { asArray, createSeq, errMessage } from '../utils/safe'
 import { copyText } from '../utils/clipboard'
-import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad } from '../utils/resourceCache'
+import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad, getViewPref, setViewPref } from '../utils/resourceCache'
 import { permTypeLabel, severityLabel, severityClass, issueCategoryLabel, issueReasonDisplay } from '../utils/labels'
 import { formatIssueMessage, issueMessageSuffix, issueTimeLabel, issueInspectBrief, formatEvidenceLine } from '../utils/inspect'
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import TextDrawer from '../components/TextDrawer.vue'
 import FilterSelect from '../components/FilterSelect.vue'
+import { canWrite } from '../stores/opsAuth'
 
 const { currentClusterId, currentCluster } = useClusterStore()
 const route = useRoute()
+const router = useRouter()
 const DIAG_CATS = new Set(['node', 'workload', 'pod', 'event', 'storage'])
+const PAGE_MODULES = new Set(['alert', 'diagnose'])
+
+/** 页内一级：告警 | 诊断 */
+const pageModule = ref('alert')
 
 const busy = ref(false)
 const hasReport = ref(false)
@@ -676,11 +682,181 @@ function toggleCategory(cat) {
   category.value = category.value === cat ? '' : cat
 }
 
+/* ---- 告警 Webhook ---- */
+const hooks = ref([])
+const hooksLoading = ref(false)
+const hooksError = ref('')
+const hooksSeq = createSeq()
+const showHookForm = ref(false)
+const hookFormMode = ref('create') // create | edit
+const hookEditId = ref('')
+const hookBusy = ref(false)
+const hookTesting = ref(false)
+const hookFormError = ref('')
+const hookForm = ref(emptyHookForm())
+
+function emptyHookForm() {
+  return { name: '', url: '', note: '', enabled: true }
+}
+
+function maskHookURL(url) {
+  const s = String(url || '')
+  if (s.length <= 48) return s
+  return `${s.slice(0, 36)}…${s.slice(-8)}`
+}
+
+async function loadHooks() {
+  const seq = hooksSeq.bump()
+  hooksLoading.value = true
+  hooksError.value = ''
+  try {
+    const data = await readApi.listAlertWebhooks()
+    if (!hooksSeq.is(seq)) return
+    hooks.value = asArray(data)
+  } catch (e) {
+    if (!hooksSeq.is(seq)) return
+    hooksError.value = errMessage(e)
+    hooks.value = []
+  } finally {
+    if (hooksSeq.is(seq)) hooksLoading.value = false
+  }
+}
+
+function openHookCreate() {
+  if (!canWrite.value) return
+  hookFormMode.value = 'create'
+  hookEditId.value = ''
+  hookForm.value = emptyHookForm()
+  hookFormError.value = ''
+  showHookForm.value = true
+}
+
+function openHookEdit(row) {
+  if (!canWrite.value || !row?.id) return
+  hookFormMode.value = 'edit'
+  hookEditId.value = row.id
+  hookForm.value = {
+    name: row.name || '',
+    url: row.url || '',
+    note: row.note || '',
+    enabled: row.enabled !== false
+  }
+  hookFormError.value = ''
+  showHookForm.value = true
+}
+
+function closeHookForm() {
+  if (hookBusy.value || hookTesting.value) return
+  showHookForm.value = false
+  hookFormError.value = ''
+}
+
+async function saveHook() {
+  if (!canWrite.value || hookBusy.value) return
+  const name = String(hookForm.value.name || '').trim()
+  const url = String(hookForm.value.url || '').trim()
+  if (!name || !url) {
+    hookFormError.value = '名称与 Webhook URL 必填'
+    return
+  }
+  if (!/^https:\/\/(open\.feishu\.cn|open\.larksuite\.com)\//i.test(url) || !url.includes('/open-apis/bot/')) {
+    hookFormError.value = '请填写飞书/Lark 机器人 Webhook（https://open.feishu.cn/...）'
+    return
+  }
+  hookBusy.value = true
+  hookFormError.value = ''
+  try {
+    const payload = {
+      name,
+      url,
+      note: String(hookForm.value.note || '').trim(),
+      enabled: !!hookForm.value.enabled
+    }
+    if (hookFormMode.value === 'create') {
+      await writeApi.createAlertWebhook(payload)
+    } else {
+      await writeApi.updateAlertWebhook(hookEditId.value, payload)
+    }
+    showHookForm.value = false
+    await loadHooks()
+  } catch (e) {
+    hookFormError.value = errMessage(e)
+  } finally {
+    hookBusy.value = false
+  }
+}
+
+async function removeHook(row) {
+  if (!canWrite.value || !row?.id) return
+  if (!window.confirm(`删除告警 Webhook「${row.name || row.id}」？`)) return
+  try {
+    await writeApi.deleteAlertWebhook(row.id)
+    if (showHookForm.value && hookEditId.value === row.id) showHookForm.value = false
+    await loadHooks()
+  } catch (e) {
+    hooksError.value = errMessage(e)
+  }
+}
+
+async function testHook(row) {
+  if (!canWrite.value || !row?.id || hookTesting.value) return
+  hookTesting.value = true
+  hooksError.value = ''
+  try {
+    await writeApi.testAlertWebhook(row.id)
+    window.alert('已发送测试消息，请到飞书群确认。')
+  } catch (e) {
+    hooksError.value = errMessage(e)
+  } finally {
+    hookTesting.value = false
+  }
+}
+
+async function testHookInForm() {
+  if (!canWrite.value || hookFormMode.value !== 'edit' || !hookEditId.value) return
+  await testHook({ id: hookEditId.value, name: hookForm.value.name })
+}
+
+function setPageModule(mod) {
+  if (!PAGE_MODULES.has(mod) || pageModule.value === mod) return
+  pageModule.value = mod
+  setViewPref('diagnose-page', 'local', { module: mod })
+  const q = { ...route.query }
+  if (mod === 'alert') {
+    delete q.module
+    delete q.category
+    category.value = ''
+  } else {
+    q.module = 'diagnose'
+  }
+  router.replace({ path: '/diagnose', query: q })
+}
+
+function applyPageModuleFromRoute() {
+  const qMod = String(route.query.module || '')
+  const qCat = String(route.query.category || '')
+  if (PAGE_MODULES.has(qMod)) {
+    pageModule.value = qMod
+    return
+  }
+  if (DIAG_CATS.has(qCat)) {
+    pageModule.value = 'diagnose'
+    return
+  }
+  const pref = getViewPref('diagnose-page', 'local')
+  if (PAGE_MODULES.has(pref?.module)) {
+    pageModule.value = pref.module
+    return
+  }
+  pageModule.value = 'alert'
+}
+
 function applyQueryCategory() {
   const q = String(route.query.category || '')
   if (!DIAG_CATS.has(q)) return
   if (q === 'node' && isProject.value) return
   category.value = q
+  pageModule.value = 'diagnose'
 }
 
 function onChildError(msg) {
@@ -700,13 +876,25 @@ watch(currentClusterId, () => {
   yamlDrawer.value?.close()
   explainDrawer.value?.close()
   applyQueryCategory()
-  load()
+  if (pageModule.value === 'diagnose') load()
 })
-watch(() => String(route.query.category || ''), applyQueryCategory)
+watch(
+  () => [String(route.query.category || ''), String(route.query.module || '')],
+  () => {
+    applyPageModuleFromRoute()
+    applyQueryCategory()
+  }
+)
+watch(pageModule, (mod) => {
+  if (mod === 'alert') loadHooks()
+  if (mod === 'diagnose' && currentClusterId.value) load()
+})
 onMounted(() => {
   window.addEventListener('resize', measureSummary)
+  applyPageModuleFromRoute()
   applyQueryCategory()
-  load()
+  if (pageModule.value === 'alert') loadHooks()
+  else load()
   nextTick(measureSummary)
 })
 onUnmounted(() => {
@@ -717,10 +905,106 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <h1>诊断</h1>
-    <p class="page-desc">对当前选用集群即时扫描仍成立的问题；定级与降级规则见「巡检」页「基线与降级机制」。</p>
-    <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
+    <h1>告警</h1>
+    <p class="page-desc">
+      管理飞书告警 Webhook；巡检发现<strong>严重</strong>，或<strong>2 小时内新出现的错误及以上</strong>问题时自动推送。
+      「诊断」为当前集群即时扫描（定级规则见巡检页「基线与降级机制」）。
+    </p>
+
+    <div class="toolbar toolbar-start">
+      <div class="tabs">
+        <button class="tab" type="button" :class="{ active: pageModule === 'alert' }" @click="setPageModule('alert')">告警</button>
+        <button class="tab" type="button" :class="{ active: pageModule === 'diagnose' }" @click="setPageModule('diagnose')">诊断</button>
+      </div>
+    </div>
+
+    <template v-if="pageModule === 'alert'">
+      <div class="toolbar">
+        <strong>飞书 Webhook</strong>
+        <div class="actions">
+          <button class="btn btn-sm" type="button" :disabled="hooksLoading" @click="loadHooks">刷新</button>
+          <button v-if="canWrite" class="btn btn-sm btn-primary" type="button" @click="openHookCreate">新增</button>
+        </div>
+      </div>
+      <p class="muted alert-rule-hint">
+        推送规则：严重一律推送；错误及以上且问题出现时间在 2 小时内也会推送。同一问题指纹成功推送后去重，消失后再出现会重新推。
+      </p>
+      <p v-if="hooksError" class="error">{{ hooksError }}</p>
+      <p v-if="hooksLoading && !hooks.length" class="muted">加载中…</p>
+      <table v-if="hooks.length" class="table">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>Webhook URL</th>
+            <th>备注</th>
+            <th>启用</th>
+            <th v-if="canWrite">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="row in hooks" :key="row.id">
+            <td>{{ row.name }}</td>
+            <td class="hook-url" :title="row.url">{{ maskHookURL(row.url) }}</td>
+            <td>{{ row.note || '—' }}</td>
+            <td>{{ row.enabled === false ? '否' : '是' }}</td>
+            <td v-if="canWrite" class="actions">
+              <button class="btn btn-sm" type="button" :disabled="hookTesting" @click="testHook(row)">测试</button>
+              <button class="btn btn-sm" type="button" @click="openHookEdit(row)">编辑</button>
+              <button class="btn btn-sm btn-danger" type="button" @click="removeHook(row)">删除</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else-if="!hooksLoading" class="empty">
+        {{ canWrite ? '暂无 Webhook，请新增或等待默认项写入。' : '暂无 Webhook。' }}
+      </div>
+
+      <div v-if="showHookForm" class="drawer-backdrop" @click="closeHookForm"></div>
+      <div v-if="showHookForm" class="drawer drawer-wide">
+        <div class="toolbar">
+          <strong>{{ hookFormMode === 'create' ? '新增飞书 Webhook' : '编辑飞书 Webhook' }}</strong>
+          <div class="actions">
+            <button
+              class="btn btn-primary btn-sm"
+              type="button"
+              :disabled="hookBusy || hookTesting"
+              @click="saveHook"
+            >{{ hookBusy ? '保存中…' : '保存' }}</button>
+            <button
+              v-if="hookFormMode === 'edit'"
+              class="btn btn-sm"
+              type="button"
+              :disabled="hookBusy || hookTesting"
+              @click="testHookInForm"
+            >{{ hookTesting ? '测试中…' : '测试' }}</button>
+            <button class="btn btn-sm" type="button" :disabled="hookBusy || hookTesting" @click="closeHookForm">关闭</button>
+          </div>
+        </div>
+        <p v-if="hookFormError" class="error">{{ hookFormError }}</p>
+        <div class="form-row">
+          <label>名称</label>
+          <input v-model="hookForm.name" type="text" placeholder="例如 运维群机器人" />
+        </div>
+        <div class="form-row">
+          <label>Webhook URL</label>
+          <input v-model="hookForm.url" type="text" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" />
+        </div>
+        <div class="form-row">
+          <label>备注 <span class="muted">（可选）</span></label>
+          <input v-model="hookForm.note" type="text" placeholder="用途说明" />
+        </div>
+        <div class="form-row">
+          <label class="show-info">
+            <input v-model="hookForm.enabled" type="checkbox" />
+            启用推送
+          </label>
+        </div>
+      </div>
+    </template>
+
     <template v-else>
+      <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
+      <template v-else>
       <div class="panel stats-strip stats-strip-5">
         <button
           v-if="!isProject"
@@ -886,37 +1170,47 @@ onUnmounted(() => {
       <div v-else-if="!loading" class="empty">
         {{ emptyTableHint() }}
       </div>
-    </template>
+      </template>
 
-    <div class="panel summary-panel">
-      <div class="summary-head">
-        <span class="summary-title">诊断总结</span>
-        <button
-          v-if="summaryOverflow"
-          class="btn btn-sm summary-more"
-          type="button"
-          @click.stop="showSummary"
-        >查看全部</button>
+      <div class="panel summary-panel">
+        <div class="summary-head">
+          <span class="summary-title">诊断总结</span>
+          <button
+            v-if="summaryOverflow"
+            class="btn btn-sm summary-more"
+            type="button"
+            @click.stop="showSummary"
+          >查看全部</button>
+        </div>
+        <div
+          ref="summaryBox"
+          class="summary-preview-text"
+          :class="{ 'is-clickable': summaryOverflow }"
+          :role="summaryOverflow ? 'button' : undefined"
+          :tabindex="summaryOverflow ? 0 : undefined"
+          :title="summaryOverflow ? '点击在右侧查看全部' : undefined"
+          @click="showSummary"
+          @keydown.enter.prevent="showSummary"
+        >{{ summaryFull }}</div>
       </div>
-      <div
-        ref="summaryBox"
-        class="summary-preview-text"
-        :class="{ 'is-clickable': summaryOverflow }"
-        :role="summaryOverflow ? 'button' : undefined"
-        :tabindex="summaryOverflow ? 0 : undefined"
-        :title="summaryOverflow ? '点击在右侧查看全部' : undefined"
-        @click="showSummary"
-        @keydown.enter.prevent="showSummary"
-      >{{ summaryFull }}</div>
-    </div>
 
-    <PodLogsDrawer ref="logsDrawer" :cluster-id="currentClusterId" />
-    <YamlDrawer ref="yamlDrawer" :cluster-id="currentClusterId" read-only @error="onChildError" />
-    <TextDrawer ref="explainDrawer" />
+      <PodLogsDrawer ref="logsDrawer" :cluster-id="currentClusterId" />
+      <YamlDrawer ref="yamlDrawer" :cluster-id="currentClusterId" read-only @error="onChildError" />
+      <TextDrawer ref="explainDrawer" />
+    </template>
   </div>
 </template>
 
 <style scoped>
+.alert-rule-hint {
+  margin: 0 0 12px;
+}
+.hook-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  max-width: 360px;
+  word-break: break-all;
+}
 .stat .value.is-critical {
   color: var(--danger);
 }
