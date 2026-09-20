@@ -4,11 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/google/uuid"
 
 	"gitee.com/k8man/internal/model"
 	"gitee.com/k8man/internal/store"
@@ -23,11 +22,22 @@ const (
 )
 
 func dailyArchiveSlug(day time.Time, loc *time.Location) string {
+	return AllDaySlug(day, loc)
+}
+
+// AllDaySlug is the public doc id/slug for one calendar day's all-cluster report.
+func AllDaySlug(day time.Time, loc *time.Location) string {
 	if loc == nil {
 		loc = beijingLoc
 	}
 	return "inspectall" + day.In(loc).Format("20060102")
 }
+
+var (
+	reAllDaySlug = regexp.MustCompile(`^inspectall(\d{8})$`)
+	reOldDaySlug = regexp.MustCompile(`^inspect-daily-all-(\d{8})$`)
+	reTitleDate  = regexp.MustCompile(`(\d{4})-(\d{2})-(\d{2})`)
+)
 
 // previousCalendarDay is [yesterday 00:00, today 00:00) expressed as inclusive end = today 00:00 - 1ns.
 func previousCalendarDay(now time.Time, loc *time.Location) (from, to, day time.Time) {
@@ -76,6 +86,9 @@ func nextDailyArchiveAt(now time.Time, loc *time.Location, jitter time.Duration)
 func (w *Worker) dailyArchiveLoop(ctx context.Context) {
 	if w == nil || w.Store == nil {
 		return
+	}
+	if err := w.RepairAllDayDocIDs(); err != nil {
+		log.Printf("inspect daily archive rekey: %v", err)
 	}
 	for {
 		if ctx.Err() != nil {
@@ -142,6 +155,9 @@ func (w *Worker) archivePreviousDayIfDue(ctx context.Context, now time.Time) err
 	if ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if err := w.RepairAllDayDocIDs(); err != nil {
+		return err
+	}
 	w.dailyMu.Lock()
 	defer w.dailyMu.Unlock()
 	if ctx != nil && ctx.Err() != nil {
@@ -161,9 +177,15 @@ func (w *Worker) archivePreviousDayIfDue(ctx context.Context, now time.Time) err
 	}
 	_, _, day := previousCalendarDay(now, loc)
 	slug := dailyArchiveSlug(day, loc)
-	existing, err := w.Store.GetDocBySlug(slug)
+	existing, err := w.Store.GetDoc(slug)
 	if err != nil {
 		return err
+	}
+	if existing == nil {
+		existing, err = w.Store.GetDocBySlug(slug)
+		if err != nil {
+			return err
+		}
 	}
 	if existing != nil {
 		return nil
@@ -204,7 +226,7 @@ func (w *Worker) archivePreviousDayIfDue(ctx context.Context, now time.Time) err
 		title = "巡检报告 · 日 · 所有基地 · " + day.In(loc).Format("2006-01-02")
 	}
 	d := &model.Doc{
-		ID:        uuid.NewString(),
+		ID:        slug,
 		Title:     title,
 		Slug:      slug,
 		Category:  DocCategoryInspectionReport,
@@ -233,4 +255,68 @@ func (w *Worker) kubeconfigCount() (int, error) {
 		return 0, err
 	}
 	return len(list), nil
+}
+
+func allDaySlugForDoc(d model.Doc) (string, bool) {
+	if m := reAllDaySlug.FindStringSubmatch(strings.TrimSpace(d.Slug)); m != nil {
+		return "inspectall" + m[1], true
+	}
+	if m := reOldDaySlug.FindStringSubmatch(strings.TrimSpace(d.Slug)); m != nil {
+		return "inspectall" + m[1], true
+	}
+	title := strings.TrimSpace(d.Title)
+	if strings.Contains(title, "· 日 ·") && strings.Contains(title, "所有基地") {
+		if m := reTitleDate.FindStringSubmatch(title); m != nil {
+			return "inspectall" + m[1] + m[2] + m[3], true
+		}
+	}
+	if m := reAllDaySlug.FindStringSubmatch(strings.TrimSpace(d.ID)); m != nil {
+		return d.ID, true
+	}
+	return "", false
+}
+
+// RepairAllDayDocIDs rewrites older UUID docs so /docs/inspectallYYYYMMDD is the address.
+func (w *Worker) RepairAllDayDocIDs() error {
+	if w == nil || w.Store == nil {
+		return nil
+	}
+	docs, err := w.Store.ListDocs(DocCategoryInspectionReport, "")
+	if err != nil {
+		return err
+	}
+	chosen := map[string]model.Doc{}
+	for _, d := range docs {
+		slug, ok := allDaySlugForDoc(d)
+		if !ok || slug == "" {
+			continue
+		}
+		prev, exists := chosen[slug]
+		if !exists || d.ID == slug || (prev.ID != slug && d.UpdatedAt.After(prev.UpdatedAt)) {
+			chosen[slug] = d
+		}
+	}
+	for slug, d := range chosen {
+		if d.ID == slug && d.Slug == slug {
+			continue
+		}
+		if d.ID != slug {
+			cur, err := w.Store.GetDoc(slug)
+			if err != nil {
+				return err
+			}
+			if cur != nil {
+				continue
+			}
+		}
+		if err := w.Store.RekeyDoc(d.ID, slug); err != nil {
+			if store.IsUniqueErr(err) {
+				log.Printf("inspect daily archive rekey skip %s -> %s: %v", d.ID, slug, err)
+				continue
+			}
+			return err
+		}
+		log.Printf("inspect daily archive rekey %s -> %s", d.ID, slug)
+	}
+	return nil
 }

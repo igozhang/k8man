@@ -14,3 +14,11 @@ export function docCategoryLabel(value) {
   const hit = DOC_CATEGORIES.find((c) => c.value === v)
   return hit?.label || v || '—'
 }
+
+/** 日·所有基地巡检报告的地址是 /docs/inspectallYYYYMMDD */
+export function docPublicId(doc) {
+  const slug = String(doc?.slug || '').trim()
+  if (/^inspectall\d{8}$/.test(slug)) return slug
+  const id = String(doc?.id || '').trim()
+  return id
+}

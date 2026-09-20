@@ -556,10 +556,18 @@ func (h *Handler) ListDocs(c *gin.Context) {
 }
 
 func (h *Handler) GetDoc(c *gin.Context) {
-	d, err := h.Store.GetDoc(c.Param("docId"))
+	key := strings.TrimSpace(c.Param("docId"))
+	d, err := h.Store.GetDoc(key)
 	if err != nil {
 		respond.Internal(c, err.Error())
 		return
+	}
+	if d == nil {
+		d, err = h.Store.GetDocBySlug(key)
+		if err != nil {
+			respond.Internal(c, err.Error())
+			return
+		}
 	}
 	if d == nil {
 		respond.NotFound(c, "doc not found")

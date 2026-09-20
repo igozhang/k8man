@@ -6,7 +6,7 @@ import { readApi } from '../api'
 import { errMessage } from '../utils/safe'
 import { TTL, cacheGet, cacheKey, cacheLoad } from '../utils/resourceCache'
 import { canWrite } from '../stores/opsAuth'
-import { docCategoryLabel } from '../constants/docCategories'
+import { docCategoryLabel, docPublicId } from '../constants/docCategories'
 
 const route = useRoute()
 const doc = ref(null)
@@ -59,7 +59,7 @@ watch(() => String(route.params.id || ''), load, { immediate: true })
           </div>
           <h1>{{ doc.title }}</h1>
         </div>
-        <RouterLink v-if="canWrite" class="btn" :to="`/docs/edit/${doc.id}`">编辑</RouterLink>
+        <RouterLink v-if="canWrite" class="btn" :to="`/docs/edit/${docPublicId(doc)}`">编辑</RouterLink>
       </div>
       <article class="panel markdown-body" v-html="html"></article>
       <p><RouterLink to="/docs">← 返回列表</RouterLink></p>

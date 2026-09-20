@@ -524,6 +524,72 @@ func (h *Handler) ExportInspectionReport(c *gin.Context) {
 	if title == "" {
 		title = "巡检报告"
 	}
+	if rep.Period == string(inspect.ExportPeriodDay) && rep.Scope == string(inspect.ExportScopeAll) {
+		if h.Inspect != nil {
+			if err := h.Inspect.RepairAllDayDocIDs(); err != nil {
+				respond.Internal(c, err.Error())
+				return
+			}
+		}
+		slug := inspect.AllDaySlug(rep.WindowFrom, nil)
+		d, err := h.Store.GetDoc(slug)
+		if err != nil {
+			respond.Internal(c, err.Error())
+			return
+		}
+		if d == nil {
+			d, err = h.Store.GetDocBySlug(slug)
+			if err != nil {
+				respond.Internal(c, err.Error())
+				return
+			}
+		}
+		creating := d == nil
+		if d != nil && d.ID != slug {
+			if err := h.Store.RekeyDoc(d.ID, slug); err != nil {
+				respond.Internal(c, err.Error())
+				return
+			}
+			d.ID = slug
+		}
+		if creating {
+			d = &model.Doc{
+				ID:        slug,
+				Slug:      slug,
+				Category:  inspect.DocCategoryInspectionReport,
+				CreatedAt: now,
+			}
+		}
+		d.Title = title
+		d.Slug = slug
+		d.Category = inspect.DocCategoryInspectionReport
+		d.Tags = tags
+		d.Summary = summary
+		d.Content = rep.Markdown
+		d.UpdatedAt = now
+		if creating {
+			err = h.Store.CreateDoc(d)
+		} else {
+			err = h.Store.UpdateDoc(d)
+		}
+		if err != nil {
+			respond.Internal(c, "同步运维文档失败: "+err.Error())
+			return
+		}
+		respond.OK(c, gin.H{
+			"title":      rep.Title,
+			"filename":   rep.Filename,
+			"summary":    rep.Summary,
+			"markdown":   rep.Markdown,
+			"period":     rep.Period,
+			"scope":      rep.Scope,
+			"windowFrom": rep.WindowFrom,
+			"windowTo":   rep.WindowTo,
+			"clusterIds": rep.ClusterIDs,
+			"doc":        d,
+		})
+		return
+	}
 	d := &model.Doc{
 		ID:        uuid.NewString(),
 		Title:     title,

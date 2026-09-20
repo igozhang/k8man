@@ -105,8 +105,8 @@ func TestArchivePreviousDayIfDue(t *testing.T) {
 	if err != nil || full == nil {
 		t.Fatal(err)
 	}
-	if full.Slug != "inspectall20260920" {
-		t.Fatalf("slug %s", full.Slug)
+	if full.Slug != "inspectall20260920" || full.ID != "inspectall20260920" {
+		t.Fatalf("id=%s slug=%s", full.ID, full.Slug)
 	}
 	if !strings.Contains(full.Title, "2026-09-20") || !strings.Contains(full.Content, "自动归档") {
 		t.Fatalf("title=%s", full.Title)
@@ -120,5 +120,37 @@ func TestArchivePreviousDayIfDue(t *testing.T) {
 	docs, _ = st.ListDocs(DocCategoryInspectionReport, "")
 	if len(docs) != 1 {
 		t.Fatalf("duplicate archive %d", len(docs))
+	}
+}
+
+func TestRepairAllDayDocID(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	d := &model.Doc{
+		ID: "f24f13b0-5345-495f-a6de-861437fb485b", Title: "巡检报告 · 日 · 所有基地 · 2026-09-20",
+		Category: DocCategoryInspectionReport, Tags: []string{"巡检报告"}, Summary: "s", Content: "body",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := st.CreateDoc(d); err != nil {
+		t.Fatal(err)
+	}
+	w := New(st, nil, nil)
+	if err := w.RepairAllDayDocIDs(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetDoc("inspectall20260920")
+	if err != nil || got == nil {
+		t.Fatalf("rekey: %v %+v", err, got)
+	}
+	if got.Slug != "inspectall20260920" || got.Content != "body" {
+		t.Fatalf("%+v", got)
+	}
+	old, _ := st.GetDoc(d.ID)
+	if old != nil {
+		t.Fatal("uuid id should be gone")
 	}
 }

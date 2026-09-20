@@ -5,7 +5,7 @@ import { readApi, writeApi } from '../api'
 import { asArray, errMessage } from '../utils/safe'
 import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad, invalidateDocs } from '../utils/resourceCache'
 import { canWrite } from '../stores/opsAuth'
-import { DOC_CATEGORIES, docCategoryLabel } from '../constants/docCategories'
+import { DOC_CATEGORIES, docCategoryLabel, docPublicId } from '../constants/docCategories'
 
 const list = ref([])
 const q = ref('')
@@ -88,7 +88,7 @@ onUnmounted(() => {
     <div v-if="!list.length" class="empty">暂无文档。</div>
     <div v-for="d in list" :key="d.id" class="doc-capsule">
       <div class="doc-capsule-head">
-        <h2 class="doc-capsule-title"><RouterLink :to="`/docs/${d.id}`">{{ d.title }}</RouterLink></h2>
+        <h2 class="doc-capsule-title"><RouterLink :to="`/docs/${docPublicId(d)}`">{{ d.title }}</RouterLink></h2>
         <span class="doc-capsule-head-meta">
           <span class="tag">{{ docCategoryLabel(d.category) }}</span>
           <span v-if="d.pinned" class="tag current">置顶</span>
@@ -97,7 +97,7 @@ onUnmounted(() => {
       </div>
       <p class="doc-capsule-excerpt">{{ d.summary || '（无摘要）' }}</p>
       <div v-if="canWrite" class="actions">
-        <RouterLink class="btn btn-sm" :to="`/docs/edit/${d.id}`">编辑</RouterLink>
+        <RouterLink class="btn btn-sm" :to="`/docs/edit/${docPublicId(d)}`">编辑</RouterLink>
         <button class="btn btn-sm btn-danger" @click="remove(d)">删除</button>
       </div>
     </div>

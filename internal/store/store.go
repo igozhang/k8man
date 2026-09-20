@@ -307,6 +307,28 @@ func (s *Store) GetDocBySlug(slug string) (*model.Doc, error) {
 	return &d, nil
 }
 
+// RekeyDoc sets both id and slug to newID so the public path is /docs/<slug>.
+func (s *Store) RekeyDoc(oldID, newID string) error {
+	oldID = strings.TrimSpace(oldID)
+	newID = strings.TrimSpace(newID)
+	if oldID == "" || newID == "" {
+		return fmt.Errorf("doc id required")
+	}
+	if oldID == newID {
+		_, err := s.db.Exec(`UPDATE docs SET slug=? WHERE id=?`, newID, newID)
+		return err
+	}
+	res, err := s.db.Exec(`UPDATE docs SET id=?, slug=? WHERE id=?`, newID, newID, oldID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) GetDoc(id string) (*model.Doc, error) {
 	row := s.db.QueryRow(`SELECT id,title,slug,category,tags,summary,content,pinned,created_at,updated_at FROM docs WHERE id=?`, id)
 	d, err := scanDoc(row)
