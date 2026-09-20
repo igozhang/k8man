@@ -291,6 +291,22 @@ func (s *Store) ListDocs(category, q string) ([]model.Doc, error) {
 	return list, rows.Err()
 }
 
+func (s *Store) GetDocBySlug(slug string) (*model.Doc, error) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return nil, nil
+	}
+	row := s.db.QueryRow(`SELECT id,title,slug,category,tags,summary,content,pinned,created_at,updated_at FROM docs WHERE slug=?`, slug)
+	d, err := scanDoc(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
 func (s *Store) GetDoc(id string) (*model.Doc, error) {
 	row := s.db.QueryRow(`SELECT id,title,slug,category,tags,summary,content,pinned,created_at,updated_at FROM docs WHERE id=?`, id)
 	d, err := scanDoc(row)

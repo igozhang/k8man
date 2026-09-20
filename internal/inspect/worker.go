@@ -37,6 +37,7 @@ type Worker struct {
 
 	gates    sync.Map // clusterID -> chan struct{} (cap 1)
 	inFlight atomic.Int32
+	dailyMu  sync.Mutex
 }
 
 func New(st *store.Store, pool *kube.Pool, hosts *hostsfile.File) *Worker {
@@ -109,6 +110,7 @@ func (w *Worker) Loop(ctx context.Context) {
 	if w == nil {
 		return
 	}
+	go w.dailyArchiveLoop(ctx)
 	var lastStart time.Time
 	for {
 		if ctx.Err() != nil {

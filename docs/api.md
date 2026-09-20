@@ -196,6 +196,8 @@
 
 `data`：`{title,filename,summary,markdown,period,scope,windowFrom,windowTo,clusterIds}`。基于各集群**最新快照**拼装；问题按 `sinceAt` 落入窗口（无 `sinceAt` 保留）。**不是**日/周/月历史多轮聚合。
 
+已保存 kubeconfig **超过 2 个**时，进程在 **Asia/Shanghai 每天约 01:00**（±约 6 分钟）自动生成**前一自然日、所有集群**的巡检报告，写入运维文档（`category=inspection-report`，`slug=inspectallYYYYMMDD`（如 `inspectall20260920`））。同一日只写一份；当天 01:00 之后启动会补写尚未归档的前一天；写库失败约 10 分钟后重试，避免拖到次日才补。集群数 ≤2 时不生成。自动归档保留归档时刻最新快照中的全部问题（含更早出现、仍存在的问题），**不**按 `sinceAt` 裁掉；手动预览/导出的日/周/月窗口筛选不变。两者都不是历史多轮回放。
+
 `GET /inspections` 的 `data`：
 
 ```json

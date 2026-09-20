@@ -47,11 +47,16 @@ var (
 
 // ExportRequest selects which latest snapshots to include and how to label the window.
 type ExportRequest struct {
-	Period    ExportPeriod
-	Scope     ExportScope
-	ClusterID string // required when Scope == current
-	Now       time.Time
-	Location  *time.Location
+	Period        ExportPeriod
+	Scope         ExportScope
+	ClusterID     string // required when Scope == current
+	Now           time.Time
+	Location      *time.Location
+	WindowFrom    time.Time // both Window* set → override PeriodWindow
+	WindowTo      time.Time
+	TitleAt       time.Time // if set, title/filename use this calendar date (not the clock)
+	ExtraNote     string
+	KeepAllIssues bool // daily archive: do not drop issues whose sinceAt is outside the label window
 }
 
 // ExportReport is markdown + metadata for preview / download / docs sync.
@@ -260,7 +265,7 @@ type exportSection struct {
 	omitted  int
 }
 
-func buildSection(name string, row *store.InspectionRow, from, to time.Time) exportSection {
+func buildSection(name string, row *store.InspectionRow, from, to time.Time, keepAll bool) exportSection {
 	var issues []kube.Issue
 	var diag *kube.DiagnoseReport
 	loadNote := ""
@@ -285,7 +290,13 @@ func buildSection(name string, row *store.InspectionRow, from, to time.Time) exp
 		}
 	}
 	item := listItemFromRow(name, row, issues, diag)
-	filtered := filterIssues(issues, from, to)
+	var filtered []kube.Issue
+	if keepAll {
+		filtered = append([]kube.Issue(nil), issues...)
+		sortIssues(filtered)
+	} else {
+		filtered = filterIssues(issues, from, to)
+	}
 	crit, errN, warn, info := countIssues(filtered)
 	if useRowCounts && row != nil {
 		crit, errN, warn, info = row.Critical, row.Error, row.Warning, row.Info
@@ -340,6 +351,9 @@ func (w *Worker) BuildExport(req ExportRequest) (*ExportReport, error) {
 		now = time.Now()
 	}
 	from, to := PeriodWindow(period, now, loc)
+	if !req.WindowFrom.IsZero() && !req.WindowTo.IsZero() && !req.WindowTo.Before(req.WindowFrom) {
+		from, to = req.WindowFrom.In(loc), req.WindowTo.In(loc)
+	}
 
 	wantID := strings.TrimSpace(req.ClusterID)
 	if scope == ExportScopeCurrent && wantID == "" {
@@ -365,7 +379,7 @@ func (w *Worker) BuildExport(req ExportRequest) (*ExportReport, error) {
 		if row, ok := byID[c.ID]; ok {
 			p = &row
 		}
-		sec := buildSection(c.Name, p, from, to)
+		sec := buildSection(c.Name, p, from, to, req.KeepAllIssues)
 		sec.item.ClusterID = c.ID
 		if sec.item.ClusterName == "" {
 			sec.item.ClusterName = c.Name
@@ -387,12 +401,17 @@ func (w *Worker) BuildExport(req ExportRequest) (*ExportReport, error) {
 	}
 	periodText := periodLabel(period)
 	stamp := now.In(loc).Format("2006-01-02 15:04")
+	fileStamp := now.In(loc).Format("20060102-1504")
+	if !req.TitleAt.IsZero() {
+		stamp = req.TitleAt.In(loc).Format("2006-01-02")
+		fileStamp = req.TitleAt.In(loc).Format("20060102")
+	}
 	title := clipTitle(fmt.Sprintf("巡检报告 · %s · %s · %s", periodText, scopeText, stamp))
 	filename := fmt.Sprintf(
 		"k8man-inspect-%s-%s-%s.md",
 		string(period),
 		string(scope),
-		now.In(loc).Format("20060102-1504"),
+		fileStamp,
 	)
 
 	var totalCrit, totalErr, totalWarn, totalInfo, checkedN int
@@ -407,12 +426,17 @@ func (w *Worker) BuildExport(req ExportRequest) (*ExportReport, error) {
 			checkedN++
 		}
 	}
+	filterNote := "按 sinceAt 落入窗口筛选，无 sinceAt 保留"
+	if req.KeepAllIssues {
+		filterNote = "归档时刻最新快照中的全部问题，不按 sinceAt 裁剪"
+	}
 	summary := fmt.Sprintf(
-		"周期=%s；范围=%s；窗口 %s ~ %s；基地 %d（已巡检 %d）；问题 严重%d / 错误%d / 警告%d / 提示%d（按 sinceAt 落入窗口筛选，无 sinceAt 保留）",
+		"周期=%s；范围=%s；窗口 %s ~ %s；基地 %d（已巡检 %d）；问题 严重%d / 错误%d / 警告%d / 提示%d（%s）",
 		periodText, scopeText,
 		fmtTimeLocal(from, loc), fmtTimeLocal(to, loc),
 		len(sections), checkedN,
 		totalCrit, totalErr, totalWarn, totalInfo,
+		filterNote,
 	)
 
 	var b strings.Builder
@@ -434,8 +458,19 @@ func (w *Worker) BuildExport(req ExportRequest) (*ExportReport, error) {
 	b.WriteString("- 业务范围：")
 	b.WriteString(escapeMD(scopeText))
 	b.WriteString("\n")
-	b.WriteString("- 数据来源：各基地**最新一轮**巡检快照；问题按 `sinceAt` 落入窗口筛选（无 `sinceAt` 的条目保留）\n")
-	b.WriteString("- 说明：系统约 2 小时巡检一轮，本报告**不是**日/周/月历史多轮聚合\n\n")
+	b.WriteString("- 数据来源：各基地**最新一轮**巡检快照")
+	if req.KeepAllIssues {
+		b.WriteString("（保留仍存在的问题，不按 `sinceAt` 裁剪）\n")
+	} else {
+		b.WriteString("；问题按 `sinceAt` 落入窗口筛选（无 `sinceAt` 的条目保留）\n")
+	}
+	b.WriteString("- 说明：系统约 2 小时巡检一轮，本报告**不是**日/周/月历史多轮聚合\n")
+	if note := strings.TrimSpace(req.ExtraNote); note != "" {
+		b.WriteString("- ")
+		b.WriteString(escapeMD(note))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 
 	b.WriteString("## 总览\n\n")
 	b.WriteString("| 基地 | 巡检时间 | Probe | 严重 | 错误 | 警告 | 提示 | 摘要 |\n")
