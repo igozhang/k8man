@@ -17,9 +17,11 @@ import {
   cacheInvalidate,
   notifyInspectionsChanged,
   getViewPref,
-  setViewPref
+  setViewPref,
+  invalidateDocs
 } from '../utils/resourceCache'
 import InspectionDrawer from '../components/InspectionDrawer.vue'
+import InspectReportDrawer from '../components/InspectReportDrawer.vue'
 import InspectRules from '../components/InspectRules.vue'
 import FilterSelect from '../components/FilterSelect.vue'
 import FilterMultiSelect from '../components/FilterMultiSelect.vue'
@@ -64,6 +66,11 @@ const inspectError = ref('')
 const inspectingId = ref('')
 const inspectTargetId = ref('')
 const inspectDrawer = ref(null)
+const inspectReportDrawer = ref(null)
+const inspectExportPeriod = ref('week')
+const inspectExportScope = ref('all')
+const inspectExportBusy = ref(false)
+const inspectPreviewBusy = ref(false)
 
 const inspecting = computed(() => !!inspectingId.value)
 
@@ -72,6 +79,7 @@ const podsSeq = createSeq()
 const storageSeq = createSeq()
 const inspectSeq = createSeq()
 const inspectRunSeq = createSeq()
+const inspectReportSeq = createSeq()
 
 const isProject = computed(() => currentCluster.value?.permType === 'project')
 const showNodesTab = computed(() => !isProject.value)
@@ -620,6 +628,127 @@ async function runInspect() {
   await runLiveInspect(targetId, { openDrawer: true })
 }
 
+function inspectExportParams() {
+  const period = inspectExportPeriod.value || 'week'
+  const scope = inspectExportScope.value || 'all'
+  const clusterId = scope === 'current' ? inspectTargetId.value : ''
+  return { period, scope, clusterId }
+}
+
+function downloadMarkdownFile(filename, text) {
+  const raw = String(text || '')
+  if (!raw.trim()) {
+    throw new Error('报告内容为空，未下载')
+  }
+  let name = String(filename || 'k8man-inspect.md').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+  if (!name.toLowerCase().endsWith('.md')) name += '.md'
+  const blob = new Blob([raw], { type: 'text/markdown;charset=utf-8' })
+  const obj = URL.createObjectURL(blob)
+  try {
+    const a = document.createElement('a')
+    a.href = obj
+    a.download = name
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  } finally {
+    URL.revokeObjectURL(obj)
+  }
+}
+
+async function previewInspectReport() {
+  if (inspectPreviewBusy.value || inspectExportBusy.value) return
+  const { period, scope, clusterId } = inspectExportParams()
+  if (scope === 'current' && !clusterId) {
+    inspectError.value = '请先选择 kubeconfig（当前基地）'
+    return
+  }
+  inspectError.value = ''
+  const seq = inspectReportSeq.next()
+  inspectPreviewBusy.value = true
+  inspectReportDrawer.value?.open({
+    title: '巡检报告预览',
+    loading: true,
+    markdown: '',
+    summary: '',
+    docId: '',
+    error: ''
+  })
+  try {
+    const data = await readApi.previewInspectionReport({ period, scope, clusterId })
+    if (!inspectReportSeq.is(seq)) return
+    inspectReportDrawer.value?.update({
+      title: data?.title || '巡检报告预览',
+      markdown: data?.markdown || '',
+      summary: data?.summary || '',
+      loading: false,
+      error: ''
+    })
+  } catch (e) {
+    if (!inspectReportSeq.is(seq)) return
+    const msg = errMessage(e)
+    inspectError.value = msg
+    inspectReportDrawer.value?.update({ loading: false, error: msg })
+  } finally {
+    if (inspectReportSeq.is(seq)) inspectPreviewBusy.value = false
+  }
+}
+
+async function exportInspectReport() {
+  if (!canWrite.value) {
+    inspectError.value = '导出需运维写权限（将同步到运维文档「巡检报告」）'
+    return
+  }
+  if (inspectExportBusy.value || inspectPreviewBusy.value) return
+  const { period, scope, clusterId } = inspectExportParams()
+  if (scope === 'current' && !clusterId) {
+    inspectError.value = '请先选择 kubeconfig（当前基地）'
+    return
+  }
+  inspectError.value = ''
+  const seq = inspectReportSeq.next()
+  inspectExportBusy.value = true
+  inspectReportDrawer.value?.open({
+    title: '正在导出巡检报告…',
+    loading: true,
+    exporting: true,
+    summary: '生成 Markdown 并同步到运维文档…',
+    error: '',
+    docId: ''
+  })
+  try {
+    const data = await writeApi.exportInspectionReport({ period, scope, clusterId })
+    if (!inspectReportSeq.is(seq)) return
+    try {
+      downloadMarkdownFile(data?.filename, data?.markdown)
+    } catch (dlErr) {
+      // 文档已写入，下载失败仍展示结果
+      inspectError.value = errMessage(dlErr)
+    }
+    if (data?.doc?.id) invalidateDocs(data.doc.id)
+    inspectReportDrawer.value?.open({
+      title: data?.title || '巡检报告',
+      markdown: data?.markdown || '',
+      summary: (data?.summary || '') + (data?.doc?.id ? ' · 已同步到运维文档' : ''),
+      docId: data?.doc?.id || '',
+      loading: false,
+      exporting: false,
+      error: inspectError.value || ''
+    })
+  } catch (e) {
+    if (!inspectReportSeq.is(seq)) return
+    const msg = errMessage(e)
+    inspectError.value = msg
+    inspectReportDrawer.value?.update({ loading: false, exporting: false, error: msg })
+  } finally {
+    if (inspectReportSeq.is(seq)) {
+      inspectExportBusy.value = false
+      inspectReportDrawer.value?.update({ exporting: false, loading: false })
+    }
+  }
+}
+
 function resetView() {
   nodesSeq.bump()
   podsSeq.bump()
@@ -1163,7 +1292,7 @@ onMounted(enterPage)
         </div>
       </div>
       <p class="inspect-intro muted">
-        对每个 kubeconfig 约 2 小时一轮。后台<strong>有界并发</strong>（默认同时 4 路，积压可扩至 8）；两次成功开始至少间隔约 2 秒；同一集群同时只跑一轮。每轮先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。定级见下方「基线与降级机制」（含 Restarts）。下方按集群分块展示摘要（每块最多 3 条，只含严重/错误/警告；仅有提示时不单独成块）；点击块在右侧抽屉查看该配置详情<template v-if="canWrite">并触发实时巡检</template>。
+        对每个 kubeconfig 约 2 小时一轮。后台<strong>有界并发</strong>（默认同时 4 路，积压可扩至 8）；两次成功开始至少间隔约 2 秒；同一集群同时只跑一轮。每轮先 Probe（同 KubeConfig「测试」）并回写状态，通过后再扫描节点、负载、Pod 与事件（Project 凭证跳过节点）。定级见下方「基线与降级机制」（含 Restarts）。下方按集群分块展示摘要（每块最多 3 条，只含严重/错误/警告；仅有提示时不单独成块）；点击块在右侧抽屉查看该配置详情<template v-if="canWrite">并触发实时巡检</template>。「预览 / 导出巡检报告」基于各基地<strong>最新快照</strong>生成 Markdown（按日/周/月窗口筛 `sinceAt`）；导出需写权限，并同步一份到运维文档「巡检报告」。
       </p>
       <div class="toolbar toolbar-start inspect-actions">
         <select v-model="inspectTargetId" aria-label="巡检目标 kubeconfig">
@@ -1187,6 +1316,41 @@ onMounted(enterPage)
             :disabled="(!inspectTargetId && !inspectIssueBlocks.length) || inspecting"
             @click="openInspectDetail(inspectTargetId || inspectIssueBlocks[0]?.clusterId)"
           >详情</button>
+          <select
+            v-model="inspectExportPeriod"
+            class="inspect-export-select"
+            aria-label="报告周期"
+            title="报告周期（基于最新快照，按问题 sinceAt 筛入窗口）"
+          >
+            <option value="day">日</option>
+            <option value="week">周</option>
+            <option value="month">月</option>
+          </select>
+          <select
+            v-model="inspectExportScope"
+            class="inspect-export-select"
+            aria-label="报告范围"
+            title="当前基地 = 左侧所选 kubeconfig"
+          >
+            <option value="all">所有基地</option>
+            <option value="current">当前基地</option>
+          </select>
+          <button
+            class="btn btn-sm"
+            type="button"
+            :disabled="inspectPreviewBusy || inspectExportBusy || (inspectExportScope === 'current' && !inspectTargetId)"
+            :title="inspectExportScope === 'current' && !inspectTargetId ? '请先选择 kubeconfig' : '预览 Markdown 报告'"
+            @click="previewInspectReport"
+          >{{ inspectPreviewBusy ? '生成中…' : '预览' }}</button>
+          <button
+            class="btn btn-sm"
+            type="button"
+            :disabled="!canWrite || inspectExportBusy || inspectPreviewBusy || (inspectExportScope === 'current' && !inspectTargetId)"
+            :title="!canWrite
+              ? '导出需运维写权限（将同步到运维文档）'
+              : (inspectExportScope === 'current' && !inspectTargetId ? '请先选择 kubeconfig' : '下载 MD 并同步到运维文档「巡检报告」')"
+            @click="exportInspectReport"
+          >{{ inspectExportBusy ? '导出中…' : '导出巡检报告' }}</button>
         </div>
       </div>
       <p v-if="inspectError" class="error">{{ inspectError }}</p>
@@ -1244,5 +1408,10 @@ onMounted(enterPage)
       <InspectRules class="is-split" title="基线与降级机制" />
     </section>
     <InspectionDrawer ref="inspectDrawer" />
+    <InspectReportDrawer
+      ref="inspectReportDrawer"
+      :can-export="canWrite"
+      @export="exportInspectReport"
+    />
   </div>
 </template>

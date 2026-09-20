@@ -5,6 +5,7 @@ import { readApi, writeApi } from '../api'
 import { asArray, errMessage } from '../utils/safe'
 import { TTL, cacheGet, cacheKey, cacheLoad, invalidateDocs } from '../utils/resourceCache'
 import { canWrite } from '../stores/opsAuth'
+import { DOC_CATEGORIES } from '../constants/docCategories'
 
 const route = useRoute()
 const router = useRouter()
@@ -120,10 +121,7 @@ async function save() {
       <div class="form-row">
         <label>分类</label>
         <select v-model="form.category" :disabled="loading || !canWrite">
-          <option value="general">general</option>
-          <option value="k8s">k8s</option>
-          <option value="devops">devops</option>
-          <option value="monitoring">monitoring</option>
+          <option v-for="c in DOC_CATEGORIES" :key="c.value" :value="c.value">{{ c.label }}</option>
         </select>
       </div>
       <div class="form-row"><label>标签（逗号分隔）</label><input v-model="form.tags" type="text" :disabled="loading || !canWrite" /></div>

@@ -36,6 +36,15 @@ export const readApi = {
   getInspection: (clusterId, { timeout = 12000, signal } = {}) =>
     http.get(`/read/inspections/${clusterId}`, { timeout, signal }),
   listInspections: () => http.get('/read/inspections', { timeout: 20000 }),
+  previewInspectionReport: ({ period, scope, clusterId } = {}) =>
+    http.get('/read/inspections/report', {
+      params: {
+        period,
+        scope,
+        ...(clusterId ? { clusterId } : {})
+      },
+      timeout: 60000
+    }),
   listDocs: (params) => http.get('/read/docs', { params }),
   getDoc: (docId) => http.get(`/read/docs/${docId}`),
   listHosts: () => http.get('/read/hosts'),

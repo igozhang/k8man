@@ -226,6 +226,29 @@ func (h *Handler) GetInspection(c *gin.Context) {
 	respond.OK(c, out)
 }
 
+// PreviewInspectionReport builds markdown from latest snapshots (no doc sync).
+func (h *Handler) PreviewInspectionReport(c *gin.Context) {
+	if h.Inspect == nil {
+		respond.Internal(c, "inspect worker not configured")
+		return
+	}
+	req := inspect.ExportRequest{
+		Period:    inspect.ParseExportPeriod(c.Query("period")),
+		Scope:     inspect.ParseExportScope(c.Query("scope")),
+		ClusterID: strings.TrimSpace(c.Query("clusterId")),
+	}
+	out, err := h.Inspect.BuildExport(req)
+	if err != nil {
+		if errors.Is(err, inspect.ErrExportClusterIDRequired) || errors.Is(err, inspect.ErrExportClusterNotFound) {
+			respond.BadRequest(c, err.Error())
+			return
+		}
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, out)
+}
+
 func (h *Handler) ListPods(c *gin.Context) {
 	clients, ok := h.clients(c)
 	if !ok {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -475,6 +476,80 @@ func (h *Handler) CreateDoc(c *gin.Context) {
 		return
 	}
 	respond.OK(c, d)
+}
+
+// ExportInspectionReport builds markdown, syncs a copy into 运维文档 (category inspection-report), and returns both.
+func (h *Handler) ExportInspectionReport(c *gin.Context) {
+	if h.Inspect == nil {
+		respond.Internal(c, "inspect worker not configured")
+		return
+	}
+	var body struct {
+		Period    string `json:"period"`
+		Scope     string `json:"scope"`
+		ClusterID string `json:"clusterId"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	if body.Period == "" {
+		body.Period = c.Query("period")
+	}
+	if body.Scope == "" {
+		body.Scope = c.Query("scope")
+	}
+	if body.ClusterID == "" {
+		body.ClusterID = c.Query("clusterId")
+	}
+	rep, err := h.Inspect.BuildExport(inspect.ExportRequest{
+		Period:    inspect.ParseExportPeriod(body.Period),
+		Scope:     inspect.ParseExportScope(body.Scope),
+		ClusterID: strings.TrimSpace(body.ClusterID),
+	})
+	if err != nil {
+		if errors.Is(err, inspect.ErrExportClusterIDRequired) || errors.Is(err, inspect.ErrExportClusterNotFound) {
+			respond.BadRequest(c, err.Error())
+			return
+		}
+		respond.Internal(c, err.Error())
+		return
+	}
+
+	now := time.Now().UTC()
+	tags := []string{"巡检报告", rep.Period, rep.Scope}
+	summary := strings.TrimSpace(rep.Summary)
+	if utf8.RuneCountInString(summary) > 500 {
+		r := []rune(summary)
+		summary = string(r[:500]) + "…"
+	}
+	title := strings.TrimSpace(rep.Title)
+	if title == "" {
+		title = "巡检报告"
+	}
+	d := &model.Doc{
+		ID:        uuid.NewString(),
+		Title:     title,
+		Category:  inspect.DocCategoryInspectionReport,
+		Tags:      tags,
+		Summary:   summary,
+		Content:   rep.Markdown,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := h.Store.CreateDoc(d); err != nil {
+		respond.Internal(c, "同步运维文档失败: "+err.Error())
+		return
+	}
+	respond.OK(c, gin.H{
+		"title":      rep.Title,
+		"filename":   rep.Filename,
+		"summary":    rep.Summary,
+		"markdown":   rep.Markdown,
+		"period":     rep.Period,
+		"scope":      rep.Scope,
+		"windowFrom": rep.WindowFrom,
+		"windowTo":   rep.WindowTo,
+		"clusterIds": rep.ClusterIDs,
+		"doc":        d,
+	})
 }
 
 func (h *Handler) UpdateDoc(c *gin.Context) {

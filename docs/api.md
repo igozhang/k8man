@@ -26,6 +26,7 @@
 | GET | `/clusters/:id/nodes` | 节点列表（project 返回 403；同样走 watch cache） |
 | GET | `/clusters/:id/diagnose?namespace=` | 诊断扫描，只返回仍成立的问题（含 Ready Pod 的 Restarts，见下方） |
 | GET | `/inspections` | 全部集群最新巡检摘要（见「巡检」） |
+| GET | `/inspections/report?period=&scope=&clusterId=` | 巡检报告 Markdown 预览 |
 | GET | `/inspections/:clusterId` | 该集群本轮完整巡检报告 |
 
 集群对象常用字段：
@@ -182,7 +183,18 @@
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/inspections` | 全部集群最新巡检摘要（含尚未巡检的配置） |
+| GET | `/inspections/report?period=&scope=&clusterId=` | 预览巡检报告 Markdown（不落库；见下） |
 | GET | `/inspections/:clusterId` | 该集群本轮完整报告（尚未巡检为 404） |
+
+`GET /inspections/report` 查询参数：
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `period` | `week` | `day` / `week` / `month`（报告周期与 `sinceAt` 筛选窗口） |
+| `scope` | `all` | `all` 所有基地；`current` 当前基地（须带 `clusterId`） |
+| `clusterId` | — | `scope=current` 时必填 |
+
+`data`：`{title,filename,summary,markdown,period,scope,windowFrom,windowTo,clusterIds}`。基于各集群**最新快照**拼装；问题按 `sinceAt` 落入窗口（无 `sinceAt` 保留）。**不是**日/周/月历史多轮聚合。
 
 `GET /inspections` 的 `data`：
 
@@ -318,8 +330,11 @@
 | POST | `/docs` | 新建 |
 | PUT | `/docs/:docId` | 更新 |
 | DELETE | `/docs/:docId` | 删除 |
+| POST | `/inspections/export` | 导出巡检报告：生成 Markdown、同步写入运维文档（`category=inspection-report`），返回 markdown + doc |
 
-文档 body：`{title,slug,category,tags,summary,content,pinned}`。
+文档 body：`{title,slug,category,tags,summary,content,pinned}`。常用分类：`general` / `k8s` / `devops` / `monitoring` / `inspection-report`（巡检报告）。
+
+`POST /inspections/export` body（或 query）：`{period,scope,clusterId}`，语义同只读预览接口。成功 `data` 含预览同名字段，以及已创建的 `doc`。
 
 ### Hosts
 

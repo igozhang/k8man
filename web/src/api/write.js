@@ -66,6 +66,16 @@ export const writeApi = {
   deleteCluster: (id) => http.delete(`/write/clusters/${id}`),
   testCluster: (id) => http.post(`/write/clusters/${id}/test`),
   inspectCluster: (id) => http.post(`/write/clusters/${id}/inspect`, {}, { timeout: 90000 }),
+  exportInspectionReport: ({ period, scope, clusterId } = {}) =>
+    http.post(
+      '/write/inspections/export',
+      {
+        period,
+        scope,
+        ...(clusterId ? { clusterId } : {})
+      },
+      { timeout: 60000 }
+    ),
   restartPod: (id, ns, name) =>
     http.post(`/write/clusters/${id}/namespaces/${ns}/pods/${name}/restart`),
   /** WebSocket URL for interactive pod shell (requires write token). */

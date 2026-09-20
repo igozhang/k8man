@@ -1176,10 +1176,28 @@ body.is-drawer-resizing {
 }
 .inspect-actions .actions {
   margin-top: 0;
+  flex-wrap: wrap;
 }
 .inspect-actions select {
   min-width: 12rem;
   max-width: min(24rem, 100%);
+}
+.inspect-actions .inspect-export-select {
+  min-width: 6.5rem;
+  max-width: 10rem;
+}
+.inspect-report-drawer .inspect-report-md {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+}
+.inspect-report-drawer > .toolbar .actions {
+  margin-top: 0;
 }
 .inspect-head {
   display: flex;

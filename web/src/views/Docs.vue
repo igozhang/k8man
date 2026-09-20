@@ -5,6 +5,7 @@ import { readApi, writeApi } from '../api'
 import { asArray, errMessage } from '../utils/safe'
 import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad, invalidateDocs } from '../utils/resourceCache'
 import { canWrite } from '../stores/opsAuth'
+import { DOC_CATEGORIES, docCategoryLabel } from '../constants/docCategories'
 
 const list = ref([])
 const q = ref('')
@@ -79,10 +80,7 @@ onUnmounted(() => {
       <input v-model="q" type="text" placeholder="搜索标题/摘要" @keyup.enter="load" @input="scheduleSearch" />
       <select v-model="category" @change="load">
         <option value="">全部分类</option>
-        <option value="k8s">k8s</option>
-        <option value="devops">devops</option>
-        <option value="monitoring">monitoring</option>
-        <option value="general">general</option>
+        <option v-for="c in DOC_CATEGORIES" :key="c.value" :value="c.value">{{ c.label }}</option>
       </select>
       <button class="btn" @click="load">筛选</button>
     </div>
@@ -92,7 +90,7 @@ onUnmounted(() => {
       <div class="doc-capsule-head">
         <h2 class="doc-capsule-title"><RouterLink :to="`/docs/${d.id}`">{{ d.title }}</RouterLink></h2>
         <span class="doc-capsule-head-meta">
-          <span class="tag">{{ d.category }}</span>
+          <span class="tag">{{ docCategoryLabel(d.category) }}</span>
           <span v-if="d.pinned" class="tag current">置顶</span>
           <span>{{ fmtTime(d.updatedAt) }}</span>
         </span>

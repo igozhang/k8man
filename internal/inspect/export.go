@@ -1,0 +1,528 @@
+package inspect
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"gitee.com/k8man/internal/kube"
+	"gitee.com/k8man/internal/store"
+)
+
+// DocCategoryInspectionReport is the ops-doc category for synced inspection exports.
+const DocCategoryInspectionReport = "inspection-report"
+
+const (
+	maxExportTitleRunes  = 180
+	maxIssuesPerCluster  = 500
+	maxIssueMessageRunes = 400
+)
+
+// ExportPeriod is day | week | month.
+type ExportPeriod string
+
+const (
+	ExportPeriodDay   ExportPeriod = "day"
+	ExportPeriodWeek  ExportPeriod = "week"
+	ExportPeriodMonth ExportPeriod = "month"
+)
+
+// ExportScope is current | all.
+type ExportScope string
+
+const (
+	ExportScopeCurrent ExportScope = "current"
+	ExportScopeAll     ExportScope = "all"
+)
+
+var (
+	// ErrExportClusterIDRequired is returned when scope=current without clusterId.
+	ErrExportClusterIDRequired = errors.New("clusterId required for scope=current")
+	// ErrExportClusterNotFound is returned when scope=current and cluster is missing.
+	ErrExportClusterNotFound = errors.New("cluster not found")
+)
+
+// ExportRequest selects which latest snapshots to include and how to label the window.
+type ExportRequest struct {
+	Period    ExportPeriod
+	Scope     ExportScope
+	ClusterID string // required when Scope == current
+	Now       time.Time
+	Location  *time.Location
+}
+
+// ExportReport is markdown + metadata for preview / download / docs sync.
+type ExportReport struct {
+	Title      string    `json:"title"`
+	Filename   string    `json:"filename"`
+	Summary    string    `json:"summary"`
+	Markdown   string    `json:"markdown"`
+	Period     string    `json:"period"`
+	Scope      string    `json:"scope"`
+	WindowFrom time.Time `json:"windowFrom"`
+	WindowTo   time.Time `json:"windowTo"`
+	ClusterIDs []string  `json:"clusterIds"`
+}
+
+var beijingLoc = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return time.FixedZone("CST", 8*3600)
+	}
+	return loc
+}()
+
+// ParseExportPeriod defaults to week.
+func ParseExportPeriod(s string) ExportPeriod {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "day", "d", "日":
+		return ExportPeriodDay
+	case "month", "月":
+		return ExportPeriodMonth
+	case "week", "w", "周", "":
+		return ExportPeriodWeek
+	default:
+		return ExportPeriodWeek
+	}
+}
+
+// ParseExportScope defaults to all.
+func ParseExportScope(s string) ExportScope {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "current", "cur", "当前", "当前基地":
+		return ExportScopeCurrent
+	default:
+		return ExportScopeAll
+	}
+}
+
+func periodLabel(p ExportPeriod) string {
+	switch p {
+	case ExportPeriodDay:
+		return "日"
+	case ExportPeriodMonth:
+		return "月"
+	default:
+		return "周"
+	}
+}
+
+func scopeLabel(s ExportScope) string {
+	if s == ExportScopeCurrent {
+		return "当前基地"
+	}
+	return "所有基地"
+}
+
+func severityLabelCN(sev string) string {
+	switch sev {
+	case "critical":
+		return "严重"
+	case "error":
+		return "错误"
+	case "warning":
+		return "警告"
+	case "info":
+		return "提示"
+	default:
+		return sev
+	}
+}
+
+// PeriodWindow returns inclusive [from, to] in loc for the given period ending at now.
+func PeriodWindow(period ExportPeriod, now time.Time, loc *time.Location) (from, to time.Time) {
+	if loc == nil {
+		loc = beijingLoc
+	}
+	now = now.In(loc)
+	to = now
+	y, m, d := now.Date()
+	switch period {
+	case ExportPeriodDay:
+		from = time.Date(y, m, d, 0, 0, 0, 0, loc)
+	case ExportPeriodMonth:
+		from = time.Date(y, m, 1, 0, 0, 0, 0, loc)
+	default: // week: Monday 00:00
+		weekday := int(now.Weekday())
+		if weekday == 0 {
+			weekday = 7
+		}
+		from = time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, -(weekday - 1))
+	}
+	return from, to
+}
+
+func parseSinceAt(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339Nano, raw)
+	}
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+func issueInWindow(it kube.Issue, from, to time.Time) bool {
+	t, ok := parseSinceAt(it.SinceAt)
+	if !ok {
+		// Keep issues without sinceAt so probe/kubeconfig failures still appear.
+		return true
+	}
+	t = t.UTC()
+	return !t.Before(from.UTC()) && !t.After(to.UTC())
+}
+
+func filterIssues(issues []kube.Issue, from, to time.Time) []kube.Issue {
+	if len(issues) == 0 {
+		return []kube.Issue{}
+	}
+	out := make([]kube.Issue, 0, len(issues))
+	for _, it := range issues {
+		if issueInWindow(it, from, to) {
+			out = append(out, it)
+		}
+	}
+	sortIssues(out)
+	return out
+}
+
+func fmtTimeLocal(t time.Time, loc *time.Location) string {
+	if t.IsZero() {
+		return "—"
+	}
+	if loc == nil {
+		loc = beijingLoc
+	}
+	return t.In(loc).Format("2006-01-02 15:04:05")
+}
+
+// escapeMD flattens text for markdown tables/lists and reduces HTML injection via marked.
+func escapeMD(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "`", "'")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return strings.TrimSpace(s)
+}
+
+func clipRunesMax(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if n <= 0 || s == "" || utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	r := []rune(s)
+	return string(r[:n]) + "…"
+}
+
+func issueLine(it kube.Issue) string {
+	where := it.Name
+	if it.Namespace != "" {
+		where = it.Namespace + "/" + it.Name
+	}
+	parts := []string{
+		"**" + severityLabelCN(it.Severity) + "**",
+		escapeMD(it.Category),
+		escapeMD(where),
+	}
+	if it.Reason != "" {
+		parts = append(parts, "`"+escapeMD(it.Reason)+"`")
+	}
+	line := "- " + strings.Join(parts, " · ")
+	msg := clipRunesMax(escapeMD(it.Message), maxIssueMessageRunes)
+	if msg != "" {
+		line += " — " + msg
+	}
+	if it.Since != "" {
+		line += "（" + escapeMD(it.Since) + "）"
+	}
+	return line
+}
+
+type exportSection struct {
+	item     ListItem
+	issues   []kube.Issue
+	crit     int
+	errN     int
+	warn     int
+	info     int
+	loadNote string
+	omitted  int
+}
+
+func buildSection(name string, row *store.InspectionRow, from, to time.Time) exportSection {
+	var issues []kube.Issue
+	var diag *kube.DiagnoseReport
+	loadNote := ""
+	useRowCounts := false
+	if row != nil {
+		raw := strings.TrimSpace(row.ReportJSON)
+		if raw == "" {
+			loadNote = "巡检记录存在但报告体为空"
+			useRowCounts = true
+		} else {
+			var rep Report
+			if err := json.Unmarshal([]byte(raw), &rep); err != nil {
+				loadNote = "报告 JSON 解析失败，问题列表不可用（总览计数沿用库内摘要）"
+				useRowCounts = true
+			} else {
+				if rep.Issues == nil {
+					rep.Issues = []kube.Issue{}
+				}
+				issues = rep.Issues
+				diag = rep.Diagnose
+			}
+		}
+	}
+	item := listItemFromRow(name, row, issues, diag)
+	filtered := filterIssues(issues, from, to)
+	crit, errN, warn, info := countIssues(filtered)
+	if useRowCounts && row != nil {
+		crit, errN, warn, info = row.Critical, row.Error, row.Warning, row.Info
+	}
+	omitted := 0
+	shown := filtered
+	if len(shown) > maxIssuesPerCluster {
+		omitted = len(shown) - maxIssuesPerCluster
+		shown = shown[:maxIssuesPerCluster]
+		note := fmt.Sprintf("问题过多，仅列出前 %d 条（另有 %d 条未展开）", maxIssuesPerCluster, omitted)
+		if loadNote == "" {
+			loadNote = note
+		} else {
+			loadNote = loadNote + "；" + note
+		}
+	}
+	return exportSection{
+		item:     item,
+		issues:   shown,
+		crit:     crit,
+		errN:     errN,
+		warn:     warn,
+		info:     info,
+		loadNote: loadNote,
+		omitted:  omitted,
+	}
+}
+
+func clipTitle(s string) string {
+	return clipRunesMax(s, maxExportTitleRunes)
+}
+
+// BuildExport assembles a markdown report from latest inspection snapshots (single DB pass).
+func (w *Worker) BuildExport(req ExportRequest) (*ExportReport, error) {
+	if w == nil || w.Store == nil {
+		return nil, fmt.Errorf("inspect worker not configured")
+	}
+	period := req.Period
+	if period == "" {
+		period = ExportPeriodWeek
+	}
+	scope := req.Scope
+	if scope == "" {
+		scope = ExportScopeAll
+	}
+	loc := req.Location
+	if loc == nil {
+		loc = beijingLoc
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	from, to := PeriodWindow(period, now, loc)
+
+	wantID := strings.TrimSpace(req.ClusterID)
+	if scope == ExportScopeCurrent && wantID == "" {
+		return nil, ErrExportClusterIDRequired
+	}
+
+	clusters, err := w.Store.ListClusters()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := w.Store.ListInspections()
+	if err != nil {
+		return nil, err
+	}
+	byID := inspectionMap(rows)
+
+	sections := make([]exportSection, 0, len(clusters))
+	for _, c := range clusters {
+		if scope == ExportScopeCurrent && c.ID != wantID {
+			continue
+		}
+		var p *store.InspectionRow
+		if row, ok := byID[c.ID]; ok {
+			p = &row
+		}
+		sec := buildSection(c.Name, p, from, to)
+		sec.item.ClusterID = c.ID
+		if sec.item.ClusterName == "" {
+			sec.item.ClusterName = c.Name
+		}
+		sections = append(sections, sec)
+	}
+
+	if scope == ExportScopeCurrent && len(sections) == 0 {
+		return nil, ErrExportClusterNotFound
+	}
+
+	scopeText := scopeLabel(scope)
+	if scope == ExportScopeCurrent && len(sections) == 1 {
+		name := sections[0].item.ClusterName
+		if name == "" {
+			name = sections[0].item.ClusterID
+		}
+		scopeText = "当前基地（" + name + "）"
+	}
+	periodText := periodLabel(period)
+	stamp := now.In(loc).Format("2006-01-02 15:04")
+	title := clipTitle(fmt.Sprintf("巡检报告 · %s · %s · %s", periodText, scopeText, stamp))
+	filename := fmt.Sprintf(
+		"k8man-inspect-%s-%s-%s.md",
+		string(period),
+		string(scope),
+		now.In(loc).Format("20060102-1504"),
+	)
+
+	var totalCrit, totalErr, totalWarn, totalInfo, checkedN int
+	ids := make([]string, 0, len(sections))
+	for _, sec := range sections {
+		ids = append(ids, sec.item.ClusterID)
+		totalCrit += sec.crit
+		totalErr += sec.errN
+		totalWarn += sec.warn
+		totalInfo += sec.info
+		if sec.item.CheckedAt != nil {
+			checkedN++
+		}
+	}
+	summary := fmt.Sprintf(
+		"周期=%s；范围=%s；窗口 %s ~ %s；基地 %d（已巡检 %d）；问题 严重%d / 错误%d / 警告%d / 提示%d（按 sinceAt 落入窗口筛选，无 sinceAt 保留）",
+		periodText, scopeText,
+		fmtTimeLocal(from, loc), fmtTimeLocal(to, loc),
+		len(sections), checkedN,
+		totalCrit, totalErr, totalWarn, totalInfo,
+	)
+
+	var b strings.Builder
+	b.Grow(4096)
+	b.WriteString("# ")
+	b.WriteString(escapeMD(title))
+	b.WriteString("\n\n")
+	b.WriteString("- 生成时间：")
+	b.WriteString(fmtTimeLocal(now, loc))
+	b.WriteString("（Asia/Shanghai）\n")
+	b.WriteString("- 报告周期：")
+	b.WriteString(periodText)
+	b.WriteString("\n")
+	b.WriteString("- 时间窗口：")
+	b.WriteString(fmtTimeLocal(from, loc))
+	b.WriteString(" ~ ")
+	b.WriteString(fmtTimeLocal(to, loc))
+	b.WriteString("\n")
+	b.WriteString("- 业务范围：")
+	b.WriteString(escapeMD(scopeText))
+	b.WriteString("\n")
+	b.WriteString("- 数据来源：各基地**最新一轮**巡检快照；问题按 `sinceAt` 落入窗口筛选（无 `sinceAt` 的条目保留）\n")
+	b.WriteString("- 说明：系统约 2 小时巡检一轮，本报告**不是**日/周/月历史多轮聚合\n\n")
+
+	b.WriteString("## 总览\n\n")
+	b.WriteString("| 基地 | 巡检时间 | Probe | 严重 | 错误 | 警告 | 提示 | 摘要 |\n")
+	b.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: | --- |\n")
+	for _, sec := range sections {
+		name := sec.item.ClusterName
+		if name == "" {
+			name = sec.item.ClusterID
+		}
+		checked := "尚未巡检"
+		if sec.item.CheckedAt != nil {
+			checked = fmtTimeLocal(*sec.item.CheckedAt, loc)
+		}
+		probe := sec.item.ProbeStatus
+		if probe == "" {
+			probe = "—"
+		}
+		sum := sec.item.Summary
+		if sec.item.CheckedAt != nil {
+			if sec.loadNote != "" && len(sec.issues) == 0 {
+				sum = sec.loadNote
+			} else {
+				sum = makeSummary(kube.ProbeResult{Status: sec.item.ProbeStatus}, sec.crit, sec.errN, sec.warn, sec.info)
+			}
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %s |\n",
+			escapeMD(name), checked, escapeMD(probe),
+			sec.crit, sec.errN, sec.warn, sec.info, escapeMD(sum),
+		)
+	}
+	b.WriteString("\n")
+
+	for _, sec := range sections {
+		name := sec.item.ClusterName
+		if name == "" {
+			name = sec.item.ClusterID
+		}
+		b.WriteString("## 基地：")
+		b.WriteString(escapeMD(name))
+		b.WriteString("\n\n")
+		if sec.item.CheckedAt == nil {
+			b.WriteString("尚未巡检。\n\n")
+			continue
+		}
+		b.WriteString("- 巡检时间：")
+		b.WriteString(fmtTimeLocal(*sec.item.CheckedAt, loc))
+		b.WriteString("\n")
+		b.WriteString("- Probe：")
+		b.WriteString(escapeMD(sec.item.ProbeStatus))
+		if sec.item.ProbeError != "" {
+			b.WriteString("（")
+			b.WriteString(escapeMD(sec.item.ProbeError))
+			b.WriteString("）")
+		}
+		b.WriteString("\n")
+		b.WriteString("- 窗内问题：")
+		fmt.Fprintf(&b, "严重 %d / 错误 %d / 警告 %d / 提示 %d\n", sec.crit, sec.errN, sec.warn, sec.info)
+		if sec.loadNote != "" {
+			b.WriteString("- 备注：")
+			b.WriteString(escapeMD(sec.loadNote))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+
+		if len(sec.issues) == 0 {
+			if sec.loadNote == "" {
+				b.WriteString("窗内无问题（或本轮无 issues）。\n\n")
+			}
+			continue
+		}
+		b.WriteString("### 问题列表\n\n")
+		for _, it := range sec.issues {
+			b.WriteString(issueLine(it))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	return &ExportReport{
+		Title:      title,
+		Filename:   filename,
+		Summary:    summary,
+		Markdown:   b.String(),
+		Period:     string(period),
+		Scope:      string(scope),
+		WindowFrom: from.UTC(),
+		WindowTo:   to.UTC(),
+		ClusterIDs: ids,
+	}, nil
+}

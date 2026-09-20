@@ -6,6 +6,7 @@ import { readApi } from '../api'
 import { errMessage } from '../utils/safe'
 import { TTL, cacheGet, cacheKey, cacheLoad } from '../utils/resourceCache'
 import { canWrite } from '../stores/opsAuth'
+import { docCategoryLabel } from '../constants/docCategories'
 
 const route = useRoute()
 const doc = ref(null)
@@ -52,7 +53,7 @@ watch(() => String(route.params.id || ''), load, { immediate: true })
       <div class="toolbar">
         <div>
           <div class="doc-meta">
-            <span class="tag">{{ doc.category }}</span>
+            <span class="tag">{{ docCategoryLabel(doc.category) }}</span>
             <span v-if="doc.pinned" class="tag current">置顶</span>
             <span>{{ new Date(doc.updatedAt).toLocaleString() }}</span>
           </div>
