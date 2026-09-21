@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,10 +17,12 @@ import (
 	"gitee.com/k8man/internal/store"
 )
 
-// Options tunes background patrol concurrency.
+// Options tunes background patrol concurrency and file dumps.
 type Options struct {
 	Concurrency    int // base parallel slots (default 4)
 	ConcurrencyMax int // hard cap when backlog expands (default 8)
+	DataDir        string
+	RetentionDays  int // inspection file retention (default 60)
 }
 
 // Worker runs per-cluster patrols on a 2h stagger and serves stored snapshots.
@@ -28,9 +31,11 @@ type Worker struct {
 	Pool   *kube.Pool
 	Hosts  *hostsfile.File
 	Alerts *alert.Notifier
+	Files  *FileStore
 
 	baseConcurrency int
 	maxConcurrency  int
+	retentionDays   int
 
 	now    func() time.Time
 	jitter func() time.Duration
@@ -56,17 +61,27 @@ func NewWithOptions(st *store.Store, pool *kube.Pool, hosts *hostsfile.File, opt
 	if max < base {
 		max = base
 	}
+	retain := opts.RetentionDays
+	if retain <= 0 {
+		retain = DefaultRetentionDays
+	}
 	var notifier *alert.Notifier
 	if st != nil {
 		notifier = alert.New(st)
+	}
+	var files *FileStore
+	if strings.TrimSpace(opts.DataDir) != "" {
+		files = NewFileStore(opts.DataDir)
 	}
 	return &Worker{
 		Store:           st,
 		Pool:            pool,
 		Hosts:           hosts,
 		Alerts:          notifier,
+		Files:           files,
 		baseConcurrency: base,
 		maxConcurrency:  max,
+		retentionDays:   retain,
 		now:             time.Now,
 		jitter:          RandomJitter,
 	}
@@ -276,6 +291,11 @@ func (w *Worker) runClusterBody(ctx context.Context, clusterID string, force boo
 	}
 	if err := w.Store.UpsertInspection(row); err != nil {
 		return nil, err
+	}
+	if w.Files != nil {
+		if err := w.Files.DumpRound(cl.Name, row, issues, beijingLoc); err != nil {
+			log.Printf("inspect dump %s: %v", cl.ID, err)
+		}
 	}
 	// Push after persist; Notifier uses its own timeout (does not depend on inspect ctx).
 	if w.Alerts != nil {

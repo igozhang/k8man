@@ -59,6 +59,7 @@ func main() {
 	inspector := inspect.NewWithOptions(st, pool, hostsFile, inspect.Options{
 		Concurrency:    cfg.InspectConcurrency,
 		ConcurrencyMax: cfg.InspectConcurrencyMax,
+		DataDir:        cfg.DataDir,
 	})
 	go inspector.Loop(rootCtx)
 

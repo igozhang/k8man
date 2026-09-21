@@ -196,7 +196,15 @@
 
 `data`：`{title,filename,summary,markdown,period,scope,windowFrom,windowTo,clusterIds}`。基于各集群**最新快照**拼装；问题按 `sinceAt` 落入窗口（无 `sinceAt` 保留）。**不是**日/周/月历史多轮聚合。
 
-已保存 kubeconfig **超过 2 个**时，进程在 **Asia/Shanghai 每天约 01:00**（±约 6 分钟）自动生成**前一自然日、所有集群**的巡检报告，写入运维文档（`category=inspection-report`，地址 `/docs/inspectallYYYYMMDD`，如 `/docs/inspectall20260920`）。同一日只写一份；已有 UUID 地址的同日报告会在进程启动或再次导出「日 + 所有基地」时改成该地址。当天 01:00 之后启动会补写尚未归档的前一天；写库失败约 10 分钟后重试。集群数 ≤2 时不生成。自动归档保留归档时刻最新快照中的全部问题（含更早出现、仍存在的问题），**不**按 `sinceAt` 裁掉；手动预览/导出的日/周/月窗口筛选不变。两者都不是历史多轮回放。
+已保存 kubeconfig **超过 2 个**时，进程在 **Asia/Shanghai 每天约 01:00**（±约 6 分钟）自动生成**前一自然日、所有集群**的巡检报告，写入运维文档（地址 `/docs/inspectallYYYYMMDD`）。
+
+**PVC 巡检文件**（`<data_dir>/inspection/`，集群内即 `/data/inspection/`）：
+
+- 每轮巡检成功后 dump JSONL：`YYYY/MM/DD/HHMMSS/<clusterId>.jsonl`
+- 日归档时：将该日各轮问题**指纹并集**写入 `day.jsonl`，并**删除**该日轮次目录；周/月报告读各日 `day.jsonl`，问题去重并统计**持续天数**
+- 保留 **60** 天；无文件时报告回退 SQLite 最新快照
+
+手动预览/导出日·周·月同样优先读上述文件。
 
 `GET /inspections` 的 `data`：
 

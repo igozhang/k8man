@@ -18,7 +18,7 @@ const (
 	DailyArchiveMinClusters = 2
 	dailyArchiveHour        = 1
 	dailyArchiveRetry       = 10 * time.Minute
-	dailyArchiveNote        = "系统自动归档：次日约 01:00（Asia/Shanghai）写入前一自然日、所有集群的巡检报告；内容为归档时最新快照（含更早出现、仍存在的问题）"
+	dailyArchiveNote        = "系统自动归档：次日约 01:00（Asia/Shanghai）写入前一自然日、所有集群的巡检报告；数据来自 PVC inspection 目录当日轮次 dump 的问题并集，归档后清理该日轮次目录"
 )
 
 func dailyArchiveSlug(day time.Time, loc *time.Location) string {
@@ -191,6 +191,27 @@ func (w *Worker) archivePreviousDayIfDue(ctx context.Context, now time.Time) err
 		return nil
 	}
 	from, to, _ := previousCalendarDay(now, loc)
+	if w.Files != nil {
+		rounds, err := w.Files.loadAllRounds(day, loc)
+		if err != nil {
+			return err
+		}
+		loaded, err := w.Files.LoadDay(day, loc)
+		if err != nil {
+			return err
+		}
+		if len(rounds) == 0 && len(loaded) == 0 {
+			if err := w.Files.SeedRoundFromSQLiteForDay(w.Store, day, loc); err != nil {
+				log.Printf("inspect daily archive seed: %v", err)
+			}
+		}
+		if _, err := w.Files.EnsureDayAggregate(day, loc); err != nil {
+			return err
+		}
+		if err := w.Files.PruneOlderThan(w.retentionDays, now, loc); err != nil {
+			log.Printf("inspect prune: %v", err)
+		}
+	}
 	rep, err := w.BuildExport(ExportRequest{
 		Period:        ExportPeriodDay,
 		Scope:         ExportScopeAll,

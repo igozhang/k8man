@@ -60,6 +60,8 @@ title=k8s多集群运维
 # | inspect_concurrency_max | K8MAN_INSPECT_CONCURRENCY_MAX | 8 | 积压时自动扩容上限（须 ≥ 基础并发，否则抬到 ≥ base） |
 # | hosts     | （文件）         | <etc>/hosts             | 私有解析，格式：IP hostname |
 #
+# 巡检文件落盘：<data_dir>/inspection/YYYY/MM/DD/HHMMSS/*.jsonl；日归档写 day.jsonl 并清轮次；保留约 60 天。
+#
 # 页眉 slogan 固定为 practice makes perfect，不可配置；双击可复制 igokey。
 #
 # 写操作鉴权（igokey，与站点方案相同）：

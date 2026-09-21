@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -360,6 +362,34 @@ func (w *Worker) BuildExport(req ExportRequest) (*ExportReport, error) {
 		return nil, ErrExportClusterIDRequired
 	}
 
+	if w.Files != nil {
+		fromDay := time.Date(from.In(loc).Year(), from.In(loc).Month(), from.In(loc).Day(), 0, 0, 0, 0, loc)
+		toDay := time.Date(to.In(loc).Year(), to.In(loc).Month(), to.In(loc).Day(), 0, 0, 0, 0, loc)
+		aggs, err := w.Files.AggregateRange(fromDay, toDay, loc, now)
+		if err != nil {
+			log.Printf("inspect export files: %v", err)
+		} else if len(aggs) > 0 {
+			aggs = w.supplementAggFromStore(aggs, req, from, to, loc)
+			if scope == ExportScopeCurrent {
+				found := false
+				for _, a := range aggs {
+					if a.ClusterID == wantID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return nil, ErrExportClusterNotFound
+				}
+			}
+			note := "优先使用 inspection 文件聚合"
+			if req.KeepAllIssues {
+				note = "日归档：问题指纹并集（含跨轮次）"
+			}
+			return buildMarkdownFromAgg(req, aggs, from, to, loc, note), nil
+		}
+	}
+
 	clusters, err := w.Store.ListClusters()
 	if err != nil {
 		return nil, err
@@ -560,4 +590,105 @@ func (w *Worker) BuildExport(req ExportRequest) (*ExportReport, error) {
 		WindowTo:   to.UTC(),
 		ClusterIDs: ids,
 	}, nil
+}
+
+// supplementAggFromStore adds clusters present in SQLite but missing from file aggregation,
+// only when the latest inspection CheckedAt falls inside [from, to] (avoids leaking later-day data into day archives).
+func (w *Worker) supplementAggFromStore(aggs []AggCluster, req ExportRequest, from, to time.Time, loc *time.Location) []AggCluster {
+	if w == nil || w.Store == nil {
+		return aggs
+	}
+	clusters, err := w.Store.ListClusters()
+	if err != nil {
+		log.Printf("inspect export supplement clusters: %v", err)
+		return aggs
+	}
+	rows, err := w.Store.ListInspections()
+	if err != nil {
+		log.Printf("inspect export supplement inspections: %v", err)
+		return aggs
+	}
+	have := make(map[string]struct{}, len(aggs))
+	for _, a := range aggs {
+		have[a.ClusterID] = struct{}{}
+	}
+	byID := inspectionMap(rows)
+	scope := req.Scope
+	if scope == "" {
+		scope = ExportScopeAll
+	}
+	wantID := strings.TrimSpace(req.ClusterID)
+	added := false
+	for _, c := range clusters {
+		if scope == ExportScopeCurrent && c.ID != wantID {
+			continue
+		}
+		if _, ok := have[c.ID]; ok {
+			continue
+		}
+		row, ok := byID[c.ID]
+		if !ok {
+			if scope == ExportScopeAll {
+				aggs = append(aggs, AggCluster{ClusterID: c.ID, ClusterName: c.Name})
+				added = true
+			}
+			continue
+		}
+		checked := row.CheckedAt
+		if checked.Before(from) || checked.After(to) {
+			if scope == ExportScopeAll {
+				aggs = append(aggs, AggCluster{ClusterID: c.ID, ClusterName: c.Name})
+				added = true
+			}
+			continue
+		}
+		sec := buildSection(c.Name, &row, from, to, req.KeepAllIssues)
+		ac := AggCluster{
+			ClusterID:     c.ID,
+			ClusterName:   c.Name,
+			LastCheckedAt: checked,
+			ProbeStatus:   row.ProbeStatus,
+			ProbeError:    row.ProbeError,
+			Rounds:        1,
+			Critical:      sec.crit,
+			Error:         sec.errN,
+			Warning:       sec.warn,
+			Info:          sec.info,
+			Summary:       makeSummary(kube.ProbeResult{Status: row.ProbeStatus}, sec.crit, sec.errN, sec.warn, sec.info),
+		}
+		if sec.loadNote != "" && ac.Summary == "" {
+			ac.Summary = sec.loadNote
+		}
+		for _, it := range sec.issues {
+			fp := issueFingerprint(it)
+			ai := AggIssue{
+				Fingerprint: fp,
+				Severity:    it.Severity,
+				Category:    it.Category,
+				Kind:        it.Kind,
+				Namespace:   it.Namespace,
+				Name:        it.Name,
+				Reason:      it.Reason,
+				Message:     clipMsg(it.Message, maxDumpMessageRunes),
+				Since:       it.Since,
+				SinceAt:     it.SinceAt,
+				FirstSeen:   checked,
+				LastSeen:    checked,
+				SeenRounds:  1,
+				SeenDays:    1,
+			}
+			if loc != nil {
+				ai.DayKeys = []string{checked.In(loc).Format("2006-01-02")}
+			}
+			ac.Issues = append(ac.Issues, ai)
+		}
+		aggs = append(aggs, ac)
+		added = true
+	}
+	if added {
+		sort.SliceStable(aggs, func(i, j int) bool {
+			return aggs[i].ClusterName < aggs[j].ClusterName
+		})
+	}
+	return aggs
 }
