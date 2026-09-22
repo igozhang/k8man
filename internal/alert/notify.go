@@ -304,6 +304,8 @@ func controllerLabel(kind string) string {
 		return "pod"
 	case "Node":
 		return "node"
+	case "StorageClass":
+		return "sc"
 	case "":
 		return "obj"
 	default:
@@ -312,7 +314,7 @@ func controllerLabel(kind string) string {
 }
 
 func humanizeIssueMessage(it kube.Issue) string {
-	msg := strings.TrimSpace(it.Message)
+	msg := strings.TrimSpace(kube.EnrichIssueMessage(it))
 	if msg == "" {
 		return ""
 	}
@@ -326,7 +328,11 @@ func humanizeIssueMessage(it kube.Issue) string {
 		msg = strings.ReplaceAll(msg, "misscheduled ", "错位调度 ")
 	}
 	msg = strings.ReplaceAll(msg, " ago", " 前")
-	return clip(msg, 100)
+	limit := 120 // room for · node (ip) suffix
+	if it.Reason == "NFSHighUsage" || it.Category == "storage" {
+		limit = 180 // server:/path + usage
+	}
+	return clip(msg, limit)
 }
 
 func pickAlertDetails(it kube.Issue, limit int) []string {
@@ -363,8 +369,17 @@ func pickAlertDetails(it kube.Issue, limit int) []string {
 			add("ip=" + it.NodeIP)
 		}
 	}
-	// Pod：节点位置
-	if it.Category == "pod" && (it.Node != "" || it.NodeIP != "") {
+	// 存储 · NFS：服务器 IP/主机名必须进告警（Message 经 EnrichIssueMessage 补全，证据再兜底）
+	if it.Reason == "NFSHighUsage" || it.Kind == "StorageClass" {
+		if s := kube.IssueNFSServer(it); s != "" {
+			add("server=" + s)
+		}
+		if p := kube.IssueNFSPath(it); p != "" {
+			add("path=" + p)
+		}
+	}
+	// Pod（含 LargeEphemeral category=storage）：节点位置
+	if (it.Category == "pod" || it.Kind == "Pod") && (it.Node != "" || it.NodeIP != "") {
 		var parts []string
 		if it.Node != "" {
 			parts = append(parts, it.Node)
@@ -410,6 +425,15 @@ func pickAlertDetails(it kube.Issue, limit int) []string {
 		}
 		add(r.line)
 	}
+	// 全局兜底：结构化字段有定位信息但尚未写入细节行时补一行
+	if len(out) < limit {
+		for _, line := range kube.IssueLocationLines(it) {
+			if len(out) >= limit {
+				break
+			}
+			add(line)
+		}
+	}
 	if len(out) > limit {
 		out = out[:limit]
 	}
@@ -419,6 +443,12 @@ func pickAlertDetails(it kube.Issue, limit int) []string {
 func scoreEvidenceLine(line string, it kube.Issue) int {
 	low := strings.ToLower(line)
 	switch {
+	// 定位关键信息优先：NFS 服务器、导出路径、副本态等
+	case strings.HasPrefix(low, "server=") || strings.HasPrefix(low, "nfsserver=") ||
+		strings.HasPrefix(low, "host=") || strings.HasPrefix(low, "addr="):
+		return 110
+	case strings.HasPrefix(low, "path=") || strings.HasPrefix(low, "share=") || strings.HasPrefix(low, "export="):
+		return 105
 	case strings.HasPrefix(low, "replicas ") || strings.HasPrefix(low, "desired="):
 		return 100
 	case strings.Contains(low, " waiting "):
@@ -429,6 +459,8 @@ func scoreEvidenceLine(line string, it kube.Issue) int {
 		return 70
 	case strings.HasPrefix(low, "phase="):
 		return 60
+	case strings.HasPrefix(low, "sc=") || strings.HasPrefix(low, "provisioner="):
+		return 58
 	case strings.HasPrefix(low, "node=") || strings.HasPrefix(low, "ip="):
 		if it.Category == "pod" {
 			return 40 // 已在上面单独写节点时可能重复，分低些
@@ -453,6 +485,30 @@ func humanizeEvidenceLine(s string) string {
 	}
 	if strings.HasPrefix(s, "desired=") {
 		s = "调度 " + s
+	}
+	if strings.HasPrefix(s, "server=") {
+		s = "NFS服务器 " + strings.TrimPrefix(s, "server=")
+	}
+	if strings.HasPrefix(s, "nfsServer=") {
+		s = "NFS服务器 " + strings.TrimPrefix(s, "nfsServer=")
+	}
+	if strings.HasPrefix(s, "host=") {
+		s = "NFS服务器 " + strings.TrimPrefix(s, "host=")
+	}
+	if strings.HasPrefix(s, "addr=") {
+		s = "NFS服务器 " + strings.TrimPrefix(s, "addr=")
+	}
+	if strings.HasPrefix(s, "path=") {
+		s = "导出路径 " + strings.TrimPrefix(s, "path=")
+	}
+	if strings.HasPrefix(s, "share=") {
+		s = "共享 " + strings.TrimPrefix(s, "share=")
+	}
+	if strings.HasPrefix(s, "sc=") {
+		s = "StorageClass " + strings.TrimPrefix(s, "sc=")
+	}
+	if strings.HasPrefix(s, "ip=") {
+		s = "IP " + strings.TrimPrefix(s, "ip=")
 	}
 	return s
 }

@@ -56,6 +56,8 @@ const emptyStats = () => ({
   largePodSkipped: '',
   nfsUsagePercent: null,
   nfsStorageClass: '',
+  nfsServer: '',
+  nfsPath: '',
   nfsSource: '',
   nfsSkipped: '',
   podsSource: '', // inspect | sample
@@ -164,6 +166,8 @@ function inspFromDetail(data) {
     largePodSkipped: data.largePodSkipped || data.diagnose?.scan?.largePodSkipped || '',
     nfsUsagePercent: pct == null || Number.isNaN(pct) ? null : pct,
     nfsStorageClass: data.nfsStorageClass || data.diagnose?.scan?.nfsStorageClass || '',
+    nfsServer: data.nfsServer || data.diagnose?.scan?.nfsServer || '',
+    nfsPath: data.nfsPath || data.diagnose?.scan?.nfsPath || '',
     nfsSource: data.nfsSource || data.diagnose?.scan?.nfsSource || '',
     nfsSkipped: data.nfsSkipped || data.diagnose?.scan?.nfsSkipped || ''
   }
@@ -271,6 +275,8 @@ async function loadInspectIndex({ force = false } = {}) {
           return Number.isNaN(n) ? null : n
         })(),
         nfsStorageClass: it.nfsStorageClass || '',
+        nfsServer: it.nfsServer || '',
+        nfsPath: it.nfsPath || '',
         nfsSource: it.nfsSource || '',
         nfsSkipped: it.nfsSkipped || ''
       }
@@ -298,6 +304,8 @@ function applyInspectToStats(stats, insp) {
     largePodSkipped: insp.largePodSkipped || '',
     nfsUsagePercent: pct,
     nfsStorageClass: insp.nfsStorageClass || '',
+    nfsServer: insp.nfsServer || '',
+    nfsPath: insp.nfsPath || '',
     nfsSource: insp.nfsSource || '',
     nfsSkipped: insp.nfsSkipped || '',
     podsSource: 'inspect',
@@ -554,6 +562,8 @@ async function collectInspectNFSRows(clusterId) {
   const stats = cardOf(clusterId).stats
   const pct = stats.nfsUsagePercent ?? local.nfsUsagePercent
   const sc = stats.nfsStorageClass || local.nfsStorageClass || ''
+  const server = stats.nfsServer || local.nfsServer || ''
+  const nfsPath = stats.nfsPath || local.nfsPath || ''
   const skipped = stats.nfsSkipped || local.nfsSkipped || ''
   const source = stats.nfsSource || local.nfsSource || ''
 
@@ -580,7 +590,9 @@ async function collectInspectNFSRows(clusterId) {
             source: data?.nfsSource || scan.nfsSource || source,
             probe: scan.nfsProbe || '',
             used: scan.nfsUsedBytes,
-            cap: scan.nfsCapacityBytes
+            cap: scan.nfsCapacityBytes,
+            server: data?.nfsServer || scan.nfsServer || server,
+            path: data?.nfsPath || scan.nfsPath || nfsPath
           }),
           severity: 'critical'
         }
@@ -594,17 +606,36 @@ async function collectInspectNFSRows(clusterId) {
     {
       name: sc || 'NFS',
       namespace: '',
-      status: formatNFSStatusLine({ pct, skipped, source, probe: '', used: null, cap: null }),
+      status: formatNFSStatusLine({
+        pct,
+        skipped,
+        source,
+        probe: '',
+        used: null,
+        cap: null,
+        server,
+        path: nfsPath
+      }),
       severity: pct != null && Number(pct) >= 80 ? 'critical' : ''
     }
   ]
 }
 
-function formatNFSStatusLine({ pct, skipped, source, probe, used, cap }) {
+function formatNFSEndpoint(server, path) {
+  const s = String(server || '').trim()
+  const p = String(path || '').trim()
+  if (!s) return ''
+  if (!p) return s
+  return p.startsWith('/') ? `${s}:${p}` : `${s}:/${p}`
+}
+
+function formatNFSStatusLine({ pct, skipped, source, probe, used, cap, server, path }) {
   if (skipped) return `未探测：${skipped}`
   if (pct == null) return '尚无用量数据'
   let line = `使用率 ${Number(pct).toFixed(0)}%`
   if (used != null && cap != null) line += `（已用 ${fmtBytesUI(used)} / ${fmtBytesUI(cap)}）`
+  const ep = formatNFSEndpoint(server, path)
+  if (ep) line += ` · ${ep}`
   if (source) line += ` · ${source === 'unique' ? '唯一 SC' : '默认 SC'}`
   if (probe) line += ` · ${probe}`
   return line
@@ -647,10 +678,11 @@ function nfsStatTitle(id) {
   if (s.podsSource !== 'inspect') return '需巡检后显示'
   if (s.nfsSkipped) return `未探测：${s.nfsSkipped}`
   if (s.nfsUsagePercent == null) return '尚无 NFS 用量'
+  const ep = formatNFSEndpoint(s.nfsServer, s.nfsPath)
   const sc = s.nfsStorageClass ? `SC=${s.nfsStorageClass}` : ''
   const src = s.nfsSource === 'unique' ? '唯一 SC' : s.nfsSource === 'default' ? '默认 SC' : ''
   const t = fmtInspectTime(s.inspectAt)
-  return [sc, src, t ? `巡检 ${t}` : ''].filter(Boolean).join(' · ') || 'NFS 使用率'
+  return [ep, sc, src, t ? `巡检 ${t}` : ''].filter(Boolean).join(' · ') || 'NFS 使用率'
 }
 
 function largePodsStatTitle(id) {

@@ -116,6 +116,8 @@ type DiagnoseScan struct {
 	NFSUsedBytes      int64    `json:"nfsUsedBytes,omitempty"`
 	NFSCapacityBytes  int64    `json:"nfsCapacityBytes,omitempty"`
 	NFSStorageClass   string   `json:"nfsStorageClass,omitempty"`
+	NFSServer         string   `json:"nfsServer,omitempty"` // IP or hostname
+	NFSPath           string   `json:"nfsPath,omitempty"`   // export path / share
 	NFSSource         string   `json:"nfsSource,omitempty"` // default | unique
 	NFSProbe          string   `json:"nfsProbe,omitempty"`  // summary | exec-df
 	NFSSkipped        string   `json:"nfsSkipped,omitempty"`
@@ -346,12 +348,17 @@ func (c *Clients) Diagnose(ctx context.Context, opt DiagnoseOptions) (*DiagnoseR
 		}
 		if len(storageIssues) > 0 {
 			rep.Issues = append(rep.Issues, storageIssues...)
+			// LargeEphemeral arrives after the first enrichLocations pass — fill NodeIP now.
+			enrichLocations(rep.Issues, podLocs, nodeIPs)
 			sortIssues(rep.Issues)
 			if overflow := capCategory(&rep.Issues, diagnoseMaxIssues*4); overflow {
 				rep.Truncated = true
 			}
 		}
 	}()
+
+	// Bake location (NFS IP / node / 节点) into Message for alerts + API + UI.
+	FinalizeIssueMessages(rep.Issues)
 
 	rep.Scan.ElapsedMs = time.Since(started).Milliseconds()
 

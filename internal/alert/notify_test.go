@@ -108,13 +108,66 @@ func TestFormatMessage(t *testing.T) {
 	}
 }
 
+func TestFormatMessageNFSLegacyMessageEnriched(t *testing.T) {
+	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)
+	msg := FormatMessage("prod", []kube.Issue{{
+		Severity: "critical",
+		Category: "storage",
+		Kind:     "StorageClass",
+		Name:     "nfs-sc",
+		Reason:   "NFSHighUsage",
+		Message:  "NFS 使用率 96%（763.10Gi / 797.85Gi），超过 80%",
+		NodeIP:   "10.1.2.3",
+		Evidence: []string{
+			"server=10.1.2.3",
+			"path=/export",
+		},
+	}}, now)
+	wantParts := []string{
+		"10.1.2.3:/export",
+		"NFS服务器 10.1.2.3",
+	}
+	if !containsAll(msg, wantParts...) {
+		t.Fatalf("legacy NFS alert missing server:\n%s", msg)
+	}
+}
+
+func TestFormatMessageNFSIncludesServer(t *testing.T) {
+	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)
+	msg := FormatMessage("prod", []kube.Issue{{
+		Severity: "critical",
+		Category: "storage",
+		Kind:     "StorageClass",
+		Name:     "nfs-sc",
+		Reason:   "NFSHighUsage",
+		Message:  "NFS 10.1.2.3:/export 使用率 96%（763.10Gi / 797.85Gi），超过 80%",
+		NodeIP:   "10.1.2.3",
+		Evidence: []string{
+			"server=10.1.2.3",
+			"path=/export",
+			"usage=96.0%",
+			"sc=nfs-sc",
+		},
+	}}, now)
+	wantParts := []string{
+		"sc nfs-sc",
+		"NFSHighUsage",
+		"10.1.2.3:/export",
+		"NFS服务器 10.1.2.3",
+	}
+	if !containsAll(msg, wantParts...) {
+		t.Fatalf("unexpected NFS alert:\n%s", msg)
+	}
+}
+
 func TestControllerLabel(t *testing.T) {
 	cases := map[string]string{
-		"Deployment":  "deploy",
-		"StatefulSet": "sts",
-		"DaemonSet":   "ds",
-		"Pod":         "pod",
-		"Node":        "node",
+		"Deployment":   "deploy",
+		"StatefulSet":  "sts",
+		"DaemonSet":    "ds",
+		"Pod":          "pod",
+		"Node":         "node",
+		"StorageClass": "sc",
 	}
 	for in, want := range cases {
 		if got := controllerLabel(in); got != want {

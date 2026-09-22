@@ -96,6 +96,8 @@ type nfsUsageResult struct {
 	UsedBytes     int64
 	CapacityBytes int64
 	StorageClass  string
+	Server        string
+	Path          string
 	Source        string
 	Probe         string
 	Skipped       string
@@ -187,6 +189,8 @@ func (c *Clients) scanStorage(ctx context.Context, opt DiagnoseOptions, pods []c
 
 	nfs := c.probeNFSUsage(sctx, pods, summaries)
 	scan.NFSStorageClass = nfs.StorageClass
+	scan.NFSServer = sanitizeNFSServer(nfs.Server)
+	scan.NFSPath = sanitizeNFSPath(nfs.Path)
 	scan.NFSSource = nfs.Source
 	scan.NFSProbe = nfs.Probe
 	scan.NFSSkipped = nfs.Skipped
@@ -221,6 +225,10 @@ func largePodIssuesFromSummaries(summaries map[string]nodeStatsSummary) []Issue 
 				continue
 			}
 			seen[key] = true
+			msg := fmt.Sprintf("非持久化存储占用 %s，超过 5Gi", fmtBytes(float64(used)))
+			if nodeName != "" {
+				msg += " · 节点 " + nodeName
+			}
 			out = append(out, Issue{
 				Severity:     sevWarning,
 				BaseSeverity: sevWarning,
@@ -229,7 +237,7 @@ func largePodIssuesFromSummaries(summaries map[string]nodeStatsSummary) []Issue 
 				Namespace:    ns,
 				Name:         name,
 				Reason:       "LargeEphemeral",
-				Message:      fmt.Sprintf("非持久化存储占用 %s，超过 5Gi", fmtBytes(float64(used))),
+				Message:      msg,
 				Node:         nodeName,
 				Evidence: clipEvidence([]string{
 					fmt.Sprintf("ephemeralUsed=%s", fmtBytes(float64(used))),
@@ -520,11 +528,21 @@ func (c *Clients) probeNFSUsage(ctx context.Context, pods []corev1.Pod, summarie
 	}
 
 	// Prefer volume stats already present in kubelet summaries (no extra node I/O).
-	if used, cap, ok := nfsUsageFromSummaries(ctx, c, summaries, pods, pick.Name); ok && cap > 0 {
+	if used, cap, matched, ok := nfsUsageFromSummaries(ctx, c, summaries, pods, pick.Name); ok && cap > 0 {
 		res.UsedBytes = used
 		res.CapacityBytes = cap
 		res.Percent = float64(used) / float64(cap) * 100
 		res.Probe = "summary"
+		res.Server, res.Path = c.resolveNFSEndpoint(ctx, pick, pods, matched, "")
+		// Summary has usage but often no NFS endpoint — one short df pass for server:/path only.
+		// Skip when budget is too tight so hung exec cannot starve the rest of storage scan.
+		if res.Server == "" && nfsEndpointDFBudgetOK(ctx) {
+			if _, _, fs, okDF := c.nfsUsageViaExecDF(ctx, pods, pick.Name); okDF {
+				if s, p := parseNFSFilesystem(fs); s != "" {
+					res.Server, res.Path = mergeNFSEndpoint(res.Server, res.Path, s, p)
+				}
+			}
+		}
 		if res.Percent/100 >= diagnoseNFSCriticalRatio {
 			res.Issue = nfsHighUsageIssue(pick, res)
 		}
@@ -537,11 +555,12 @@ func (c *Clients) probeNFSUsage(ctx context.Context, pods []corev1.Pod, summarie
 	}
 
 	// Fallback: at most a couple short exec df attempts.
-	if used, cap, ok := c.nfsUsageViaExecDF(ctx, pods, pick.Name); ok && cap > 0 {
+	if used, cap, fs, ok := c.nfsUsageViaExecDF(ctx, pods, pick.Name); ok && cap > 0 {
 		res.UsedBytes = used
 		res.CapacityBytes = cap
 		res.Percent = float64(used) / float64(cap) * 100
 		res.Probe = "exec-df"
+		res.Server, res.Path = c.resolveNFSEndpoint(ctx, pick, pods, nil, fs)
 		if res.Percent/100 >= diagnoseNFSCriticalRatio {
 			res.Issue = nfsHighUsageIssue(pick, res)
 		}
@@ -552,11 +571,38 @@ func (c *Clients) probeNFSUsage(ctx context.Context, pods []corev1.Pod, summarie
 		res.Skipped = "timeout budget exhausted"
 		return res
 	}
+	// Still try to surface endpoint even when usage unknown (helps ops).
+	res.Server, res.Path = c.resolveNFSEndpoint(ctx, pick, pods, nil, "")
 	res.Skipped = "no mounted PVC of target SC"
 	return res
 }
 
 func nfsHighUsageIssue(pick nfsSCPick, res nfsUsageResult) *Issue {
+	server := sanitizeNFSServer(res.Server)
+	path := sanitizeNFSPath(res.Path)
+	target := FormatNFSEndpoint(server, path)
+	if target == "" {
+		target = "SC=" + pick.Name
+	}
+	msg := fmt.Sprintf("NFS %s 使用率 %.0f%%（%s / %s），超过 80%%",
+		target, res.Percent, fmtBytes(float64(res.UsedBytes)), fmtBytes(float64(res.CapacityBytes)))
+	ev := []string{}
+	if server != "" {
+		ev = append(ev, "server="+server)
+	}
+	if path != "" {
+		ev = append(ev, "path="+path)
+	}
+	ev = append(ev,
+		fmt.Sprintf("usage=%.1f%%", res.Percent),
+		fmt.Sprintf("used=%s", fmtBytes(float64(res.UsedBytes))),
+		fmt.Sprintf("capacity=%s", fmtBytes(float64(res.CapacityBytes))),
+		"threshold=80%",
+		"sc="+pick.Name,
+		"scSource="+pick.Source,
+		"probe="+res.Probe,
+		"provisioner="+pick.SC.Provisioner,
+	)
 	it := Issue{
 		Severity:     sevCritical,
 		BaseSeverity: sevCritical,
@@ -564,19 +610,275 @@ func nfsHighUsageIssue(pick nfsSCPick, res nfsUsageResult) *Issue {
 		Kind:         "StorageClass",
 		Name:         pick.Name,
 		Reason:       "NFSHighUsage",
-		Message: fmt.Sprintf("NFS 使用率 %.0f%%（%s / %s），超过 80%%",
-			res.Percent, fmtBytes(float64(res.UsedBytes)), fmtBytes(float64(res.CapacityBytes))),
-		Evidence: clipEvidence([]string{
-			fmt.Sprintf("usage=%.1f%%", res.Percent),
-			fmt.Sprintf("used=%s", fmtBytes(float64(res.UsedBytes))),
-			fmt.Sprintf("capacity=%s", fmtBytes(float64(res.CapacityBytes))),
-			"threshold=80%",
-			"scSource=" + pick.Source,
-			"probe=" + res.Probe,
-			"provisioner=" + pick.SC.Provisioner,
-		}),
+		Message:      msg,
+		NodeIP:       server, // reuse for alert/UI location (NFS server, not a node)
+		Evidence:     clipEvidence(ev),
 	}
 	return &it
+}
+
+// nfsEndpointDFBudgetOK reports whether the storage context still has room for one df exec attempt.
+func nfsEndpointDFBudgetOK(ctx context.Context) bool {
+	if ctx == nil || ctx.Err() != nil {
+		return false
+	}
+	need := diagnoseNFSExecTimeout + diagnoseStorageSlack
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return true
+	}
+	return time.Until(dl) >= need
+}
+
+// sanitizeNFSServer drops empty / whitespace / absurd values from SC params or mount options.
+func sanitizeNFSServer(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > 253 {
+		return ""
+	}
+	if strings.ContainsAny(s, " \t\r\n") {
+		return ""
+	}
+	// 0.0.0.0 in mountOptions addr= is a placeholder, not a reachable NFS endpoint.
+	if s == "0.0.0.0" || s == "::" {
+		return ""
+	}
+	return s
+}
+
+func sanitizeNFSPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" || len(p) > 512 {
+		return ""
+	}
+	if strings.ContainsAny(p, "\t\r\n") {
+		return ""
+	}
+	return p
+}
+
+// nfsEndpointFromParams reads common StorageClass / CSI parameter keys used by NFS provisioners.
+func nfsEndpointFromParams(params map[string]string) (server, path string) {
+	if len(params) == 0 {
+		return "", ""
+	}
+	for _, k := range []string{
+		"server", "nfsServer", "nfs.server", "nfs-server", "nfs_server",
+		"addr", "address", "host", "hostname", "serverAddr", "serverAddress",
+	} {
+		if v := sanitizeNFSServer(params[k]); v != "" {
+			server = v
+			break
+		}
+	}
+	for _, k := range []string{
+		"path", "share", "nfsPath", "nfs.path", "nfs-path", "nfs_path",
+		"export", "baseDir", "basePath",
+	} {
+		// Prefer real export roots; skip bare "subdir" (often a template token, not the share).
+		if v := sanitizeNFSPath(params[k]); v != "" {
+			path = v
+			break
+		}
+	}
+	return server, path
+}
+
+// nfsEndpointFromMountOptions parses addr= from PV/SC mountOptions (and comma-joined option blobs).
+func nfsEndpointFromMountOptions(opts []string) (server, path string) {
+	for _, o := range opts {
+		for _, part := range strings.Split(o, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			low := strings.ToLower(part)
+			if strings.HasPrefix(low, "addr=") {
+				if v := sanitizeNFSServer(part[len("addr="):]); v != "" {
+					server = v
+				}
+			}
+		}
+	}
+	return server, path
+}
+
+func mergeNFSEndpoint(server, path, addServer, addPath string) (string, string) {
+	if strings.TrimSpace(server) == "" {
+		server = sanitizeNFSServer(addServer)
+	}
+	if strings.TrimSpace(path) == "" {
+		path = sanitizeNFSPath(addPath)
+	}
+	return server, path
+}
+
+func nfsEndpointFromPV(pv *corev1.PersistentVolume) (server, path string) {
+	if pv == nil {
+		return "", ""
+	}
+	if pv.Spec.NFS != nil {
+		server = sanitizeNFSServer(pv.Spec.NFS.Server)
+		path = sanitizeNFSPath(pv.Spec.NFS.Path)
+	}
+	if pv.Spec.CSI != nil && len(pv.Spec.CSI.VolumeAttributes) > 0 {
+		s, p := nfsEndpointFromParams(pv.Spec.CSI.VolumeAttributes)
+		server, path = mergeNFSEndpoint(server, path, s, p)
+	}
+	s, p := nfsEndpointFromMountOptions(pv.Spec.MountOptions)
+	return mergeNFSEndpoint(server, path, s, p)
+}
+
+// parseNFSFilesystem parses df Filesystem like "192.168.1.1:/export" or "nfs.example.com:/data".
+func parseNFSFilesystem(fs string) (server, path string) {
+	fs = strings.TrimSpace(fs)
+	if fs == "" {
+		return "", ""
+	}
+	// host:/path  (NFS classic); also works for IPv6 "2001:db8::1:/export"
+	if i := strings.Index(fs, ":/"); i > 0 {
+		return sanitizeNFSServer(fs[:i]), sanitizeNFSPath(fs[i+1:])
+	}
+	// host:path without leading slash on path (avoid Windows drive letters like C:)
+	if i := strings.IndexByte(fs, ':'); i > 1 {
+		host := strings.TrimSpace(fs[:i])
+		rest := strings.TrimSpace(fs[i+1:])
+		if host != "" && rest != "" && !strings.Contains(host, "/") {
+			if !strings.HasPrefix(rest, "/") {
+				rest = "/" + rest
+			}
+			return sanitizeNFSServer(host), sanitizeNFSPath(rest)
+		}
+	}
+	return "", ""
+}
+
+// FormatNFSEndpoint builds server:/path for alerts and UI.
+func FormatNFSEndpoint(server, path string) string {
+	server = sanitizeNFSServer(server)
+	path = sanitizeNFSPath(path)
+	if server == "" {
+		return ""
+	}
+	if path == "" {
+		return server
+	}
+	if strings.HasPrefix(path, "/") {
+		return server + ":" + path
+	}
+	return server + ":/" + path
+}
+
+// resolveNFSEndpoint tries SC parameters/mountOptions, df filesystem, matched PVC/PV, pod PVCs, then PV list.
+// Fills server and path independently so a path-only SC param can combine with a PV server.
+func (c *Clients) resolveNFSEndpoint(ctx context.Context, pick nfsSCPick, pods []corev1.Pod, matched *pvcRef, fsFromDF string) (server, path string) {
+	server, path = nfsEndpointFromParams(pick.SC.Parameters)
+	{
+		s, p := nfsEndpointFromMountOptions(pick.SC.MountOptions)
+		server, path = mergeNFSEndpoint(server, path, s, p)
+	}
+	if server != "" && path != "" {
+		return server, path
+	}
+	if fsFromDF != "" {
+		s, p := parseNFSFilesystem(fsFromDF)
+		server, path = mergeNFSEndpoint(server, path, s, p)
+		if server != "" && path != "" {
+			return server, path
+		}
+	}
+	if matched != nil {
+		s, p := c.lookupNFSEndpointFromPVCRef(ctx, *matched)
+		server, path = mergeNFSEndpoint(server, path, s, p)
+		if server != "" && path != "" {
+			return server, path
+		}
+	}
+	if ctx.Err() == nil {
+		s, p := c.lookupNFSEndpointFromPVCs(ctx, pods, pick.Name)
+		server, path = mergeNFSEndpoint(server, path, s, p)
+		if server != "" && path != "" {
+			return server, path
+		}
+	}
+	if ctx.Err() == nil {
+		s, p := c.lookupNFSEndpointFromPVList(ctx, pick.Name)
+		server, path = mergeNFSEndpoint(server, path, s, p)
+	}
+	return server, path
+}
+
+func (c *Clients) lookupNFSEndpointFromPVCRef(ctx context.Context, ref pvcRef) (server, path string) {
+	if c == nil || c.Clientset == nil || ref.Namespace == "" || ref.Name == "" || ctx.Err() != nil {
+		return "", ""
+	}
+	gctx, cancel := context.WithTimeout(ctx, diagnoseNFSPVCGetTimeout)
+	pvc, err := c.Clientset.CoreV1().PersistentVolumeClaims(ref.Namespace).Get(gctx, ref.Name, metav1.GetOptions{})
+	cancel()
+	if err != nil || strings.TrimSpace(pvc.Spec.VolumeName) == "" {
+		return "", ""
+	}
+	gctx2, cancel2 := context.WithTimeout(ctx, diagnoseNFSPVCGetTimeout)
+	pv, err := c.Clientset.CoreV1().PersistentVolumes().Get(gctx2, pvc.Spec.VolumeName, metav1.GetOptions{})
+	cancel2()
+	if err != nil {
+		return "", ""
+	}
+	return nfsEndpointFromPV(pv)
+}
+
+// lookupNFSEndpointFromPVCs GETs a few Bound PVCs of scName and reads NFS server/path from the PV.
+func (c *Clients) lookupNFSEndpointFromPVCs(ctx context.Context, pods []corev1.Pod, scName string) (server, path string) {
+	if c == nil || c.Clientset == nil || scName == "" || ctx.Err() != nil {
+		return "", ""
+	}
+	claims := filterPVCsBySC(ctx, c, pvcRefsFromPods(pods), scName, diagnoseNFSPVCMatchMax)
+	for _, ref := range claims {
+		if ctx.Err() != nil {
+			break
+		}
+		if s, p := c.lookupNFSEndpointFromPVCRef(ctx, ref); s != "" {
+			return s, p
+		}
+	}
+	return "", ""
+}
+
+func (c *Clients) lookupNFSEndpointFromPVList(ctx context.Context, scName string) (server, path string) {
+	if c == nil || c.Clientset == nil || scName == "" || ctx.Err() != nil {
+		return "", ""
+	}
+	gctx, cancel := context.WithTimeout(ctx, diagnoseSCListTimeout)
+	pvs, err := c.Clientset.CoreV1().PersistentVolumes().List(gctx, metav1.ListOptions{Limit: 200})
+	cancel()
+	if err != nil {
+		return "", ""
+	}
+	for i := range pvs.Items {
+		pv := &pvs.Items[i]
+		if pv.Status.Phase != corev1.VolumeBound {
+			continue
+		}
+		if pvStorageClassName(*pv) != scName {
+			continue
+		}
+		if s, p := nfsEndpointFromPV(pv); s != "" {
+			return s, p
+		}
+	}
+	return "", ""
+}
+
+func pvStorageClassName(pv corev1.PersistentVolume) string {
+	if pv.Spec.StorageClassName != "" {
+		return strings.TrimSpace(pv.Spec.StorageClassName)
+	}
+	if pv.Annotations != nil {
+		if n := strings.TrimSpace(pv.Annotations["volume.beta.kubernetes.io/storage-class"]); n != "" {
+			return n
+		}
+	}
+	return ""
 }
 
 func pickNFSStorageClass(scs []storagev1.StorageClass) (nfsSCPick, string) {
@@ -732,7 +1034,7 @@ func volumeSamplesFromSummaries(summaries map[string]nodeStatsSummary) []volSamp
 	return out
 }
 
-func nfsUsageFromSummaries(ctx context.Context, c *Clients, summaries map[string]nodeStatsSummary, pods []corev1.Pod, scName string) (used, capacity int64, ok bool) {
+func nfsUsageFromSummaries(ctx context.Context, c *Clients, summaries map[string]nodeStatsSummary, pods []corev1.Pod, scName string) (used, capacity int64, matched *pvcRef, ok bool) {
 	samples := volumeSamplesFromSummaries(summaries)
 	if len(samples) > 0 {
 		refs := make([]pvcRef, 0, len(samples))
@@ -741,28 +1043,32 @@ func nfsUsageFromSummaries(ctx context.Context, c *Clients, summaries map[string
 			refs = append(refs, s.Ref)
 			byKey[s.Ref.Namespace+"/"+s.Ref.Name] = s
 		}
-		matched := filterPVCsBySC(ctx, c, refs, scName, 1)
-		if len(matched) > 0 {
-			s := byKey[matched[0].Namespace+"/"+matched[0].Name]
-			return s.Used, s.Cap, true
+		matchedRefs := filterPVCsBySC(ctx, c, refs, scName, 1)
+		if len(matchedRefs) > 0 {
+			ref := matchedRefs[0]
+			s := byKey[ref.Namespace+"/"+ref.Name]
+			refCopy := ref
+			return s.Used, s.Cap, &refCopy, true
 		}
 	}
 
 	// No volume stats for target SC yet: resolve a few claims from Running pods, then re-check samples.
 	claims := filterPVCsBySC(ctx, c, pvcRefsFromPods(pods), scName, diagnoseNFSPVCMatchMax)
 	if len(claims) == 0 {
-		return 0, 0, false
+		return 0, 0, nil, false
 	}
 	want := map[string]bool{}
 	for _, ref := range claims {
 		want[ref.Namespace+"/"+ref.Name] = true
 	}
 	for _, s := range samples {
-		if want[s.Ref.Namespace+"/"+s.Ref.Name] {
-			return s.Used, s.Cap, true
+		key := s.Ref.Namespace + "/" + s.Ref.Name
+		if want[key] {
+			refCopy := s.Ref
+			return s.Used, s.Cap, &refCopy, true
 		}
 	}
-	return 0, 0, false
+	return 0, 0, nil, false
 }
 
 func pvcRefsFromPods(pods []corev1.Pod) []pvcRef {
@@ -858,10 +1164,10 @@ func filterPVCsBySC(ctx context.Context, c *Clients, refs []pvcRef, scName strin
 	return matched
 }
 
-func (c *Clients) nfsUsageViaExecDF(ctx context.Context, pods []corev1.Pod, scName string) (used, capacity int64, ok bool) {
+func (c *Clients) nfsUsageViaExecDF(ctx context.Context, pods []corev1.Pod, scName string) (used, capacity int64, filesystem string, ok bool) {
 	claims := filterPVCsBySC(ctx, c, pvcRefsFromPods(pods), scName, diagnoseNFSPVCMatchMax)
 	if len(claims) == 0 {
-		return 0, 0, false
+		return 0, 0, "", false
 	}
 	claimSet := map[string]bool{}
 	for _, ref := range claims {
@@ -894,13 +1200,13 @@ func (c *Clients) nfsUsageViaExecDF(ctx context.Context, pods []corev1.Pod, scNa
 		if err != nil {
 			continue
 		}
-		u, cap, parsed := parseDFPOutput(stdout.String())
+		u, cap, fs, parsed := parseDFPOutput(stdout.String())
 		if !parsed || cap <= 0 {
 			continue
 		}
-		return u, cap, true
+		return u, cap, fs, true
 	}
-	return 0, 0, false
+	return 0, 0, "", false
 }
 
 func pvcMountInPod(p corev1.Pod, claimSet map[string]bool) (mountPath, container string) {
@@ -928,8 +1234,8 @@ func pvcMountInPod(p corev1.Pod, claimSet map[string]bool) (mountPath, container
 	return "", ""
 }
 
-// parseDFPOutput parses `df -P <path>` (1024-block POSIX). Returns used/capacity bytes.
-func parseDFPOutput(out string) (used, capacity int64, ok bool) {
+// parseDFPOutput parses `df -P <path>` (1024-block POSIX). Returns used/capacity bytes and Filesystem field.
+func parseDFPOutput(out string) (used, capacity int64, filesystem string, ok bool) {
 	lines := strings.Split(out, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -945,7 +1251,7 @@ func parseDFPOutput(out string) (used, capacity int64, ok bool) {
 		if err1 != nil || err2 != nil || blocks <= 0 {
 			continue
 		}
-		return usedBlocks * 1024, blocks * 1024, true
+		return usedBlocks * 1024, blocks * 1024, fields[0], true
 	}
-	return 0, 0, false
+	return 0, 0, "", false
 }

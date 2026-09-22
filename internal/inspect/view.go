@@ -48,6 +48,8 @@ type ListItem struct {
 	LargePodSkipped   string   `json:"largePodSkipped,omitempty"`
 	NFSUsagePercent   *float64 `json:"nfsUsagePercent,omitempty"`
 	NFSStorageClass   string   `json:"nfsStorageClass,omitempty"`
+	NFSServer         string   `json:"nfsServer,omitempty"`
+	NFSPath           string   `json:"nfsPath,omitempty"`
 	NFSSource         string   `json:"nfsSource,omitempty"`
 	NFSSkipped        string   `json:"nfsSkipped,omitempty"`
 }
@@ -110,6 +112,8 @@ func listItemFromRow(name string, row *store.InspectionRow, issues []kube.Issue,
 		item.LargePodSkipped = diag.Scan.LargePodSkipped
 		item.NFSUsagePercent = diag.Scan.NFSUsagePercent
 		item.NFSStorageClass = diag.Scan.NFSStorageClass
+		item.NFSServer = diag.Scan.NFSServer
+		item.NFSPath = diag.Scan.NFSPath
 		item.NFSSource = diag.Scan.NFSSource
 		item.NFSSkipped = diag.Scan.NFSSkipped
 		// Prefer scan.largePods; if older reports lack the field, count from issues.

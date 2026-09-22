@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,12 +114,153 @@ func TestParseDFPOutput(t *testing.T) {
 	out := `Filesystem     1024-blocks      Used Available Capacity Mounted on
 192.168.1.1:/export  104857600  83886080  20971520      80% /data
 `
-	used, cap, ok := parseDFPOutput(out)
+	used, cap, fs, ok := parseDFPOutput(out)
 	if !ok {
 		t.Fatal("parse failed")
 	}
 	if cap != 104857600*1024 || used != 83886080*1024 {
 		t.Fatalf("used=%d cap=%d", used, cap)
+	}
+	if fs != "192.168.1.1:/export" {
+		t.Fatalf("filesystem=%q", fs)
+	}
+}
+
+func TestParseNFSFilesystem(t *testing.T) {
+	s, p := parseNFSFilesystem("192.168.1.1:/export")
+	if s != "192.168.1.1" || p != "/export" {
+		t.Fatalf("got %q %q", s, p)
+	}
+	s, p = parseNFSFilesystem("nfs.example.com:/data/share")
+	if s != "nfs.example.com" || p != "/data/share" {
+		t.Fatalf("got %q %q", s, p)
+	}
+	s, p = parseNFSFilesystem("")
+	if s != "" || p != "" {
+		t.Fatal("empty should yield empty")
+	}
+}
+
+func TestNFSEndpointFromParams(t *testing.T) {
+	s, p := nfsEndpointFromParams(map[string]string{
+		"server": "10.0.0.5",
+		"path":   "/nfs",
+	})
+	if s != "10.0.0.5" || p != "/nfs" {
+		t.Fatalf("got %q %q", s, p)
+	}
+	s, p = nfsEndpointFromParams(map[string]string{
+		"nfsServer": "10.0.0.6",
+		"share":     "/vol",
+	})
+	if s != "10.0.0.6" || p != "/vol" {
+		t.Fatalf("csi-ish got %q %q", s, p)
+	}
+	s, p = nfsEndpointFromParams(map[string]string{
+		"host":    "nfs.internal",
+		"baseDir": "/exports/k8s",
+	})
+	if s != "nfs.internal" || p != "/exports/k8s" {
+		t.Fatalf("host/baseDir got %q %q", s, p)
+	}
+}
+
+func TestNFSEndpointFromMountOptions(t *testing.T) {
+	s, _ := nfsEndpointFromMountOptions([]string{"nfsvers=4.1", "addr=10.2.3.4"})
+	if s != "10.2.3.4" {
+		t.Fatalf("got %q", s)
+	}
+	s, _ = nfsEndpointFromMountOptions([]string{"vers=4,addr=192.168.1.9,hard"})
+	if s != "192.168.1.9" {
+		t.Fatalf("comma blob got %q", s)
+	}
+	s, _ = nfsEndpointFromMountOptions([]string{"addr=0.0.0.0"})
+	if s != "" {
+		t.Fatalf("placeholder addr should be ignored, got %q", s)
+	}
+}
+
+func TestSanitizeNFSServer(t *testing.T) {
+	if sanitizeNFSServer(" 10.1.2.3 ") != "10.1.2.3" {
+		t.Fatal("trim")
+	}
+	if sanitizeNFSServer("bad host") != "" {
+		t.Fatal("spaces rejected")
+	}
+	if sanitizeNFSServer("0.0.0.0") != "" {
+		t.Fatal("0.0.0.0 rejected")
+	}
+}
+
+func TestParseNFSFilesystemIPv6(t *testing.T) {
+	s, p := parseNFSFilesystem("2001:db8::1:/export")
+	if s != "2001:db8::1" || p != "/export" {
+		t.Fatalf("got %q %q", s, p)
+	}
+}
+
+func TestNFSEndpointDFBudgetOK(t *testing.T) {
+	if !nfsEndpointDFBudgetOK(context.Background()) {
+		t.Fatal("no deadline should allow")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if nfsEndpointDFBudgetOK(ctx) {
+		t.Fatal("tight deadline should skip df")
+	}
+}
+
+func TestMergeNFSEndpoint(t *testing.T) {
+	s, p := mergeNFSEndpoint("", "", "10.0.0.1", "/a")
+	if s != "10.0.0.1" || p != "/a" {
+		t.Fatalf("got %q %q", s, p)
+	}
+	s, p = mergeNFSEndpoint("10.0.0.1", "", "", "/b")
+	if s != "10.0.0.1" || p != "/b" {
+		t.Fatalf("fill path got %q %q", s, p)
+	}
+}
+
+func TestNFSHighUsageIssueIncludesServer(t *testing.T) {
+	pick := nfsSCPick{
+		Name:   "nfs-sc",
+		Source: "default",
+		SC: storagev1.StorageClass{
+			ObjectMeta:  metav1.ObjectMeta{Name: "nfs-sc"},
+			Provisioner: "nfs.csi.k8s.io",
+			Parameters:  map[string]string{"server": "10.1.2.3", "share": "/export"},
+		},
+	}
+	res := nfsUsageResult{
+		Percent:       96,
+		UsedBytes:     100,
+		CapacityBytes: 200,
+		Server:        "10.1.2.3",
+		Path:          "/export",
+		Probe:         "summary",
+	}
+	it := nfsHighUsageIssue(pick, res)
+	if it == nil {
+		t.Fatal("nil issue")
+	}
+	if !strings.Contains(it.Message, "10.1.2.3:/export") {
+		t.Fatalf("message missing endpoint: %s", it.Message)
+	}
+	if it.NodeIP != "10.1.2.3" {
+		t.Fatalf("NodeIP=%q", it.NodeIP)
+	}
+	joined := strings.Join(it.Evidence, " ")
+	if !strings.Contains(joined, "server=10.1.2.3") || !strings.Contains(joined, "path=/export") {
+		t.Fatalf("evidence=%v", it.Evidence)
+	}
+}
+
+func TestFormatNFSEndpoint(t *testing.T) {
+	if got := FormatNFSEndpoint("10.0.0.1", "/data"); got != "10.0.0.1:/data" {
+		t.Fatalf("got %q", got)
+	}
+	if got := FormatNFSEndpoint("10.0.0.1", ""); got != "10.0.0.1" {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -142,6 +284,9 @@ func TestLargePodIssuesFromSummaries(t *testing.T) {
 	got := largePodIssuesFromSummaries(sum)
 	if len(got) != 1 || got[0].Name != "big" || got[0].Reason != "LargeEphemeral" || got[0].Severity != sevWarning {
 		t.Fatalf("got %+v", got)
+	}
+	if !strings.Contains(got[0].Message, "节点 n1") {
+		t.Fatalf("large pod message missing node: %s", got[0].Message)
 	}
 }
 

@@ -394,6 +394,8 @@ const inspectIssueBlocks = computed(() => {
         return Number.isNaN(n) ? null : n
       })(),
       nfsStorageClass: it.nfsStorageClass || '',
+      nfsServer: it.nfsServer || '',
+      nfsPath: it.nfsPath || '',
       lines,
       more: Math.max(0, total - lines.length),
       inspecting: inspectingId.value === it.clusterId
@@ -479,6 +481,17 @@ function fmtInspectTime(t) {
 
 function issueLineBrief(row) {
   return issueInspectBrief(row)
+}
+
+function nfsTagTitle(block) {
+  const parts = []
+  const server = String(block?.nfsServer || '').trim()
+  const path = String(block?.nfsPath || '').trim()
+  if (server) {
+    parts.push(path ? (path.startsWith('/') ? `${server}:${path}` : `${server}:/${path}`) : server)
+  }
+  if (block?.nfsStorageClass) parts.push(`SC=${block.nfsStorageClass}`)
+  return parts.join(' · ')
 }
 
 function blockCacheTag(block) {
@@ -1387,7 +1400,7 @@ onMounted(enterPage)
                 v-if="block.nfsUsagePercent != null"
                 class="tag"
                 :class="block.nfsUsagePercent >= 80 ? 'sev-critical' : 'sev-info'"
-                :title="block.nfsStorageClass ? `SC=${block.nfsStorageClass}` : ''"
+                :title="nfsTagTitle(block)"
               >NFS {{ Math.round(block.nfsUsagePercent) }}%</span>
             </div>
             <ul class="inspect-lines">

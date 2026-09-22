@@ -50,9 +50,79 @@ export function issueTimeLabel(row) {
   return '—'
 }
 
+function nfsLocationFromRow(row) {
+  const server = String(
+    row?.nodeIP ||
+      evidenceValue(row, 'server') ||
+      evidenceValue(row, 'nfsServer') ||
+      evidenceValue(row, 'host') ||
+      evidenceValue(row, 'addr') ||
+      ''
+  ).trim()
+  const path =
+    evidenceValue(row, 'path') ||
+    evidenceValue(row, 'share') ||
+    evidenceValue(row, 'export') ||
+    evidenceValue(row, 'nfsPath') ||
+    ''
+  if (!server) return ''
+  if (!path) return server
+  return path.startsWith('/') ? `${server}:${path}` : `${server}:/${path}`
+}
+
+function evidenceValue(row, key) {
+  const prefix = `${key}=`
+  for (const e of Array.isArray(row?.evidence) ? row.evidence : []) {
+    const s = String(e || '').trim()
+    if (s.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return s.slice(prefix.length).trim()
+    }
+  }
+  return ''
+}
+
+function enrichIssueMessage(row, msg) {
+  const reason = String(row?.reason || '').trim()
+  if (reason === 'NFSHighUsage') {
+    const server = String(
+      row?.nodeIP ||
+        evidenceValue(row, 'server') ||
+        evidenceValue(row, 'nfsServer') ||
+        evidenceValue(row, 'host') ||
+        evidenceValue(row, 'addr') ||
+        ''
+    ).trim()
+    const loc = nfsLocationFromRow(row)
+    // Use full server token — do not split on ':' (breaks IPv6).
+    if (!loc || !server || msg.includes(server)) return msg
+    const rest = msg.replace(/^NFS\s*/, '').trim()
+    if (rest.startsWith('使用率') || rest.startsWith('（SC=') || rest.startsWith('(SC=')) {
+      return `NFS ${loc} ${rest}`
+    }
+    if (rest.startsWith('SC=')) {
+      const i = rest.indexOf(' ')
+      return i > 0 ? `NFS ${loc}${rest.slice(i)}` : `NFS ${loc}`
+    }
+    return msg ? `NFS ${loc} · ${msg}` : `NFS ${loc}`
+  }
+  if ((row?.category === 'node' || row?.kind === 'Node') && row?.nodeIP && !msg.includes(row.nodeIP)) {
+    const name = String(row?.name || '').trim()
+    return name ? `${msg} · ${name} (${row.nodeIP})` : `${msg} · IP ${row.nodeIP}`
+  }
+  // Pod-shaped issues (incl. LargeEphemeral under category=storage)
+  if ((row?.category === 'pod' || row?.kind === 'Pod') && (row?.node || row?.nodeIP)) {
+    const ip = String(row?.nodeIP || '').trim()
+    const node = String(row?.node || '').trim()
+    if ((ip && msg.includes(ip)) || (node && msg.includes(node))) return msg
+    const parts = [node, ip ? `(${ip})` : ''].filter(Boolean)
+    return `${msg} · 节点 ${parts.join(' ')}`
+  }
+  return msg
+}
+
 export function formatIssueMessage(row) {
   const reason = String(row?.reason || '').trim()
-  let msg = String(row?.message || '').trim()
+  let msg = enrichIssueMessage(row, String(row?.message || '').trim())
   if (!msg) return ''
 
   if (reason === 'NotReady' || reason === 'Misscheduled') {
@@ -82,6 +152,12 @@ export function formatEvidenceLine(line) {
   s = s.replace(/(\d+[smhd])\s*ago\b/gi, '$1 前')
   s = s.replace(/\bmisscheduled=(\d+)/gi, '错位调度=$1')
   s = s.replace(/\bready=(\d+)\/(\d+)/gi, 'Ready=$1/$2')
+  if (s.startsWith('server=')) s = 'NFS服务器 ' + s.slice('server='.length)
+  else if (s.startsWith('nfsServer=')) s = 'NFS服务器 ' + s.slice('nfsServer='.length)
+  else if (s.startsWith('path=')) s = '导出路径 ' + s.slice('path='.length)
+  else if (s.startsWith('share=')) s = '共享 ' + s.slice('share='.length)
+  else if (s.startsWith('sc=')) s = 'StorageClass ' + s.slice('sc='.length)
+  else if (s.startsWith('ip=')) s = 'IP ' + s.slice('ip='.length)
   if (s.startsWith('severityNote: ')) {
     s = '降级: ' + s.slice('severityNote: '.length)
   }

@@ -151,8 +151,38 @@ function typeLabel(row) {
 }
 
 function locationLine(row) {
+  // NFS 使用率：NodeIP 复用为 NFS 服务器，勿标成「节点」
+  if (row?.reason === 'NFSHighUsage' || row?.kind === 'StorageClass') {
+    const server =
+      row.nodeIP ||
+      evidenceKV(row, 'server') ||
+      evidenceKV(row, 'nfsServer') ||
+      evidenceKV(row, 'host') ||
+      evidenceKV(row, 'addr')
+    const path = evidenceKV(row, 'path') || evidenceKV(row, 'share') || evidenceKV(row, 'export')
+    return formatNFSEndpoint(server, path)
+  }
   if (row.node && row.nodeIP) return `${row.node} (${row.nodeIP})`
   return row.node || row.nodeIP || ''
+}
+
+function formatNFSEndpoint(server, path) {
+  const s = String(server || '').trim()
+  const p = String(path || '').trim()
+  if (!s) return ''
+  if (!p) return s
+  return p.startsWith('/') ? `${s}:${p}` : `${s}:/${p}`
+}
+
+function evidenceKV(row, key) {
+  const prefix = `${key}=`
+  for (const e of evidenceList(row)) {
+    const s = String(e || '').trim()
+    if (s.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return s.slice(prefix.length).trim()
+    }
+  }
+  return ''
 }
 
 function sourceTitle(row) {
@@ -180,8 +210,13 @@ function explainBrief(row) {
   const suffix = issueMessageSuffix(row)
   if (msg || suffix) parts.push(`${msg}${suffix}`.trim())
   const loc = locationLine(row)
-  if (loc && row.category !== 'node') parts.push(loc)
-  else if (row.category === 'node' && row.nodeIP) parts.push(row.nodeIP)
+  // Message already bakes in location after FinalizeIssueMessages — avoid duplicating.
+  if (loc && !(msg && msg.includes(loc))) {
+    if (row.category !== 'node') parts.push(loc)
+    else if (row.nodeIP && !msg.includes(row.nodeIP)) parts.push(row.nodeIP)
+  } else if (row.category === 'node' && row.nodeIP && !(msg && msg.includes(row.nodeIP))) {
+    parts.push(row.nodeIP)
+  }
   const text = parts.filter(Boolean).join(' · ')
   return text || issueReasonDisplay(row.reason) || '查看完整说明'
 }
@@ -325,7 +360,11 @@ function explainText(row, logsInfo) {
   if (obj) lines.push(`对象: ${obj}`)
   const loc = locationLine(row)
   if (loc) {
-    lines.push(`节点: ${loc}`)
+    if (row.reason === 'NFSHighUsage' || row.kind === 'StorageClass') {
+      lines.push(`NFS: ${loc}`)
+    } else {
+      lines.push(`节点: ${loc}`)
+    }
   } else if (row.category === 'event' || row.category === 'pod') {
     lines.push('节点: （未拿到节点名/IP，对象可能已删除或尚未调度）')
   }
@@ -550,8 +589,10 @@ function healthyCheckLines() {
   if (s.nfsSkipped) {
     lines.push(`- NFS: 未检查（${s.nfsSkipped}）`)
   } else if (s.nfsUsagePercent != null) {
-    const sc = s.nfsStorageClass ? ` SC=${s.nfsStorageClass}` : ''
-    lines.push(`- NFS: 使用率 ${Math.round(Number(s.nfsUsagePercent))}%${sc}（阈值 80%）`)
+    const ep = formatNFSEndpoint(s.nfsServer, s.nfsPath)
+    const sc = !ep && s.nfsStorageClass ? ` SC=${s.nfsStorageClass}` : ''
+    const where = ep ? ` ${ep}` : sc
+    lines.push(`- NFS: 使用率 ${Math.round(Number(s.nfsUsagePercent))}%${where}（阈值 80%）`)
   }
 
   return lines

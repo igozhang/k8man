@@ -139,6 +139,7 @@ func (fs *FileStore) DumpRound(clusterName string, row *store.InspectionRow, iss
 			"since":     it.Since,
 			"sinceAt":   it.SinceAt,
 			"node":      it.Node,
+			"nodeIP":    it.NodeIP,
 			"container": it.Container,
 		}
 		if len(it.Evidence) > 0 {
@@ -301,6 +302,7 @@ func loadRoundJSONL(path string) (*RoundCluster, error) {
 				Since     string   `json:"since"`
 				SinceAt   string   `json:"sinceAt"`
 				Node      string   `json:"node"`
+				NodeIP    string   `json:"nodeIP"`
 				Container string   `json:"container"`
 				Evidence  []string `json:"evidence"`
 			}
@@ -318,6 +320,7 @@ func loadRoundJSONL(path string) (*RoundCluster, error) {
 				Since:     it.Since,
 				SinceAt:   it.SinceAt,
 				Node:      it.Node,
+				NodeIP:    it.NodeIP,
 				Container: it.Container,
 				Evidence:  it.Evidence,
 			}
