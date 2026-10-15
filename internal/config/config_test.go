@@ -62,4 +62,13 @@ func TestParsePositiveInt(t *testing.T) {
 	if parsePositiveInt("6", 4) != 6 {
 		t.Fatal("want 6")
 	}
+	if parseBoundedInt("", 365, 3650) != 365 || parseBoundedInt("0", 365, 3650) != 365 {
+		t.Fatal("empty or zero should use default")
+	}
+	if parseBoundedInt("400", 365, 3650) != 400 {
+		t.Fatal("want 400")
+	}
+	if parseBoundedInt("4000", 365, 3650) != 365 {
+		t.Fatal("above max should use default")
+	}
 }

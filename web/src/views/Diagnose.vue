@@ -948,7 +948,7 @@ onUnmounted(() => {
   <div>
     <h1>告警</h1>
     <p class="page-desc">
-      管理飞书告警 Webhook；巡检发现<strong>严重</strong>，或<strong>2 小时内新出现的错误及以上</strong>问题时自动推送。
+      管理飞书告警 Webhook。巡检发现<strong>严重</strong>，或<strong>2 小时内新出现的错误</strong>时自动推送；发出后会加快巡检（约 3 分钟后每 5 分钟，超过 6 小时改为每 15 分钟），问题在完整诊断中消失后发送恢复通知。
       「诊断」为当前集群即时扫描（定级规则见巡检页「基线与降级机制」）。
     </p>
 

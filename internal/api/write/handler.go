@@ -305,6 +305,10 @@ func (h *Handler) DeleteCluster(c *gin.Context) {
 		respond.Internal(c, err.Error())
 		return
 	}
+	_ = h.Store.ClearAlertSent(id)
+	if h.Inspect != nil {
+		h.Inspect.DropRecovery(id)
+	}
 	h.Pool.Invalidate(id)
 	respond.OK(c, gin.H{"deleted": id})
 }

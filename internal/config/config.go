@@ -22,6 +22,10 @@ type Config struct {
 	InspectConcurrency int
 	// InspectConcurrencyMax is the hard cap when backlog expands (default 8).
 	InspectConcurrencyMax int
+	// InspectRetentionDays drops inspection day dirs and auto daily docs older than this (default 365).
+	InspectRetentionDays int
+	// InspectRetentionMax caps how many auto daily reports / day dirs to keep (default 365).
+	InspectRetentionMax int
 }
 
 type UISettings struct {
@@ -58,9 +62,13 @@ title=k8s多集群运维
 # | banner    | （仅 conf）      | （自动探测）            | etc 下图片文件名 |
 # | inspect_concurrency     | K8MAN_INSPECT_CONCURRENCY     | 4 | 巡检基础并发（有界并行） |
 # | inspect_concurrency_max | K8MAN_INSPECT_CONCURRENCY_MAX | 8 | 积压时自动扩容上限（须 ≥ 基础并发，否则抬到 ≥ base） |
+# | inspect_retention_days  | K8MAN_INSPECT_RETENTION_DAYS  | 365 | 巡检日目录与自动日报告保留天数 |
+# | inspect_retention_max   | K8MAN_INSPECT_RETENTION_MAX   | 365 | 自动日报告 / 日目录最多保留份数，超出删最旧 |
 # | hosts     | （文件）         | <etc>/hosts             | 私有解析，格式：IP hostname |
 #
-# 巡检文件落盘：<data_dir>/inspection/YYYY/MM/DD/HHMMSS/*.jsonl；日归档写 day.jsonl 并清轮次；保留约 60 天。
+# 巡检文件落盘：<data_dir>/inspection/YYYY/MM/DD/HHMMSS/*.jsonl；日归档写 day.jsonl 并清轮次。
+# 日目录与自动日报告（inspectallYYYYMMDD）默认保留 365 天且最多 365 份；置顶文档与人手导出的周/月/单集群报告不删。
+# 清理在每天约 01:00 执行，进程启动时也会跑一次，与是否写出新报告、集群数量无关。
 #
 # 页眉 slogan 固定为 practice makes perfect，不可配置；双击可复制 igokey。
 #
@@ -85,7 +93,9 @@ title=k8s多集群运维
 #   对每个已保存 kubeconfig 独立计时（完成后 ±6 分钟抖动）。
 #   有界并发：默认同时 4 路；到期积压超过基础并发时自动扩容，上限默认 8。
 #   启动节流：两次成功开始至少间隔约 2 秒；在途/忙集群跳过且不消耗间隔。
-#   同一集群同时只跑一轮（后台与手动互斥）。先 Probe，成功再 Diagnose。
+#   同一集群同时只跑一轮（后台、手动与恢复探针互斥）。先 Probe，成功再 Diagnose。
+#   告警成功推送后进入恢复探针：约 3 分钟后首轮，之后每 5 分钟；满 6 小时改为每 15 分钟，直到恢复通知发出。
+#   探针只巡检这一份 kubeconfig（落库、落盘，并重置约 2 小时的下一轮时间）。重启或重新启用 Webhook 后，未关闭的告警先等 3 分钟，再按 5 分钟。
 #   单次巡检体超时约 45 秒；页面一键巡检 HTTP 约 90 秒。
 #   进程退出或请求取消时不落库。结果在「监控」页底部；手动「一键巡检」走写接口。
 #   改 kubeconfig / API Server / TLS 会丢掉该配置的旧巡检快照。
@@ -94,6 +104,8 @@ title=k8s多集群运维
 # db_path=./data/k8man.db
 # inspect_concurrency=4
 # inspect_concurrency_max=8
+# inspect_retention_days=365
+# inspect_retention_max=365
 # icon=icon.png
 # banner=banner.jpg
 #
@@ -129,6 +141,8 @@ func Load() Config {
 	if maxConc < baseConc {
 		maxConc = baseConc
 	}
+	retainDays := parseBoundedInt(firstNonEmpty(os.Getenv("K8MAN_INSPECT_RETENTION_DAYS"), fileVals["inspect_retention_days"]), 365, 3650)
+	retainMax := parseBoundedInt(firstNonEmpty(os.Getenv("K8MAN_INSPECT_RETENTION_MAX"), fileVals["inspect_retention_max"]), 365, 3650)
 
 	return Config{
 		Addr:                  addr,
@@ -140,6 +154,8 @@ func Load() Config {
 		IconName:              ui.IconName,
 		InspectConcurrency:    baseConc,
 		InspectConcurrencyMax: maxConc,
+		InspectRetentionDays:  retainDays,
+		InspectRetentionMax:   retainMax,
 	}
 }
 
@@ -258,8 +274,13 @@ func getenv(key, def string) string {
 }
 
 func parsePositiveInt(raw string, def int) int {
+	return parseBoundedInt(raw, def, 1000)
+}
+
+// parseBoundedInt parses a positive integer. Empty, zero, non-numeric, or above max returns def.
+func parseBoundedInt(raw string, def, max int) int {
 	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	if raw == "" || max <= 0 {
 		return def
 	}
 	n := 0
@@ -268,7 +289,7 @@ func parsePositiveInt(raw string, def int) int {
 			return def
 		}
 		n = n*10 + int(c-'0')
-		if n > 1000 {
+		if n > max {
 			return def
 		}
 	}

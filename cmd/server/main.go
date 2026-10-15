@@ -32,9 +32,6 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
-	if err := st.EnsureDefaultAlertWebhook(); err != nil {
-		log.Printf("ensure default alert webhook: %v", err)
-	}
 
 	hostsResolver := kube.NewHostsResolver()
 	pool := kube.NewPool(hostsResolver)
@@ -60,6 +57,8 @@ func main() {
 		Concurrency:    cfg.InspectConcurrency,
 		ConcurrencyMax: cfg.InspectConcurrencyMax,
 		DataDir:        cfg.DataDir,
+		RetentionDays:  cfg.InspectRetentionDays,
+		RetentionMax:   cfg.InspectRetentionMax,
 	})
 	go inspector.Loop(rootCtx)
 

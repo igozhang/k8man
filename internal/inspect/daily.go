@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -129,7 +130,14 @@ func (w *Worker) archiveOnce(ctx context.Context) (err error) {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
-	return w.archivePreviousDayIfDue(ctx, nowFn())
+	now := nowFn()
+	if err := w.RepairAllDayDocIDs(); err != nil {
+		log.Printf("inspect daily archive rekey: %v", err)
+	}
+	if err := w.pruneRetention(now); err != nil {
+		log.Printf("inspect retention: %v", err)
+	}
+	return w.archivePreviousDayIfDue(ctx, now)
 }
 
 func (w *Worker) archiveJitter() time.Duration {
@@ -208,9 +216,6 @@ func (w *Worker) archivePreviousDayIfDue(ctx context.Context, now time.Time) err
 		if _, err := w.Files.EnsureDayAggregate(day, loc); err != nil {
 			return err
 		}
-		if err := w.Files.PruneOlderThan(w.retentionDays, now, loc); err != nil {
-			log.Printf("inspect prune: %v", err)
-		}
 	}
 	rep, err := w.BuildExport(ExportRequest{
 		Period:        ExportPeriodDay,
@@ -268,6 +273,112 @@ func (w *Worker) archivePreviousDayIfDue(ctx context.Context, now time.Time) err
 	}
 	log.Printf("inspect daily archive saved doc=%s slug=%s clusters=%d", d.ID, slug, n)
 	return nil
+}
+
+// pruneRetention drops expired inspection day dirs and auto daily docs.
+// It runs from the daily loop (including process start), independent of whether a new archive is written.
+func (w *Worker) pruneRetention(now time.Time) error {
+	if w == nil {
+		return nil
+	}
+	loc := beijingLoc
+	if w.Files != nil {
+		if err := w.Files.PruneRetention(w.retentionDays, w.retentionMax, now, loc); err != nil {
+			return err
+		}
+	}
+	if w.Store == nil {
+		return nil
+	}
+	n, err := w.pruneAutoDailyDocs(now, loc)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		log.Printf("inspect retention removed %d daily docs", n)
+	}
+	return nil
+}
+
+func (w *Worker) pruneAutoDailyDocs(now time.Time, loc *time.Location) (int, error) {
+	if w.retentionDays <= 0 && w.retentionMax <= 0 {
+		return 0, nil
+	}
+	if loc == nil {
+		loc = beijingLoc
+	}
+	docs, err := w.Store.ListDocs(DocCategoryInspectionReport, "")
+	if err != nil {
+		return 0, err
+	}
+	type item struct {
+		id  string
+		day time.Time
+	}
+	var items []item
+	for _, d := range docs {
+		if d.Pinned {
+			continue
+		}
+		day, ok := autoDailyDay(d, loc)
+		if !ok {
+			continue
+		}
+		items = append(items, item{id: d.ID, day: day})
+	}
+	var drop []string
+	keep := items
+	if w.retentionDays > 0 {
+		cutoff := now.In(loc).AddDate(0, 0, -w.retentionDays)
+		cutoff = time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, loc)
+		keep = make([]item, 0, len(items))
+		for _, it := range items {
+			if it.day.Before(cutoff) {
+				drop = append(drop, it.id)
+				continue
+			}
+			keep = append(keep, it)
+		}
+	}
+	if w.retentionMax > 0 && len(keep) > w.retentionMax {
+		sortDays := append([]item(nil), keep...)
+		sort.Slice(sortDays, func(i, j int) bool {
+			if !sortDays[i].day.Equal(sortDays[j].day) {
+				return sortDays[i].day.Before(sortDays[j].day)
+			}
+			return sortDays[i].id < sortDays[j].id
+		})
+		extra := len(sortDays) - w.retentionMax
+		for i := 0; i < extra; i++ {
+			drop = append(drop, sortDays[i].id)
+		}
+	}
+	n := 0
+	for _, id := range drop {
+		if err := w.Store.DeleteDoc(id); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+func autoDailyDay(d model.Doc, loc *time.Location) (time.Time, bool) {
+	if loc == nil {
+		loc = beijingLoc
+	}
+	for _, s := range []string{strings.TrimSpace(d.Slug), strings.TrimSpace(d.ID)} {
+		m := reAllDaySlug.FindStringSubmatch(s)
+		if m == nil {
+			continue
+		}
+		t, err := time.ParseInLocation("20060102", m[1], loc)
+		if err != nil {
+			continue
+		}
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 func (w *Worker) kubeconfigCount() (int, error) {

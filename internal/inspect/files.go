@@ -19,7 +19,8 @@ import (
 
 const (
 	InspectionDirName    = "inspection"
-	DefaultRetentionDays = 60
+	DefaultRetentionDays = 365
+	DefaultRetentionMax  = 365
 	dayFileName          = "day.jsonl"
 	dayIndexName         = "day_index.txt"
 	roundIndexName       = "_index.txt"
@@ -1050,9 +1051,20 @@ func (fs *FileStore) AggregateRange(fromDay, toDay time.Time, loc *time.Location
 	return out, nil
 }
 
+type dayDir struct {
+	path string
+	day  time.Time
+}
+
 // PruneOlderThan deletes day directories older than retentionDays (Asia/Shanghai calendar).
 func (fs *FileStore) PruneOlderThan(retentionDays int, now time.Time, loc *time.Location) error {
-	if fs == nil || retentionDays <= 0 {
+	return fs.PruneRetention(retentionDays, 0, now, loc)
+}
+
+// PruneRetention drops day directories older than retentionDays, then keeps at most retentionMax
+// (oldest first). Zero disables that cap. Empty year/month directories are removed afterward.
+func (fs *FileStore) PruneRetention(retentionDays, retentionMax int, now time.Time, loc *time.Location) error {
+	if fs == nil || (retentionDays <= 0 && retentionMax <= 0) {
 		return nil
 	}
 	if loc == nil {
@@ -1061,16 +1073,45 @@ func (fs *FileStore) PruneOlderThan(retentionDays int, now time.Time, loc *time.
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	cutoff := now.In(loc).AddDate(0, 0, -retentionDays)
-	cutoff = time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, loc)
+	dirs, err := fs.listDayDirsUnlocked(loc)
+	if err != nil || len(dirs) == 0 {
+		return err
+	}
+	keep := dirs
+	if retentionDays > 0 {
+		cutoff := now.In(loc).AddDate(0, 0, -retentionDays)
+		cutoff = time.Date(cutoff.Year(), cutoff.Month(), cutoff.Day(), 0, 0, 0, 0, loc)
+		keep = make([]dayDir, 0, len(dirs))
+		for _, d := range dirs {
+			if d.day.Before(cutoff) {
+				_ = os.RemoveAll(d.path)
+				continue
+			}
+			keep = append(keep, d)
+		}
+	}
+	if retentionMax > 0 && len(keep) > retentionMax {
+		sort.Slice(keep, func(i, j int) bool {
+			return keep[i].day.Before(keep[j].day)
+		})
+		drop := len(keep) - retentionMax
+		for i := 0; i < drop; i++ {
+			_ = os.RemoveAll(keep[i].path)
+		}
+	}
+	fs.pruneEmptyCalendarUnlocked()
+	return nil
+}
 
+func (fs *FileStore) listDayDirsUnlocked(loc *time.Location) ([]dayDir, error) {
 	years, err := os.ReadDir(fs.Root)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
+	var out []dayDir
 	for _, y := range years {
 		if !y.IsDir() {
 			continue
@@ -1098,11 +1139,32 @@ func (fs *FileStore) PruneOlderThan(retentionDays int, now time.Time, loc *time.
 				if err != nil {
 					continue
 				}
-				if dt.Before(cutoff) {
-					_ = os.RemoveAll(filepath.Join(mp, d.Name()))
-				}
+				out = append(out, dayDir{path: filepath.Join(mp, d.Name()), day: dt})
 			}
-			// remove empty month
+		}
+	}
+	return out, nil
+}
+
+func (fs *FileStore) pruneEmptyCalendarUnlocked() {
+	years, err := os.ReadDir(fs.Root)
+	if err != nil {
+		return
+	}
+	for _, y := range years {
+		if !y.IsDir() {
+			continue
+		}
+		yp := filepath.Join(fs.Root, y.Name())
+		months, err := os.ReadDir(yp)
+		if err != nil {
+			continue
+		}
+		for _, m := range months {
+			if !m.IsDir() {
+				continue
+			}
+			mp := filepath.Join(yp, m.Name())
 			if left, _ := os.ReadDir(mp); len(left) == 0 {
 				_ = os.Remove(mp)
 			}
@@ -1111,7 +1173,6 @@ func (fs *FileStore) PruneOlderThan(retentionDays int, now time.Time, loc *time.
 			_ = os.Remove(yp)
 		}
 	}
-	return nil
 }
 
 // SeedRoundFromSQLiteForDay dumps current SQLite snapshots into the given calendar day's round dir

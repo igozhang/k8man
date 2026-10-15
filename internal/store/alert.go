@@ -2,45 +2,11 @@ package store
 
 import (
 	"database/sql"
+	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"gitee.com/k8man/internal/model"
 )
-
-// DefaultFeishuWebhookURL is seeded when alert_webhooks is empty.
-const DefaultFeishuWebhookURL = "https://open.feishu.cn/open-apis/bot/v2/hook/e52319a0-09dc-40f1-8132-73d7df06af83"
-
-func (s *Store) seedDefaultAlertWebhook() error {
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(1) FROM alert_webhooks`).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
-	now := time.Now().UTC()
-	row := &model.AlertWebhook{
-		ID:        uuid.NewString(),
-		Name:      "默认飞书机器人",
-		URL:       DefaultFeishuWebhookURL,
-		Note:      "首次启动自动写入，可在告警页修改或删除",
-		Enabled:   true,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	return s.CreateAlertWebhook(row)
-}
-
-// EnsureDefaultAlertWebhook inserts the built-in Feishu hook when the table is empty.
-// Call from process startup (not migrate) so unit tests opening a temp DB do not get a live webhook.
-func (s *Store) EnsureDefaultAlertWebhook() error {
-	if s == nil {
-		return nil
-	}
-	return s.seedDefaultAlertWebhook()
-}
 
 func (s *Store) ListAlertWebhooks() ([]model.AlertWebhook, error) {
 	rows, err := s.db.Query(`SELECT id,name,url,note,enabled,created_at,updated_at FROM alert_webhooks ORDER BY created_at ASC`)
@@ -136,58 +102,79 @@ func scanAlertWebhook(r rowScanner) (model.AlertWebhook, error) {
 	return w, nil
 }
 
-// ListAlertSentFingerprints returns fingerprints already pushed for a cluster.
-func (s *Store) ListAlertSentFingerprints(clusterID string) (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT fingerprint,severity FROM alert_sent WHERE cluster_id=?`, clusterID)
+// AlertSentRow is one successfully pushed issue, kept until a recovery notice is delivered.
+type AlertSentRow struct {
+	Fingerprint string
+	Severity    string
+	Detail      string
+}
+
+// ListAlertedClusterIDs returns clusters that still have a delivered alert waiting for recovery.
+func (s *Store) ListAlertedClusterIDs() ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT cluster_id FROM alert_sent`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string]string{}
+	var ids []string
 	for rows.Next() {
-		var fp, sev string
-		if err := rows.Scan(&fp, &sev); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		out[fp] = sev
+		if strings.TrimSpace(id) != "" {
+			ids = append(ids, id)
+		}
+	}
+	if ids == nil {
+		ids = []string{}
+	}
+	return ids, rows.Err()
+}
+
+// ListAlertSent returns issues already pushed for a cluster.
+func (s *Store) ListAlertSent(clusterID string) (map[string]AlertSentRow, error) {
+	rows, err := s.db.Query(`SELECT fingerprint,severity,detail FROM alert_sent WHERE cluster_id=?`, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]AlertSentRow{}
+	for rows.Next() {
+		var row AlertSentRow
+		if err := rows.Scan(&row.Fingerprint, &row.Severity, &row.Detail); err != nil {
+			return nil, err
+		}
+		out[row.Fingerprint] = row
 	}
 	return out, rows.Err()
 }
 
-func (s *Store) UpsertAlertSent(clusterID, fingerprint, severity string, sentAt time.Time) error {
+func (s *Store) UpsertAlertSent(clusterID, fingerprint, severity, detail string, sentAt time.Time) error {
 	_, err := s.db.Exec(
-		`INSERT INTO alert_sent(cluster_id,fingerprint,severity,sent_at) VALUES(?,?,?,?)
-		 ON CONFLICT(cluster_id,fingerprint) DO UPDATE SET severity=excluded.severity, sent_at=excluded.sent_at`,
-		clusterID, fingerprint, severity, fmtTime(sentAt.UTC()),
+		`INSERT INTO alert_sent(cluster_id,fingerprint,severity,detail,sent_at) VALUES(?,?,?,?,?)
+		 ON CONFLICT(cluster_id,fingerprint) DO UPDATE SET severity=excluded.severity, detail=excluded.detail, sent_at=excluded.sent_at`,
+		clusterID, fingerprint, severity, detail, fmtTime(sentAt.UTC()),
 	)
 	return err
 }
 
-// PruneAlertSent removes fingerprints that are no longer present for the cluster.
-func (s *Store) PruneAlertSent(clusterID string, keep []string) error {
-	if len(keep) == 0 {
-		_, err := s.db.Exec(`DELETE FROM alert_sent WHERE cluster_id=?`, clusterID)
-		return err
+// DeleteAlertSent removes fingerprints after a recovery notice was delivered.
+func (s *Store) DeleteAlertSent(clusterID string, fingerprints []string) error {
+	for _, fp := range fingerprints {
+		if _, err := s.db.Exec(`DELETE FROM alert_sent WHERE cluster_id=? AND fingerprint=?`, clusterID, fp); err != nil {
+			return err
+		}
 	}
-	placeholders := make([]string, len(keep))
-	args := make([]any, 0, len(keep)+1)
-	args = append(args, clusterID)
-	for i, fp := range keep {
-		placeholders[i] = "?"
-		args = append(args, fp)
-	}
-	q := `DELETE FROM alert_sent WHERE cluster_id=? AND fingerprint NOT IN (` + joinCSV(placeholders) + `)`
-	_, err := s.db.Exec(q, args...)
-	return err
+	return nil
 }
 
-func joinCSV(parts []string) string {
-	if len(parts) == 0 {
-		return ""
+// ClearAlertSent drops every delivered fingerprint for a cluster.
+// Used when the kubeconfig is gone, so a deleted cluster is not probed again.
+func (s *Store) ClearAlertSent(clusterID string) error {
+	if strings.TrimSpace(clusterID) == "" {
+		return nil
 	}
-	out := parts[0]
-	for i := 1; i < len(parts); i++ {
-		out += "," + parts[i]
-	}
-	return out
+	_, err := s.db.Exec(`DELETE FROM alert_sent WHERE cluster_id=?`, clusterID)
+	return err
 }

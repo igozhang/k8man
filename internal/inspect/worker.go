@@ -22,7 +22,8 @@ type Options struct {
 	Concurrency    int // base parallel slots (default 4)
 	ConcurrencyMax int // hard cap when backlog expands (default 8)
 	DataDir        string
-	RetentionDays  int // inspection file retention (default 60)
+	RetentionDays  int // day dirs and auto daily docs older than this are removed (default 365)
+	RetentionMax   int // keep at most this many day dirs / auto daily docs (default 365)
 }
 
 // Worker runs per-cluster patrols on a 2h stagger and serves stored snapshots.
@@ -36,13 +37,24 @@ type Worker struct {
 	baseConcurrency int
 	maxConcurrency  int
 	retentionDays   int
+	retentionMax    int
 
 	now    func() time.Time
 	jitter func() time.Duration
 
-	gates    sync.Map // clusterID -> chan struct{} (cap 1)
-	inFlight atomic.Int32
-	dailyMu  sync.Mutex
+	gates     sync.Map // clusterID -> chan struct{} (cap 1)
+	inFlight  atomic.Int32
+	slotMu    sync.Mutex
+	startMu   sync.Mutex
+	lastStart time.Time
+	dailyMu   sync.Mutex
+
+	recoveryMu sync.Mutex
+	recovery   map[string]*recoveryTrack
+	alertRound sync.Map // clusterID -> int, round captured for the in-flight inspect
+
+	// runProbe, when set, replaces runClusterBody for recovery probes (tests).
+	runProbe func(ctx context.Context, clusterID string, force, syncNotify bool) (*Detail, error)
 }
 
 func New(st *store.Store, pool *kube.Pool, hosts *hostsfile.File) *Worker {
@@ -65,6 +77,10 @@ func NewWithOptions(st *store.Store, pool *kube.Pool, hosts *hostsfile.File, opt
 	if retain <= 0 {
 		retain = DefaultRetentionDays
 	}
+	retainMax := opts.RetentionMax
+	if retainMax <= 0 {
+		retainMax = DefaultRetentionMax
+	}
 	var notifier *alert.Notifier
 	if st != nil {
 		notifier = alert.New(st)
@@ -82,6 +98,7 @@ func NewWithOptions(st *store.Store, pool *kube.Pool, hosts *hostsfile.File, opt
 		baseConcurrency: base,
 		maxConcurrency:  max,
 		retentionDays:   retain,
+		retentionMax:    retainMax,
 		now:             time.Now,
 		jitter:          RandomJitter,
 	}
@@ -125,8 +142,11 @@ func (w *Worker) Loop(ctx context.Context) {
 	if w == nil {
 		return
 	}
+	if w.Alerts != nil {
+		w.Alerts.OnFired = w.noteAlertFired
+	}
 	go w.dailyArchiveLoop(ctx)
-	var lastStart time.Time
+	go w.recoveryProbeLoop(ctx)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -150,21 +170,20 @@ func (w *Worker) Loop(ctx context.Context) {
 			if !w.tryAcquireCluster(id) {
 				continue
 			}
-			if !lastStart.IsZero() {
-				if wait := MinStartGap - w.now().Sub(lastStart); wait > 0 {
-					if sleepCtx(ctx, wait) != nil {
-						w.releaseCluster(id)
-						return
-					}
-				}
+			if !w.tryTakeSlot(limit) {
+				w.releaseCluster(id)
+				break
 			}
-			lastStart = w.now()
-			w.inFlight.Add(1)
+			if err := w.reserveStart(ctx); err != nil {
+				w.inFlight.Add(-1)
+				w.releaseCluster(id)
+				return
+			}
 			started++
 			go func(clusterID string) {
 				defer w.inFlight.Add(-1)
 				defer w.releaseCluster(clusterID)
-				if _, err := w.runClusterBody(ctx, clusterID, false); err != nil &&
+				if _, err := w.runClusterBody(ctx, clusterID, false, pushAsync); err != nil &&
 					!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 					log.Printf("inspect %s: %v", clusterID, err)
 				}
@@ -172,8 +191,10 @@ func (w *Worker) Loop(ctx context.Context) {
 		}
 
 		if started == 0 {
+			// Nothing is due: sleep the full tick even if a recovery probe holds a slot.
+			// A 2s retry is only useful when due clusters were busy and should be retried.
 			pause := MinStartGap
-			if len(due) == 0 && w.inFlight.Load() == 0 {
+			if len(due) == 0 {
 				pause = Tick
 			}
 			if sleepCtx(ctx, pause) != nil {
@@ -205,10 +226,49 @@ func (w *Worker) RunCluster(ctx context.Context, clusterID string, force bool) (
 		return nil, err
 	}
 	defer w.releaseCluster(clusterID)
-	return w.runClusterBody(ctx, clusterID, force)
+	return w.runClusterBody(ctx, clusterID, force, pushAsync)
 }
 
-func (w *Worker) runClusterBody(ctx context.Context, clusterID string, force bool) (*Detail, error) {
+func (w *Worker) reserveStart(ctx context.Context) error {
+	w.startMu.Lock()
+	defer w.startMu.Unlock()
+	if !w.lastStart.IsZero() {
+		if wait := MinStartGap - w.now().Sub(w.lastStart); wait > 0 {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	w.lastStart = w.now()
+	return nil
+}
+
+func (w *Worker) tryTakeSlot(limit int) bool {
+	if limit < 1 {
+		limit = 1
+	}
+	w.slotMu.Lock()
+	defer w.slotMu.Unlock()
+	if int(w.inFlight.Load()) >= limit {
+		return false
+	}
+	w.inFlight.Add(1)
+	return true
+}
+
+type pushMode int
+
+const (
+	pushAsync pushMode = iota
+	pushSync
+	pushLater // caller notifies after releasing the concurrency slot
+)
+
+func (w *Worker) runClusterBody(ctx context.Context, clusterID string, force bool, push pushMode) (*Detail, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -234,6 +294,9 @@ func (w *Worker) runClusterBody(ctx context.Context, clusterID string, force boo
 			d.ClusterName = cl.Name
 			return d, nil
 		}
+	}
+	if w.Alerts != nil {
+		w.alertRound.Store(cl.ID, w.Alerts.NextRound(cl.ID))
 	}
 
 	if w.Hosts != nil {
@@ -297,14 +360,31 @@ func (w *Worker) runClusterBody(ctx context.Context, clusterID string, force boo
 			log.Printf("inspect dump %s: %v", cl.ID, err)
 		}
 	}
-	// Push after persist; Notifier uses its own timeout (does not depend on inspect ctx).
-	if w.Alerts != nil {
-		w.Alerts.NotifyCluster(ctx, cl, issues)
+	// Regular rounds push asynchronously so a slow webhook cannot stretch the patrol.
+	// Recovery probes notify after releasing the slot, still before rescheduling.
+	if push != pushLater {
+		w.deliverAlerts(cl, probe.Status, diag, issues, push == pushSync)
 	}
 	d := detailFromRow(cl.Name, row)
 	d.ClusterID = cl.ID
 	d.ClusterName = cl.Name
 	return d, nil
+}
+
+func (w *Worker) deliverAlerts(cl *model.Cluster, probeStatus string, diag *kube.DiagnoseReport, issues []kube.Issue, sync bool) {
+	if w == nil || w.Alerts == nil || cl == nil {
+		return
+	}
+	round := 0
+	if v, ok := w.alertRound.Load(cl.ID); ok {
+		round, _ = v.(int)
+	}
+	gate := alert.RecoverGateFor(probeStatus, diag)
+	if sync {
+		w.Alerts.Notify(cl, issues, gate, round)
+		return
+	}
+	w.Alerts.NotifyAsync(cl, issues, gate, round)
 }
 
 func applyProbe(cl *model.Cluster, probe kube.ProbeResult, now time.Time) {

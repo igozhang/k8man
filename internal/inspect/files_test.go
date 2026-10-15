@@ -1,6 +1,7 @@
 package inspect
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -166,5 +167,34 @@ func TestPruneOlderThan(t *testing.T) {
 	got, _ := fs.LoadDay(old, loc)
 	if len(got) != 0 {
 		t.Fatal("old day should be pruned")
+	}
+}
+
+func TestPruneRetentionKeepsNewestDays(t *testing.T) {
+	root := t.TempDir()
+	fs := NewFileStore(root)
+	loc := beijingLoc
+	days := []time.Time{
+		time.Date(2026, 9, 1, 0, 0, 0, 0, loc),
+		time.Date(2026, 9, 2, 0, 0, 0, 0, loc),
+		time.Date(2026, 9, 3, 0, 0, 0, 0, loc),
+	}
+	for _, day := range days {
+		row := &store.InspectionRow{ClusterID: "c1", CheckedAt: day.Add(12 * time.Hour), ProbeStatus: "ok"}
+		if err := fs.DumpRound("x", row, nil, loc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, loc)
+	if err := fs.PruneRetention(0, 2, now, loc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(fs.dayDir(days[0], loc)); !os.IsNotExist(err) {
+		t.Fatal("oldest day should be removed")
+	}
+	for _, day := range days[1:] {
+		if st, err := os.Stat(fs.dayDir(day, loc)); err != nil || !st.IsDir() {
+			t.Fatalf("day %s should stay: %v", day.Format("2006-01-02"), err)
+		}
 	}
 }

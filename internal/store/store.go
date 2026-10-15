@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS alert_sent (
   cluster_id TEXT NOT NULL,
   fingerprint TEXT NOT NULL,
   severity TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
   sent_at TEXT NOT NULL,
   PRIMARY KEY (cluster_id, fingerprint)
 );
@@ -125,6 +126,7 @@ CREATE TABLE IF NOT EXISTS alert_sent (
 	if err != nil {
 		return err
 	}
+	_, _ = s.db.Exec(`ALTER TABLE alert_sent ADD COLUMN detail TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 

@@ -154,3 +154,68 @@ func TestRepairAllDayDocID(t *testing.T) {
 		t.Fatal("uuid id should be gone")
 	}
 }
+
+func TestPruneAutoDailyDocs(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sh, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 15, 2, 0, 0, 0, sh)
+	mk := func(id, slug string, pinned bool, created time.Time) {
+		t.Helper()
+		d := &model.Doc{
+			ID: id, Title: id, Slug: slug, Category: DocCategoryInspectionReport,
+			Tags: []string{}, Summary: "s", Content: "body", Pinned: pinned,
+			CreatedAt: created, UpdatedAt: created,
+		}
+		if err := st.CreateDoc(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("inspectall20251014", "inspectall20251014", false, now.AddDate(0, 0, -366))
+	mk("inspectall20251015", "inspectall20251015", false, now)
+	mk("inspectall20200101", "inspectall20200101", true, now.AddDate(-6, 0, 0))
+	mk("manual-week", "manual-week", false, now.AddDate(-2, 0, 0))
+
+	w := New(st, nil, nil)
+	w.retentionDays = 365
+	w.retentionMax = 365
+	if err := w.pruneRetention(now); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := st.GetDoc("inspectall20251014"); d != nil {
+		t.Fatal("day older than 365 should be removed")
+	}
+	for _, id := range []string{"inspectall20251015", "inspectall20200101", "manual-week"} {
+		if d, _ := st.GetDoc(id); d == nil {
+			t.Fatalf("%s should stay", id)
+		}
+	}
+
+	mk("inspectall20261001", "inspectall20261001", false, now)
+	mk("inspectall20261002", "inspectall20261002", false, now)
+	mk("inspectall20261003", "inspectall20261003", false, now)
+	w.retentionMax = 2
+	if err := w.pruneRetention(now); err != nil {
+		t.Fatal(err)
+	}
+	left, err := st.ListDocs(DocCategoryInspectionReport, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, d := range left {
+		ids[d.ID] = true
+	}
+	if ids["inspectall20251015"] || ids["inspectall20261001"] || !ids["inspectall20261002"] || !ids["inspectall20261003"] {
+		t.Fatalf("count cap ids=%v", ids)
+	}
+	if !ids["inspectall20200101"] || !ids["manual-week"] {
+		t.Fatalf("pinned and manual should stay: %v", ids)
+	}
+}

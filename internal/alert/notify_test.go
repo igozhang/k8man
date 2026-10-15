@@ -1,11 +1,20 @@
 package alert
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"gitee.com/k8man/internal/kube"
+	"gitee.com/k8man/internal/model"
+	"gitee.com/k8man/internal/store"
 )
 
 func TestIsAlertable(t *testing.T) {
@@ -174,6 +183,247 @@ func TestControllerLabel(t *testing.T) {
 			t.Fatalf("%s: got %q want %q", in, got, want)
 		}
 	}
+}
+
+func TestClassifyAlertsRecovery(t *testing.T) {
+	now := time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)
+	fp := "pod|Pod|ns|web|CrashLoopBackOff"
+	nfs := "storage|StorageClass||nfs-sc|NFSHighUsage"
+	sent := map[string]store.AlertSentRow{
+		fp:  {Fingerprint: fp, Severity: "critical", Detail: "1. [严重] pod ns/web"},
+		nfs: {Fingerprint: nfs, Severity: "critical", Detail: "1. [严重] sc nfs-sc"},
+	}
+	pending, recovered := classifyAlerts(nil, sent, now, RecoverGate{OK: true})
+	if len(pending) != 0 || len(recovered) != 2 {
+		t.Fatalf("pending=%d recovered=%d", len(pending), len(recovered))
+	}
+	_, recovered = classifyAlerts(nil, sent, now, RecoverGate{})
+	if len(recovered) != 0 {
+		t.Fatal("incomplete scan must not recover")
+	}
+	_, recovered = classifyAlerts(nil, sent, now, RecoverGate{OK: true, HoldNFS: true})
+	if len(recovered) != 1 || recovered[0].Fingerprint != fp {
+		t.Fatalf("nfs hold recovered=%+v", recovered)
+	}
+	still := []kube.Issue{{
+		Severity: "warning", Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "CrashLoopBackOff",
+	}}
+	pending, recovered = classifyAlerts(still, sent, now, RecoverGate{OK: true})
+	if len(pending) != 0 || len(recovered) != 1 || recovered[0].Fingerprint != nfs {
+		t.Fatalf("decayed-but-present pending=%d recovered=%+v", len(pending), recovered)
+	}
+	escalated := []kube.Issue{{
+		Severity: "critical", Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "CrashLoopBackOff",
+	}}
+	sent[fp] = store.AlertSentRow{Fingerprint: fp, Severity: "error"}
+	pending, _ = classifyAlerts(escalated, sent, now, RecoverGate{OK: true})
+	if len(pending) != 1 {
+		t.Fatal("error to critical should re-alert")
+	}
+}
+
+func TestRecoverGateFor(t *testing.T) {
+	if RecoverGateFor("ok", nil).OK {
+		t.Fatal("nil diagnose")
+	}
+	if RecoverGateFor("error", &kube.DiagnoseReport{}).OK {
+		t.Fatal("probe failed")
+	}
+	if RecoverGateFor("ok", &kube.DiagnoseReport{Truncated: true}).OK {
+		t.Fatal("truncated")
+	}
+	if RecoverGateFor("ok", &kube.DiagnoseReport{Errors: map[string]string{"nodes": "timeout"}}).OK {
+		t.Fatal("category error")
+	}
+	g := RecoverGateFor("ok", &kube.DiagnoseReport{Scan: kube.DiagnoseScan{NFSSkipped: "no mount"}})
+	if !g.OK || !g.HoldNFS || g.HoldLargePod {
+		t.Fatalf("%+v", g)
+	}
+}
+
+func TestFormatRecovery(t *testing.T) {
+	now := time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)
+	msg := FormatRecovery("prod", []string{"1. [严重] pod ns/web\n   CrashLoopBackOff"}, now)
+	if !containsAll(msg, "【k8man 恢复】", "prod", "以下 1 条已恢复", "pod ns/web", "CrashLoopBackOff") {
+		t.Fatalf("%s", msg)
+	}
+}
+
+func TestNotifyClusterRecoveryAndIncomplete(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer srv.Close()
+
+	st := openAlertStore(t)
+	defer st.Close()
+	now := time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)
+	if err := st.CreateAlertWebhook(&model.AlertWebhook{
+		ID: "h1", Name: "t", URL: "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fp := "pod|Pod|ns|web|CrashLoopBackOff"
+	if err := st.UpsertAlertSent("c1", fp, "critical", "1. [严重] pod ns/web\n", now); err != nil {
+		t.Fatal(err)
+	}
+	n := New(st)
+	n.now = func() time.Time { return now }
+	n.Client = &http.Client{Transport: rewriteHost{base: srv.URL, rt: http.DefaultTransport}}
+	cl := &model.Cluster{ID: "c1", Name: "prod"}
+
+	n.notifyCluster(context.Background(), cl, nil, RecoverGate{}, 0)
+	if len(bodies) != 0 {
+		t.Fatalf("incomplete scan posted %d", len(bodies))
+	}
+	left, err := st.ListAlertSent("c1")
+	if err != nil || len(left) != 1 {
+		t.Fatalf("sent should stay: %v %+v", err, left)
+	}
+
+	n.notifyCluster(context.Background(), cl, nil, RecoverGate{OK: true}, 0)
+	if len(bodies) != 1 || !strings.Contains(bodies[0], "【k8man 恢复】") {
+		t.Fatalf("bodies=%v", bodies)
+	}
+	left, err = st.ListAlertSent("c1")
+	if err != nil || len(left) != 0 {
+		t.Fatalf("sent should clear: %v %+v", err, left)
+	}
+}
+
+func TestNotifySameClusterIsSerial(t *testing.T) {
+	var mu sync.Mutex
+	var inFlight, maxIn int
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		inFlight++
+		if inFlight > maxIn {
+			maxIn = inFlight
+		}
+		mu.Unlock()
+		started <- struct{}{}
+		<-release
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer srv.Close()
+
+	st := openAlertStore(t)
+	defer st.Close()
+	now := time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)
+	if err := st.CreateAlertWebhook(&model.AlertWebhook{
+		ID: "h1", Name: "t", URL: "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n := New(st)
+	n.now = func() time.Time { return now }
+	n.Client = &http.Client{Transport: rewriteHost{base: srv.URL, rt: http.DefaultTransport}}
+	cl := &model.Cluster{ID: "c1", Name: "prod"}
+	issue := kube.Issue{Severity: "critical", Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "CrashLoopBackOff"}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		n.Notify(cl, []kube.Issue{issue}, RecoverGate{}, 0)
+	}()
+	go func() {
+		defer wg.Done()
+		n.Notify(cl, []kube.Issue{issue}, RecoverGate{}, 0)
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("webhook did not start")
+	}
+	select {
+	case <-started:
+		t.Fatal("second webhook entered before the first finished")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	wg.Wait()
+	if maxIn != 1 {
+		t.Fatalf("max in flight %d", maxIn)
+	}
+	left, err := st.ListAlertSent("c1")
+	if err != nil || len(left) != 1 {
+		t.Fatalf("one fingerprint: %v %+v", err, left)
+	}
+}
+
+func TestStaleAlertRoundIsDropped(t *testing.T) {
+	var bodies int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodies++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer srv.Close()
+
+	st := openAlertStore(t)
+	defer st.Close()
+	now := time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)
+	if err := st.CreateAlertWebhook(&model.AlertWebhook{
+		ID: "h1", Name: "t", URL: "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n := New(st)
+	n.now = func() time.Time { return now }
+	n.Client = &http.Client{Transport: rewriteHost{base: srv.URL, rt: http.DefaultTransport}}
+	cl := &model.Cluster{ID: "c1", Name: "prod"}
+	issue := kube.Issue{Severity: "critical", Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "CrashLoopBackOff"}
+	first := n.NextRound(cl.ID)
+	second := n.NextRound(cl.ID)
+	n.Notify(cl, []kube.Issue{issue}, RecoverGate{}, first)
+	if bodies != 0 {
+		t.Fatalf("stale round posted %d", bodies)
+	}
+	n.Notify(cl, []kube.Issue{issue}, RecoverGate{}, second)
+	if bodies != 1 {
+		t.Fatalf("latest round bodies=%d", bodies)
+	}
+}
+
+type rewriteHost struct {
+	base string
+	rt   http.RoundTripper
+}
+
+func (r rewriteHost) RoundTrip(req *http.Request) (*http.Response, error) {
+	u, err := url.Parse(r.base)
+	if err != nil {
+		return nil, err
+	}
+	req = req.Clone(req.Context())
+	req.URL.Scheme = u.Scheme
+	req.URL.Host = u.Host
+	req.Host = u.Host
+	return r.rt.RoundTrip(req)
+}
+
+func openAlertStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
 }
 
 func containsAll(s string, parts ...string) bool {

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gitee.com/k8man/internal/kube"
@@ -22,8 +23,8 @@ const (
 	// NewWindow is how long an error+ issue counts as "newly appeared".
 	NewWindow = 2 * time.Hour
 	maxLines  = 12
-	// NotifyTimeout caps total push work so a slow Feishu never blocks inspect forever.
-	NotifyTimeout = 45 * time.Second
+	// NotifyTimeout caps one async push (firing plus recovery) so a slow Feishu cannot run forever.
+	NotifyTimeout = 90 * time.Second
 	maxWebhookURL = 512
 )
 
@@ -32,6 +33,15 @@ type Notifier struct {
 	Store  *store.Store
 	Client *http.Client
 	now    func() time.Time
+	// OnFired runs after a new or escalated alert is delivered. It must return quickly
+	// and must not call Notify.
+	OnFired func(clusterID string)
+
+	sendMu    sync.Mutex
+	sendLocks map[string]*sync.Mutex
+
+	roundMu sync.Mutex
+	rounds  map[string]int
 }
 
 func New(st *store.Store) *Notifier {
@@ -122,72 +132,97 @@ func ValidateWebhookURL(raw string) error {
 	return nil
 }
 
-// NotifyCluster filters issues, dedupes via alert_sent, and posts to enabled webhooks.
-// Uses its own timeout so a cancelled inspect context or slow Feishu cannot stall the caller.
-func (n *Notifier) NotifyCluster(_ context.Context, cluster *model.Cluster, issues []kube.Issue) {
+// RecoverGate says whether this round may close previously sent alerts.
+// OK requires a successful probe and a complete diagnose (not truncated, no category errors).
+// HoldNFS / HoldLargePod keep those fingerprints open when that probe was skipped this round.
+type RecoverGate struct {
+	OK           bool
+	HoldNFS      bool
+	HoldLargePod bool
+}
+
+// RecoverGateFor is closed unless probe succeeded and diagnose finished without truncation or category errors.
+func RecoverGateFor(probeStatus string, diag *kube.DiagnoseReport) RecoverGate {
+	if !strings.EqualFold(strings.TrimSpace(probeStatus), "ok") || diag == nil || diag.Truncated || len(diag.Errors) > 0 {
+		return RecoverGate{}
+	}
+	return RecoverGate{
+		OK:           true,
+		HoldNFS:      strings.TrimSpace(diag.Scan.NFSSkipped) != "",
+		HoldLargePod: strings.TrimSpace(diag.Scan.LargePodSkipped) != "",
+	}
+}
+
+// NextRound marks a new inspect result for this cluster. An older round still
+// waiting on a webhook must not send after this returns.
+func (n *Notifier) NextRound(clusterID string) int {
+	if n == nil || clusterID == "" {
+		return 0
+	}
+	n.roundMu.Lock()
+	defer n.roundMu.Unlock()
+	if n.rounds == nil {
+		n.rounds = map[string]int{}
+	}
+	n.rounds[clusterID]++
+	return n.rounds[clusterID]
+}
+
+func (n *Notifier) latestRound(clusterID string) int {
+	n.roundMu.Lock()
+	defer n.roundMu.Unlock()
+	return n.rounds[clusterID]
+}
+
+// Notify delivers firing and recovery notices and returns after webhook attempts finish.
+// round 0 skips the stale-round check (tests). A positive round sends only if it is still the latest.
+func (n *Notifier) Notify(cluster *model.Cluster, issues []kube.Issue, gate RecoverGate, round int) {
 	if n == nil || n.Store == nil || cluster == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), NotifyTimeout)
 	defer cancel()
-	n.notifyCluster(ctx, cluster, issues)
+	n.notifyCluster(ctx, cluster, issues, gate, round)
 }
 
-func (n *Notifier) notifyCluster(ctx context.Context, cluster *model.Cluster, issues []kube.Issue) {
+// NotifyAsync pushes firing and recovery notices without blocking the inspect round.
+func (n *Notifier) NotifyAsync(cluster *model.Cluster, issues []kube.Issue, gate RecoverGate, round int) {
+	if n == nil || n.Store == nil || cluster == nil {
+		return
+	}
+	cp := append([]kube.Issue(nil), issues...)
+	cl := *cluster
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("alert panic %s: %v", cl.ID, r)
+			}
+		}()
+		n.Notify(&cl, cp, gate, round)
+	}()
+}
+
+func (n *Notifier) notifyCluster(ctx context.Context, cluster *model.Cluster, issues []kube.Issue, gate RecoverGate, round int) {
+	// One cluster at a time. Async patrol pushes and recovery probes would otherwise
+	// both read alert_sent before either upserts, and send the same alert twice.
+	unlock := n.lockCluster(cluster.ID)
+	defer unlock()
+	if round > 0 && round != n.latestRound(cluster.ID) {
+		return
+	}
 	now := n.now()
 	if now.IsZero() {
 		now = time.Now()
 	}
-
-	keep := make([]string, 0, len(issues))
-	seenFP := map[string]struct{}{}
-	for _, it := range issues {
-		fp := IssueFingerprint(it)
-		if !fingerprintOK(fp) {
-			continue
-		}
-		if _, ok := seenFP[fp]; ok {
-			continue
-		}
-		seenFP[fp] = struct{}{}
-		keep = append(keep, fp)
-	}
-	if err := n.Store.PruneAlertSent(cluster.ID, keep); err != nil {
-		log.Printf("alert prune %s: %v", cluster.ID, err)
-	}
-
-	sent, err := n.Store.ListAlertSentFingerprints(cluster.ID)
+	sent, err := n.Store.ListAlertSent(cluster.ID)
 	if err != nil {
 		log.Printf("alert list-sent %s: %v", cluster.ID, err)
 		return
 	}
-
-	var pending []kube.Issue
-	pendingFP := map[string]struct{}{}
-	for _, it := range issues {
-		if !IsAlertable(it, now) {
-			continue
-		}
-		fp := IssueFingerprint(it)
-		if !fingerprintOK(fp) {
-			continue
-		}
-		if _, ok := pendingFP[fp]; ok {
-			continue
-		}
-		if prev, ok := sent[fp]; ok {
-			// Re-alert only when severity escalates to critical.
-			if !(strings.EqualFold(it.Severity, "critical") && !strings.EqualFold(prev, "critical")) {
-				continue
-			}
-		}
-		pendingFP[fp] = struct{}{}
-		pending = append(pending, it)
-	}
-	if len(pending) == 0 {
+	pending, recovered := classifyAlerts(issues, sent, now, gate)
+	if len(pending) == 0 && len(recovered) == 0 {
 		return
 	}
-
 	hooks, err := n.Store.ListEnabledAlertWebhooks()
 	if err != nil {
 		log.Printf("alert list-hooks: %v", err)
@@ -197,11 +232,65 @@ func (n *Notifier) notifyCluster(ctx context.Context, cluster *model.Cluster, is
 		return
 	}
 
-	text := FormatMessage(cluster.Name, pending, now)
+	fired := 0
+	if len(pending) > 0 {
+		if n.postHooks(ctx, cluster.ID, hooks, FormatMessage(cluster.Name, pending, now)) {
+			for _, it := range pending {
+				fp := IssueFingerprint(it)
+				if err := n.Store.UpsertAlertSent(cluster.ID, fp, it.Severity, formatIssueBlock(1, it), now); err != nil {
+					log.Printf("alert mark-sent %s: %v", cluster.ID, err)
+					continue
+				}
+				fired++
+			}
+		}
+	}
+	if fired > 0 && n.OnFired != nil {
+		n.OnFired(cluster.ID)
+	}
+	if ctx.Err() != nil {
+		log.Printf("alert aborted %s: %v", cluster.ID, ctx.Err())
+		return
+	}
+	if len(recovered) == 0 {
+		return
+	}
+	blocks := make([]string, len(recovered))
+	fps := make([]string, len(recovered))
+	for i, row := range recovered {
+		fps[i] = row.Fingerprint
+		blocks[i] = strings.TrimSpace(row.Detail)
+		if blocks[i] == "" {
+			blocks[i] = detailFromFingerprint(row.Fingerprint, row.Severity)
+		}
+	}
+	if n.postHooks(ctx, cluster.ID, hooks, FormatRecovery(cluster.Name, blocks, now)) {
+		if err := n.Store.DeleteAlertSent(cluster.ID, fps); err != nil {
+			log.Printf("alert clear-sent %s: %v", cluster.ID, err)
+		}
+	}
+}
+
+func (n *Notifier) lockCluster(id string) func() {
+	n.sendMu.Lock()
+	if n.sendLocks == nil {
+		n.sendLocks = map[string]*sync.Mutex{}
+	}
+	mu := n.sendLocks[id]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		n.sendLocks[id] = mu
+	}
+	n.sendMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
+}
+
+func (n *Notifier) postHooks(ctx context.Context, clusterID string, hooks []model.AlertWebhook, text string) bool {
 	okAny := false
 	for _, h := range hooks {
 		if ctx.Err() != nil {
-			log.Printf("alert aborted %s: %v", cluster.ID, ctx.Err())
+			log.Printf("alert aborted %s: %v", clusterID, ctx.Err())
 			break
 		}
 		if err := ValidateWebhookURL(h.URL); err != nil {
@@ -214,15 +303,107 @@ func (n *Notifier) notifyCluster(ctx context.Context, cluster *model.Cluster, is
 		}
 		okAny = true
 	}
-	if !okAny {
-		return
-	}
-	for _, it := range pending {
+	return okAny
+}
+
+func classifyAlerts(issues []kube.Issue, sent map[string]store.AlertSentRow, now time.Time, gate RecoverGate) (pending []kube.Issue, recovered []store.AlertSentRow) {
+	current := map[string]struct{}{}
+	pendingFP := map[string]struct{}{}
+	for _, it := range issues {
 		fp := IssueFingerprint(it)
-		if err := n.Store.UpsertAlertSent(cluster.ID, fp, it.Severity, now); err != nil {
-			log.Printf("alert mark-sent %s: %v", cluster.ID, err)
+		if !fingerprintOK(fp) {
+			continue
 		}
+		current[fp] = struct{}{}
+		if !IsAlertable(it, now) {
+			continue
+		}
+		if _, ok := pendingFP[fp]; ok {
+			continue
+		}
+		if prev, ok := sent[fp]; ok {
+			// Re-alert only when severity escalates to critical.
+			if !(strings.EqualFold(it.Severity, "critical") && !strings.EqualFold(prev.Severity, "critical")) {
+				continue
+			}
+		}
+		pendingFP[fp] = struct{}{}
+		pending = append(pending, it)
 	}
+	if !gate.OK {
+		return pending, nil
+	}
+	fps := make([]string, 0, len(sent))
+	for fp := range sent {
+		if _, ok := current[fp]; ok {
+			continue
+		}
+		if !allowRecover(fp, gate) {
+			continue
+		}
+		fps = append(fps, fp)
+	}
+	sort.Slice(fps, func(i, j int) bool {
+		ri, rj := sevRank(sent[fps[i]].Severity), sevRank(sent[fps[j]].Severity)
+		if ri != rj {
+			return ri < rj
+		}
+		return fps[i] < fps[j]
+	})
+	for _, fp := range fps {
+		recovered = append(recovered, sent[fp])
+	}
+	return pending, recovered
+}
+
+func allowRecover(fp string, gate RecoverGate) bool {
+	if !gate.OK {
+		return false
+	}
+	reason := fingerprintReason(fp)
+	if gate.HoldNFS && reason == "NFSHighUsage" {
+		return false
+	}
+	if gate.HoldLargePod && reason == "LargeEphemeral" {
+		return false
+	}
+	return true
+}
+
+func fingerprintReason(fp string) string {
+	parts := strings.Split(fp, "|")
+	if len(parts) < 5 {
+		return ""
+	}
+	return strings.Join(parts[4:], "|")
+}
+
+func sevRank(s string) int {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "critical":
+		return 0
+	case "error":
+		return 1
+	case "warning":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func detailFromFingerprint(fp, severity string) string {
+	parts := strings.Split(fp, "|")
+	it := kube.Issue{Severity: severity}
+	if len(parts) >= 5 {
+		it.Category = parts[0]
+		it.Kind = parts[1]
+		it.Namespace = parts[2]
+		it.Name = parts[3]
+		it.Reason = strings.Join(parts[4:], "|")
+	} else {
+		it.Name = fp
+	}
+	return formatIssueBlock(1, it)
 }
 
 // FormatMessage builds a plain-text Feishu body.
@@ -251,6 +432,56 @@ func FormatMessage(clusterName string, issues []kube.Issue, now time.Time) strin
 		b.WriteString(fmt.Sprintf("…另有 %d 条未列出\n", len(issues)-maxLines))
 	}
 	return b.String()
+}
+
+// FormatRecovery builds the plain-text body for issues that disappeared after a complete diagnose.
+// blocks are stored alert bodies (already numbered); they are renumbered here.
+func FormatRecovery(clusterName string, blocks []string, now time.Time) string {
+	var b strings.Builder
+	b.WriteString("【k8man 恢复】\n")
+	b.WriteString("集群: ")
+	if strings.TrimSpace(clusterName) == "" {
+		b.WriteString("(未命名)")
+	} else {
+		b.WriteString(clusterName)
+	}
+	b.WriteString("\n")
+	b.WriteString("时间: ")
+	b.WriteString(now.Local().Format("2006-01-02 15:04:05"))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("以下 %d 条已恢复:\n", len(blocks)))
+	limit := len(blocks)
+	if limit > maxLines {
+		limit = maxLines
+	}
+	for i := 0; i < limit; i++ {
+		b.WriteString(renumberBlock(i+1, blocks[i]))
+		b.WriteString("\n")
+	}
+	if len(blocks) > maxLines {
+		b.WriteString(fmt.Sprintf("…另有 %d 条未列出\n", len(blocks)-maxLines))
+	}
+	return b.String()
+}
+
+func renumberBlock(n int, block string) string {
+	block = strings.TrimRight(block, "\n")
+	if i := strings.IndexByte(block, '.'); i > 0 && i < 6 && isDigits(block[:i]) {
+		return fmt.Sprintf("%d.%s", n, block[i+1:])
+	}
+	return fmt.Sprintf("%d. %s", n, block)
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func formatIssueBlock(n int, it kube.Issue) string {

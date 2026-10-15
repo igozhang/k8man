@@ -17,10 +17,18 @@ import (
 
 const fileName = "hosts"
 
-const defaultHeader = `# k8man hosts — IP hostname（空格分隔）
-# 可直接编辑本文件，也可在页面「Hosts 管理」中修改；保存后自动生效。
-#
+// docMarker starts the comment tail. Effective "IP hostname" lines stay above it.
+const docMarker = "# ============================================================================="
 
+// defaultBody: no entries yet (head is empty). Tail is explanation and examples.
+const defaultBody = docMarker + `
+# 说明（以下均为注释。生效条目写在本段之前，一行一条：IP hostname）
+# =============================================================================
+# 可直接编辑本文件，或在「KubeConfig」页 Hosts 中修改，保存后约 2 秒生效。
+# 本文件已存在时，启动不会覆盖。
+#
+# ----- 示例（去掉行首 # 才生效）-----
+# 10.10.10.10 igozhang.cn
 `
 
 // File is the source of truth for private host resolution under etc/hosts.
@@ -53,7 +61,7 @@ func (f *File) Ensure() error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return os.WriteFile(f.path, []byte(defaultHeader), 0o644)
+	return os.WriteFile(f.path, []byte(defaultBody), 0o644)
 }
 
 type lineKind int
@@ -243,12 +251,29 @@ func (f *File) Create(hostname, ip string) (*model.HostAlias, error) {
 			return nil, fmt.Errorf("hostname already exists")
 		}
 	}
-	lines = append(lines, fileLine{kind: lineEntry, ip: ip, hostname: hostname})
+	lines = insertEntry(lines, fileLine{kind: lineEntry, ip: ip, hostname: hostname})
 	if err := f.writeLines(lines); err != nil {
 		return nil, err
 	}
 	f.applyResolver(lines)
 	return &model.HostAlias{ID: hostname, Hostname: hostname, IP: ip}, nil
+}
+
+// insertEntry keeps effective lines above the comment tail.
+// Files without the marker (older hosts) still append at the end.
+func insertEntry(lines []fileLine, entry fileLine) []fileLine {
+	idx := len(lines)
+	for i, ln := range lines {
+		if ln.kind == lineComment && strings.HasPrefix(strings.TrimSpace(ln.raw), docMarker) {
+			idx = i
+			break
+		}
+	}
+	out := make([]fileLine, 0, len(lines)+1)
+	out = append(out, lines[:idx]...)
+	out = append(out, entry)
+	out = append(out, lines[idx:]...)
+	return out
 }
 
 func (f *File) Update(id, hostname, ip string) (*model.HostAlias, error) {
@@ -336,7 +361,7 @@ func (f *File) SeedFromMap(entries map[string]string) error {
 		if Validate(host, ip) != nil {
 			continue
 		}
-		lines = append(lines, fileLine{kind: lineEntry, ip: ip, hostname: host})
+		lines = insertEntry(lines, fileLine{kind: lineEntry, ip: ip, hostname: host})
 	}
 	if err := f.writeLines(lines); err != nil {
 		return err
