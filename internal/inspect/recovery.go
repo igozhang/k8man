@@ -172,6 +172,16 @@ func (w *Worker) kickRecoveryProbes(ctx context.Context) {
 		if !w.recoveryStillDue(item.id, item.gen, w.now()) {
 			continue
 		}
+		// NFS and large-pod alerts wait for the 2h diagnose. Do not spend a slot on them.
+		fast, drop := w.recoveryProbePlan(item.id)
+		if drop {
+			w.dropRecoveryIfGen(item.id, item.gen)
+			continue
+		}
+		if !fast {
+			w.rescheduleRecovery(item.id, item.gen)
+			continue
+		}
 		if !w.tryAcquireCluster(item.id) {
 			continue
 		}
@@ -202,16 +212,16 @@ func (w *Worker) recoveryStillDue(id string, gen int, now time.Time) bool {
 
 func (w *Worker) execRecoveryProbe(ctx context.Context, id string, gen int) {
 	defer w.releaseCluster(id)
-	var detail *Detail
 	var err error
+	var outcome *scopedOutcome
 	func() {
 		defer w.inFlight.Add(-1)
 		if w.runProbe != nil {
-			detail, err = w.runProbe(ctx, id, true, true)
+			_, err = w.runProbe(ctx, id, true, true)
 			return
 		}
-		// Diagnose holds a concurrency slot. The webhook wait does not.
-		detail, err = w.runClusterBody(ctx, id, true, pushLater)
+		// Object GETs hold a concurrency slot. The webhook wait does not.
+		outcome, err = w.scopedRecovery(ctx, id)
 	}()
 	if errors.Is(err, ErrNotFound) {
 		w.clearClusterAlerts(id)
@@ -224,19 +234,8 @@ func (w *Worker) execRecoveryProbe(ctx context.Context, id string, gen int) {
 	if ctx.Err() != nil {
 		return
 	}
-	if w.runProbe == nil && err == nil && detail != nil && w.Store != nil {
-		cl, gerr := w.Store.GetCluster(id, false)
-		if gerr != nil {
-			log.Printf("recovery probe cluster %s: %v", id, gerr)
-			w.finishRecoveryProbe(id, gen)
-			return
-		}
-		if cl == nil {
-			w.clearClusterAlerts(id)
-			w.dropRecoveryIfGen(id, gen)
-			return
-		}
-		w.deliverAlerts(cl, detail.Probe.Status, detail.Diagnose, detail.Issues, true)
+	if w.runProbe == nil && err == nil && outcome != nil && !outcome.skipNotify && w.Alerts != nil && outcome.cluster != nil {
+		w.Alerts.Notify(outcome.cluster, outcome.issues, outcome.gate, outcome.round)
 	}
 	w.finishRecoveryProbe(id, gen)
 }

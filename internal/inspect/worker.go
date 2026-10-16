@@ -53,7 +53,7 @@ type Worker struct {
 	recovery   map[string]*recoveryTrack
 	alertRound sync.Map // clusterID -> int, round captured for the in-flight inspect
 
-	// runProbe, when set, replaces runClusterBody for recovery probes (tests).
+	// runProbe, when set, replaces the scoped recovery body (tests).
 	runProbe func(ctx context.Context, clusterID string, force, syncNotify bool) (*Detail, error)
 }
 

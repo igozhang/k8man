@@ -57,6 +57,22 @@ func New(st *store.Store) *Notifier {
 	}
 }
 
+// CanonicalFingerprint folds a stored key the same way IssueFingerprint does.
+func CanonicalFingerprint(fp string) string {
+	return canonicalFingerprint(fp)
+}
+
+// canonicalReason folds reasons that are one incident with two labels.
+// Only ErrImagePull and ImagePullBackOff: the kubelet alternates them while the pull is still failing.
+func canonicalReason(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "ErrImagePull", "ImagePullBackOff":
+		return "ImagePull"
+	default:
+		return strings.TrimSpace(reason)
+	}
+}
+
 // IssueFingerprint identifies an issue across scans (severity excluded so decay does not re-fire).
 func IssueFingerprint(it kube.Issue) string {
 	return strings.Join([]string{
@@ -64,8 +80,19 @@ func IssueFingerprint(it kube.Issue) string {
 		strings.TrimSpace(it.Kind),
 		strings.TrimSpace(it.Namespace),
 		strings.TrimSpace(it.Name),
-		strings.TrimSpace(it.Reason),
+		canonicalReason(it.Reason),
 	}, "|")
+}
+
+// canonicalFingerprint maps a stored fingerprint onto IssueFingerprint, including rows saved
+// before equivalent reasons were folded together.
+func canonicalFingerprint(fp string) string {
+	parts := strings.Split(fp, "|")
+	if len(parts) < 5 {
+		return fp
+	}
+	reason := canonicalReason(strings.Join(parts[4:], "|"))
+	return strings.Join(append(parts[:4], reason), "|")
 }
 
 func fingerprintOK(fp string) bool {
@@ -133,12 +160,16 @@ func ValidateWebhookURL(raw string) error {
 }
 
 // RecoverGate says whether this round may close previously sent alerts.
-// OK requires a successful probe and a complete diagnose (not truncated, no category errors).
-// HoldNFS / HoldLargePod keep those fingerprints open when that probe was skipped this round.
+// OK on a full diagnose requires a successful probe and a complete diagnose
+// (not truncated, no category errors). HoldNFS / HoldLargePod keep those
+// fingerprints open when that scan was skipped.
+// Scope, when non-nil, is the only set of canonical fingerprints this round
+// may close. Nil means a complete diagnose. An empty map closes nothing.
 type RecoverGate struct {
 	OK           bool
 	HoldNFS      bool
 	HoldLargePod bool
+	Scope        map[string]struct{}
 }
 
 // RecoverGateFor is closed unless probe succeeded and diagnose finished without truncation or category errors.
@@ -172,6 +203,16 @@ func (n *Notifier) latestRound(clusterID string) int {
 	n.roundMu.Lock()
 	defer n.roundMu.Unlock()
 	return n.rounds[clusterID]
+}
+
+// CurrentRound is the newest inspect generation for this cluster.
+// A recovery recheck uses it without incrementing, so it does not discard
+// a full diagnose that is still waiting to push.
+func (n *Notifier) CurrentRound(clusterID string) int {
+	if n == nil || clusterID == "" {
+		return 0
+	}
+	return n.latestRound(clusterID)
 }
 
 // Notify delivers firing and recovery notices and returns after webhook attempts finish.
@@ -219,6 +260,7 @@ func (n *Notifier) notifyCluster(ctx context.Context, cluster *model.Cluster, is
 		log.Printf("alert list-sent %s: %v", cluster.ID, err)
 		return
 	}
+	sent = n.alignOpenSent(cluster.ID, issues, sent, now)
 	pending, recovered := classifyAlerts(issues, sent, now, gate)
 	if len(pending) == 0 && len(recovered) == 0 {
 		return
@@ -256,19 +298,92 @@ func (n *Notifier) notifyCluster(ctx context.Context, cluster *model.Cluster, is
 		return
 	}
 	blocks := make([]string, len(recovered))
-	fps := make([]string, len(recovered))
 	for i, row := range recovered {
-		fps[i] = row.Fingerprint
 		blocks[i] = strings.TrimSpace(row.Detail)
 		if blocks[i] == "" {
 			blocks[i] = detailFromFingerprint(row.Fingerprint, row.Severity)
 		}
 	}
 	if n.postHooks(ctx, cluster.ID, hooks, FormatRecovery(cluster.Name, blocks, now)) {
-		if err := n.Store.DeleteAlertSent(cluster.ID, fps); err != nil {
+		if err := n.Store.DeleteAlertSent(cluster.ID, fingerprintsToClear(sent, recovered)); err != nil {
 			log.Printf("alert clear-sent %s: %v", cluster.ID, err)
 		}
 	}
+}
+
+// alignOpenSent rewrites legacy fingerprints onto the current incident key without notifying.
+// A pull that flips between ErrImagePull and ImagePullBackOff stays one open alert.
+func (n *Notifier) alignOpenSent(clusterID string, issues []kube.Issue, sent map[string]store.AlertSentRow, now time.Time) map[string]store.AlertSentRow {
+	if n == nil || n.Store == nil || len(sent) == 0 {
+		return sent
+	}
+	current := map[string]kube.Issue{}
+	for _, it := range issues {
+		fp := IssueFingerprint(it)
+		if fingerprintOK(fp) {
+			current[fp] = it
+		}
+	}
+	type move struct {
+		from []string
+		sev  string
+		it   kube.Issue
+	}
+	groups := map[string]*move{}
+	for fp, row := range sent {
+		canon := canonicalFingerprint(fp)
+		it, ok := current[canon]
+		if !ok || canon == fp {
+			continue
+		}
+		g := groups[canon]
+		if g == nil {
+			g = &move{sev: row.Severity, it: it}
+			groups[canon] = g
+		}
+		g.from = append(g.from, fp)
+		if strings.EqualFold(row.Severity, "critical") {
+			g.sev = "critical"
+		}
+	}
+	if len(groups) == 0 {
+		return sent
+	}
+	out := make(map[string]store.AlertSentRow, len(sent))
+	for fp, row := range sent {
+		out[fp] = row
+	}
+	for canon, g := range groups {
+		detail := formatIssueBlock(1, g.it)
+		if err := n.Store.UpsertAlertSent(clusterID, canon, g.sev, detail, now); err != nil {
+			log.Printf("alert align %s: %v", clusterID, err)
+			continue
+		}
+		if err := n.Store.DeleteAlertSent(clusterID, g.from); err != nil {
+			log.Printf("alert align clear %s: %v", clusterID, err)
+			continue
+		}
+		for _, fp := range g.from {
+			delete(out, fp)
+		}
+		out[canon] = store.AlertSentRow{Fingerprint: canon, Severity: g.sev, Detail: detail}
+	}
+	return out
+}
+
+func fingerprintsToClear(sent map[string]store.AlertSentRow, recovered []store.AlertSentRow) []string {
+	want := map[string]struct{}{}
+	for _, row := range recovered {
+		want[canonicalFingerprint(row.Fingerprint)] = struct{}{}
+	}
+	fps := make([]string, 0, len(want))
+	for fp := range sent {
+		if _, ok := want[canonicalFingerprint(fp)]; ok {
+			fps = append(fps, fp)
+		}
+	}
+	sort.Strings(fps)
+	return fps
 }
 
 func (n *Notifier) lockCluster(id string) func() {
@@ -309,6 +424,13 @@ func (n *Notifier) postHooks(ctx context.Context, clusterID string, hooks []mode
 func classifyAlerts(issues []kube.Issue, sent map[string]store.AlertSentRow, now time.Time, gate RecoverGate) (pending []kube.Issue, recovered []store.AlertSentRow) {
 	current := map[string]struct{}{}
 	pendingFP := map[string]struct{}{}
+	byCanon := map[string][]store.AlertSentRow{}
+	for fp, row := range sent {
+		if row.Fingerprint == "" {
+			row.Fingerprint = fp
+		}
+		byCanon[canonicalFingerprint(fp)] = append(byCanon[canonicalFingerprint(fp)], row)
+	}
 	for _, it := range issues {
 		fp := IssueFingerprint(it)
 		if !fingerprintOK(fp) {
@@ -321,9 +443,9 @@ func classifyAlerts(issues []kube.Issue, sent map[string]store.AlertSentRow, now
 		if _, ok := pendingFP[fp]; ok {
 			continue
 		}
-		if prev, ok := sent[fp]; ok {
+		if prevs := byCanon[fp]; len(prevs) > 0 {
 			// Re-alert only when severity escalates to critical.
-			if !(strings.EqualFold(it.Severity, "critical") && !strings.EqualFold(prev.Severity, "critical")) {
+			if !(strings.EqualFold(it.Severity, "critical") && !groupHasCritical(prevs)) {
 				continue
 			}
 		}
@@ -335,7 +457,7 @@ func classifyAlerts(issues []kube.Issue, sent map[string]store.AlertSentRow, now
 	}
 	fps := make([]string, 0, len(sent))
 	for fp := range sent {
-		if _, ok := current[fp]; ok {
+		if _, ok := current[canonicalFingerprint(fp)]; ok {
 			continue
 		}
 		if !allowRecover(fp, gate) {
@@ -350,15 +472,39 @@ func classifyAlerts(issues []kube.Issue, sent map[string]store.AlertSentRow, now
 		}
 		return fps[i] < fps[j]
 	})
+	seen := map[string]struct{}{}
 	for _, fp := range fps {
-		recovered = append(recovered, sent[fp])
+		canon := canonicalFingerprint(fp)
+		if _, ok := seen[canon]; ok {
+			continue
+		}
+		seen[canon] = struct{}{}
+		row := sent[fp]
+		if row.Fingerprint == "" {
+			row.Fingerprint = fp
+		}
+		recovered = append(recovered, row)
 	}
 	return pending, recovered
+}
+
+func groupHasCritical(rows []store.AlertSentRow) bool {
+	for _, row := range rows {
+		if strings.EqualFold(row.Severity, "critical") {
+			return true
+		}
+	}
+	return false
 }
 
 func allowRecover(fp string, gate RecoverGate) bool {
 	if !gate.OK {
 		return false
+	}
+	if gate.Scope != nil {
+		if _, ok := gate.Scope[canonicalFingerprint(fp)]; !ok {
+			return false
+		}
 	}
 	reason := fingerprintReason(fp)
 	if gate.HoldNFS && reason == "NFSHighUsage" {

@@ -158,6 +158,42 @@ func TestKickArmsOpenAlerts(t *testing.T) {
 	}
 }
 
+func TestKickSkipsProbeWhenOnlySlowAlerts(t *testing.T) {
+	st := openRecoveryStore(t)
+	defer st.Close()
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	if err := st.CreateAlertWebhook(&model.AlertWebhook{
+		ID: "h1", Name: "t", URL: "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertAlertSent("c1", "storage|StorageClass||nfs-sc|NFSHighUsage", "critical", "detail", now); err != nil {
+		t.Fatal(err)
+	}
+	w := New(st, nil, nil)
+	w.now = func() time.Time { return now }
+	w.noteAlertFired("c1")
+	now = now.Add(recoveryFirstDelay)
+	w.now = func() time.Time { return now }
+	called := 0
+	w.runProbe = func(context.Context, string, bool, bool) (*Detail, error) {
+		called++
+		return nil, nil
+	}
+	w.kickRecoveryProbes(context.Background())
+	waitIdle(t, w)
+	if called != 0 {
+		t.Fatalf("NFS-only alerts must not call the API, called=%d", called)
+	}
+	w.recoveryMu.Lock()
+	stTrack := w.recovery["c1"]
+	w.recoveryMu.Unlock()
+	if stTrack == nil || !stTrack.nextAt.Equal(now.Add(recoveryFastEvery)) {
+		t.Fatalf("slow alert should stay scheduled without a probe: %+v", stTrack)
+	}
+}
+
 func TestRecoveryProbeDropsDeletedCluster(t *testing.T) {
 	st := openRecoveryStore(t)
 	defer st.Close()

@@ -85,6 +85,25 @@ func TestIssueFingerprint(t *testing.T) {
 	if IssueFingerprint(a) != IssueFingerprint(b) {
 		t.Fatal("fingerprint should ignore severity")
 	}
+	pull := kube.Issue{Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "ErrImagePull"}
+	backoff := pull
+	backoff.Reason = "ImagePullBackOff"
+	if IssueFingerprint(pull) != IssueFingerprint(backoff) {
+		t.Fatal("image pull reasons should be one incident")
+	}
+	if IssueFingerprint(pull) == IssueFingerprint(a) {
+		t.Fatal("image pull must not match crashloop")
+	}
+	oom := kube.Issue{Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "OOMKilled"}
+	if IssueFingerprint(oom) == IssueFingerprint(a) {
+		t.Fatal("oom and crashloop are different incidents")
+	}
+	down := kube.Issue{Category: "node", Kind: "Node", Name: "n1", Reason: "NotReady"}
+	unknown := down
+	unknown.Reason = "Unknown"
+	if IssueFingerprint(down) == IssueFingerprint(unknown) {
+		t.Fatal("notready and unknown are different incidents")
+	}
 }
 
 func TestFormatMessage(t *testing.T) {
@@ -219,6 +238,107 @@ func TestClassifyAlertsRecovery(t *testing.T) {
 	pending, _ = classifyAlerts(escalated, sent, now, RecoverGate{OK: true})
 	if len(pending) != 1 {
 		t.Fatal("error to critical should re-alert")
+	}
+}
+
+func TestClassifyScopeClosesOnlyRechecked(t *testing.T) {
+	now := time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)
+	pod := "pod|Pod|ns|web|CrashLoopBackOff"
+	nfs := "storage|StorageClass||nfs-sc|NFSHighUsage"
+	large := "storage|Pod|ns|big|LargeEphemeral"
+	img := "pod|Pod|ns|web|ErrImagePull"
+	sent := map[string]store.AlertSentRow{
+		pod:   {Fingerprint: pod, Severity: "critical", Detail: "pod"},
+		nfs:   {Fingerprint: nfs, Severity: "critical", Detail: "nfs"},
+		large: {Fingerprint: large, Severity: "critical", Detail: "large"},
+		img:   {Fingerprint: img, Severity: "critical", Detail: "img"},
+	}
+	_, recovered := classifyAlerts(nil, sent, now, RecoverGate{OK: true, Scope: map[string]struct{}{}})
+	if len(recovered) != 0 {
+		t.Fatalf("empty scope must not recover, got %+v", recovered)
+	}
+	scope := map[string]struct{}{canonicalFingerprint(pod): {}}
+	_, recovered = classifyAlerts(nil, sent, now, RecoverGate{OK: true, Scope: scope})
+	if len(recovered) != 1 || recovered[0].Fingerprint != pod {
+		t.Fatalf("only the rechecked pod should recover, got %+v", recovered)
+	}
+	scope = map[string]struct{}{canonicalFingerprint(img): {}}
+	_, recovered = classifyAlerts(nil, sent, now, RecoverGate{OK: true, Scope: scope})
+	if len(recovered) != 1 || canonicalFingerprint(recovered[0].Fingerprint) != canonicalFingerprint(img) {
+		t.Fatalf("image pull canonical scope should recover the stored label, got %+v", recovered)
+	}
+}
+
+func TestClassifyImagePullIsOneIncident(t *testing.T) {
+	now := time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)
+	errPull := "pod|Pod|ns|web|ErrImagePull"
+	backoff := "pod|Pod|ns|web|ImagePullBackOff"
+	sent := map[string]store.AlertSentRow{
+		errPull: {Fingerprint: errPull, Severity: "critical", Detail: "err"},
+		backoff: {Fingerprint: backoff, Severity: "critical", Detail: "backoff"},
+	}
+	still := []kube.Issue{{
+		Severity: "critical", Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "ImagePullBackOff",
+	}}
+	pending, recovered := classifyAlerts(still, sent, now, RecoverGate{OK: true})
+	if len(pending) != 0 || len(recovered) != 0 {
+		t.Fatalf("flip should be silent: pending=%d recovered=%d", len(pending), len(recovered))
+	}
+	pending, recovered = classifyAlerts(nil, sent, now, RecoverGate{OK: true})
+	if len(pending) != 0 || len(recovered) != 1 {
+		t.Fatalf("real clear: pending=%d recovered=%d", len(pending), len(recovered))
+	}
+	fps := fingerprintsToClear(sent, recovered)
+	if len(fps) != 2 {
+		t.Fatalf("both stored reasons should clear, got %v", fps)
+	}
+}
+
+func TestClassifyDifferentReasonsStaySeparate(t *testing.T) {
+	now := time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)
+	crash := "pod|Pod|ns|web|CrashLoopBackOff"
+	sent := map[string]store.AlertSentRow{
+		crash: {Fingerprint: crash, Severity: "critical", Detail: "crash"},
+	}
+	oom := []kube.Issue{{
+		Severity: "critical", Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "OOMKilled",
+	}}
+	pending, recovered := classifyAlerts(oom, sent, now, RecoverGate{OK: true})
+	if len(pending) != 1 || len(recovered) != 1 {
+		t.Fatalf("oom is not crashloop: pending=%d recovered=%d", len(pending), len(recovered))
+	}
+	notReady := []kube.Issue{{
+		Severity: "critical", Category: "node", Kind: "Node", Name: "n1", Reason: "NotReady",
+	}}
+	unknown := "node|Node||n1|Unknown"
+	pending, recovered = classifyAlerts(notReady, map[string]store.AlertSentRow{
+		unknown: {Fingerprint: unknown, Severity: "critical", Detail: "unknown"},
+	}, now, RecoverGate{OK: true})
+	if len(pending) != 1 || len(recovered) != 1 {
+		t.Fatalf("notready is not unknown: pending=%d recovered=%d", len(pending), len(recovered))
+	}
+}
+
+func TestAlignImagePullKeepsOneRow(t *testing.T) {
+	st := openAlertStore(t)
+	defer st.Close()
+	now := time.Date(2026, 10, 15, 20, 56, 38, 0, time.UTC)
+	n := New(st)
+	n.now = func() time.Time { return now }
+	fp := "pod|Pod|cattle-fleet-local-system|fleet-agent|ErrImagePull"
+	if err := st.UpsertAlertSent("c1", fp, "critical", "old", now); err != nil {
+		t.Fatal(err)
+	}
+	n.notifyCluster(context.Background(), &model.Cluster{ID: "c1", Name: "义乌-MOM"}, []kube.Issue{{
+		Severity: "critical", Category: "pod", Kind: "Pod",
+		Namespace: "cattle-fleet-local-system", Name: "fleet-agent", Reason: "ImagePullBackOff",
+	}}, RecoverGate{OK: true}, 0)
+	left, err := st.ListAlertSent("c1")
+	if err != nil || len(left) != 1 {
+		t.Fatalf("sent: %v %+v", err, left)
+	}
+	if _, ok := left["pod|Pod|cattle-fleet-local-system|fleet-agent|ImagePull"]; !ok {
+		t.Fatalf("want one image-pull row, got %+v", left)
 	}
 }
 
@@ -397,6 +517,19 @@ func TestStaleAlertRoundIsDropped(t *testing.T) {
 	n.Notify(cl, []kube.Issue{issue}, RecoverGate{}, second)
 	if bodies != 1 {
 		t.Fatalf("latest round bodies=%d", bodies)
+	}
+}
+
+func TestCurrentRoundDoesNotBump(t *testing.T) {
+	n := New(nil)
+	if n.CurrentRound("c1") != 0 {
+		t.Fatal("no inspect yet")
+	}
+	if got := n.NextRound("c1"); got != 1 || n.CurrentRound("c1") != 1 {
+		t.Fatalf("latest=%d current=%d", got, n.CurrentRound("c1"))
+	}
+	if n.CurrentRound("c1") != 1 {
+		t.Fatal("reading the current round must not open a new one")
 	}
 }
 

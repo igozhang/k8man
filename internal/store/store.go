@@ -229,6 +229,21 @@ func (s *Store) UpdateCluster(c *model.Cluster) error {
 	return err
 }
 
+// UpdateClusterProbe writes connectivity fields only.
+// Name, description, kubeconfig, and updated_at stay as the user last saved them.
+func (s *Store) UpdateClusterProbe(c *model.Cluster, full bool) error {
+	if c == nil || c.ID == "" {
+		return nil
+	}
+	if !full {
+		_, err := s.db.Exec(`UPDATE clusters SET status=?, last_error=? WHERE id=?`, c.Status, c.LastError, c.ID)
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE clusters SET perm_type=?,namespaces=?,server=?,status=?,last_error=?,front_proxy=?,kube_version=? WHERE id=?`,
+		c.PermType, encodeStrings(c.Namespaces), c.Server, c.Status, c.LastError, c.FrontProxy, c.KubeVersion, c.ID)
+	return err
+}
+
 func (s *Store) DeleteCluster(id string) error {
 	res, err := s.db.Exec(`DELETE FROM clusters WHERE id=?`, id)
 	if err != nil {

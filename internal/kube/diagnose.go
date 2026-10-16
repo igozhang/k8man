@@ -110,17 +110,17 @@ type DiagnoseScan struct {
 	FromCache      bool   `json:"fromCache"`
 	MetricsSkipped string `json:"metricsSkipped,omitempty"`
 	// LargePods / NFS*: filled by storage scan (kubelet summary + default/unique NFS SC).
-	LargePods         int      `json:"largePods"`
-	LargePodSkipped   string   `json:"largePodSkipped,omitempty"`
-	NFSUsagePercent   *float64 `json:"nfsUsagePercent,omitempty"`
-	NFSUsedBytes      int64    `json:"nfsUsedBytes,omitempty"`
-	NFSCapacityBytes  int64    `json:"nfsCapacityBytes,omitempty"`
-	NFSStorageClass   string   `json:"nfsStorageClass,omitempty"`
-	NFSServer         string   `json:"nfsServer,omitempty"` // IP or hostname
-	NFSPath           string   `json:"nfsPath,omitempty"`   // export path / share
-	NFSSource         string   `json:"nfsSource,omitempty"` // default | unique
-	NFSProbe          string   `json:"nfsProbe,omitempty"`  // summary | exec-df
-	NFSSkipped        string   `json:"nfsSkipped,omitempty"`
+	LargePods        int      `json:"largePods"`
+	LargePodSkipped  string   `json:"largePodSkipped,omitempty"`
+	NFSUsagePercent  *float64 `json:"nfsUsagePercent,omitempty"`
+	NFSUsedBytes     int64    `json:"nfsUsedBytes,omitempty"`
+	NFSCapacityBytes int64    `json:"nfsCapacityBytes,omitempty"`
+	NFSStorageClass  string   `json:"nfsStorageClass,omitempty"`
+	NFSServer        string   `json:"nfsServer,omitempty"` // IP or hostname
+	NFSPath          string   `json:"nfsPath,omitempty"`   // export path / share
+	NFSSource        string   `json:"nfsSource,omitempty"` // default | unique
+	NFSProbe         string   `json:"nfsProbe,omitempty"`  // summary | exec-df
+	NFSSkipped       string   `json:"nfsSkipped,omitempty"`
 }
 
 // DiagnoseReport is the diagnose API payload: standing problems only.
@@ -384,6 +384,17 @@ func nodeUsageFromMetrics(m metricsv1beta1.NodeMetrics) nodeUsage {
 		u.mem = q.AsApproximateFloat64()
 	}
 	return u
+}
+
+// NodeConditionIssues reports NotReady, Unknown, and pressure conditions.
+// Metrics are not read, so CPUHigh and MemoryHigh are never included.
+func NodeConditionIssues(n corev1.Node, now time.Time) []Issue {
+	return diagnoseNode(n, nodeUsage{}, now)
+}
+
+// PodIssues is the single-pod checklist used by diagnose.
+func PodIssues(p corev1.Pod, now time.Time) []Issue {
+	return diagnosePod(p, now)
 }
 
 func diagnoseNode(n corev1.Node, usage nodeUsage, now time.Time) []Issue {

@@ -454,6 +454,26 @@ func (c *Clients) GetPod(ctx context.Context, ns, name string) (*corev1.Pod, err
 	return c.Clientset.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
 }
 
+func (c *Clients) GetNode(ctx context.Context, name string) (*corev1.Node, error) {
+	return c.Clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+}
+
+func (c *Clients) GetDeployment(ctx context.Context, ns, name string) (*appsv1.Deployment, error) {
+	return c.Clientset.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (c *Clients) GetStatefulSet(ctx context.Context, ns, name string) (*appsv1.StatefulSet, error) {
+	return c.Clientset.AppsV1().StatefulSets(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (c *Clients) GetDaemonSet(ctx context.Context, ns, name string) (*appsv1.DaemonSet, error) {
+	return c.Clientset.AppsV1().DaemonSets(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (c *Clients) GetReplicaSet(ctx context.Context, ns, name string) (*appsv1.ReplicaSet, error) {
+	return c.Clientset.AppsV1().ReplicaSets(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
 func (c *Clients) DeletePod(ctx context.Context, ns, name string) error {
 	return c.Clientset.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{})
 }
