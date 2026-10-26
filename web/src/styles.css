@@ -1142,6 +1142,24 @@ body.is-drawer-resizing {
   border-radius: 12px;
   background: transparent;
 }
+/* 文档列表底部分页：与筛选条同高对齐 */
+.toolbar.pager {
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+.toolbar.pager .muted {
+  margin: 0;
+  line-height: var(--ctrl-line);
+  display: inline-flex;
+  align-items: center;
+  min-height: calc(var(--ctrl-pad-y) * 2 + var(--ctrl-font-sm) * var(--ctrl-line));
+}
+.toolbar.pager .pager-ellipsis {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 2px;
+  user-select: none;
+}
 .tag.sev-critical {
   background: rgba(180, 35, 24, 0.1);
   color: var(--danger);

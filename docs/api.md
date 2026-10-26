@@ -248,7 +248,7 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/docs?category=&q=` | 文档列表 |
+| GET | `/docs?category=&q=&page=&pageSize=` | 文档列表（分页；默认每页 20，最大 50；返回 `{items,total,page,pageSize}`） |
 | GET | `/docs/:docId` | 文档详情 |
 
 ### Hosts

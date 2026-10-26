@@ -547,12 +547,19 @@ func (h *Handler) PodStorageMetrics(c *gin.Context) {
 }
 
 func (h *Handler) ListDocs(c *gin.Context) {
-	list, err := h.Store.ListDocs(c.Query("category"), c.Query("q"))
+	page, _ := strconv.Atoi(c.Query("page"))
+	pageSize, _ := strconv.Atoi(c.Query("pageSize"))
+	list, total, page, pageSize, err := h.Store.ListDocsPage(c.Query("category"), c.Query("q"), page, pageSize)
 	if err != nil {
 		respond.Internal(c, err.Error())
 		return
 	}
-	respond.OK(c, list)
+	respond.OK(c, gin.H{
+		"items":    list,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+	})
 }
 
 func (h *Handler) GetDoc(c *gin.Context) {

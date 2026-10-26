@@ -275,19 +275,45 @@ func scanCluster(r rowScanner) (model.Cluster, error) {
 
 // ---- docs ----
 
-func (s *Store) ListDocs(category, q string) ([]model.Doc, error) {
-	query := `SELECT id,title,slug,category,tags,summary,content,pinned,created_at,updated_at FROM docs WHERE 1=1`
+const (
+	DefaultDocPageSize = 20
+	MaxDocPageSize     = 50
+)
+
+// NormalizeDocPage clamps page (>=1) and pageSize (default 20, max 50).
+func NormalizeDocPage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = DefaultDocPageSize
+	}
+	if pageSize > MaxDocPageSize {
+		pageSize = MaxDocPageSize
+	}
+	return page, pageSize
+}
+
+func docsListWhere(category, q string) (string, []any) {
+	where := `WHERE 1=1`
 	args := []any{}
 	if category != "" {
-		query += ` AND category=?`
+		where += ` AND category=?`
 		args = append(args, category)
 	}
 	if q != "" {
-		query += ` AND (title LIKE ? OR summary LIKE ?)`
+		where += ` AND (title LIKE ? OR summary LIKE ?)`
 		like := "%" + q + "%"
 		args = append(args, like, like)
 	}
-	query += ` ORDER BY pinned DESC, updated_at DESC`
+	return where, args
+}
+
+// ListDocs returns all matching docs (no body). Used by retention/repair jobs.
+func (s *Store) ListDocs(category, q string) ([]model.Doc, error) {
+	where, args := docsListWhere(category, q)
+	query := `SELECT id,title,slug,category,tags,summary,content,pinned,created_at,updated_at FROM docs ` + where +
+		` ORDER BY pinned DESC, updated_at DESC`
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -306,6 +332,44 @@ func (s *Store) ListDocs(category, q string) ([]model.Doc, error) {
 		list = []model.Doc{}
 	}
 	return list, rows.Err()
+}
+
+// ListDocsPage returns one page of docs (no body). page/pageSize are normalized;
+// out-of-range page is clamped to the last page.
+func (s *Store) ListDocsPage(category, q string, page, pageSize int) (list []model.Doc, total, outPage, outSize int, err error) {
+	page, pageSize = NormalizeDocPage(page, pageSize)
+	where, args := docsListWhere(category, q)
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM docs `+where, args...).Scan(&total); err != nil {
+		return nil, 0, page, pageSize, err
+	}
+	if total == 0 {
+		return []model.Doc{}, 0, 1, pageSize, nil
+	}
+	maxPage := (total + pageSize - 1) / pageSize
+	if page > maxPage {
+		page = maxPage
+	}
+	offset := (page - 1) * pageSize
+	query := `SELECT id,title,slug,category,tags,summary,content,pinned,created_at,updated_at FROM docs ` + where +
+		` ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?`
+	qArgs := append(append([]any{}, args...), pageSize, offset)
+	rows, err := s.db.Query(query, qArgs...)
+	if err != nil {
+		return nil, total, page, pageSize, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		d, err := scanDoc(rows)
+		if err != nil {
+			return nil, total, page, pageSize, err
+		}
+		d.Content = ""
+		list = append(list, d)
+	}
+	if list == nil {
+		list = []model.Doc{}
+	}
+	return list, total, page, pageSize, rows.Err()
 }
 
 func (s *Store) GetDocBySlug(slug string) (*model.Doc, error) {
