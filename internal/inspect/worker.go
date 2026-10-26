@@ -53,6 +53,9 @@ type Worker struct {
 	recovery   map[string]*recoveryTrack
 	alertRound sync.Map // clusterID -> int, round captured for the in-flight inspect
 
+	reachMu sync.Mutex
+	reach   map[string]*reachStreak // Probe Unreachable fire/recover hysteresis
+
 	// runProbe, when set, replaces the scoped recovery body (tests).
 	runProbe func(ctx context.Context, clusterID string, force, syncNotify bool) (*Detail, error)
 }
@@ -320,10 +323,15 @@ func (w *Worker) runClusterBody(ctx context.Context, clusterID string, force boo
 		log.Printf("inspect update cluster %s: %v", cl.ID, err)
 	}
 
+	probeOK := strings.EqualFold(strings.TrimSpace(probe.Status), "ok")
+	fireUC, recoverUC := w.noteReach(cl.ID, probeOK)
+
 	issues := make([]kube.Issue, 0)
 	var diag *kube.DiagnoseReport
-	if probe.Status != "ok" {
-		issues = append(issues, kubeconfigIssue(cl, probe))
+	if !probeOK {
+		if fireUC {
+			issues = append(issues, kubeconfigIssue(cl, probe))
+		}
 	} else {
 		issues, diag = w.diagnose(runCtx, cl)
 	}
@@ -363,7 +371,7 @@ func (w *Worker) runClusterBody(ctx context.Context, clusterID string, force boo
 	// Regular rounds push asynchronously so a slow webhook cannot stretch the patrol.
 	// Recovery probes notify after releasing the slot, still before rescheduling.
 	if push != pushLater {
-		w.deliverAlerts(cl, probe.Status, diag, issues, push == pushSync)
+		w.deliverAlerts(cl, probe.Status, diag, issues, push == pushSync, recoverUC)
 	}
 	d := detailFromRow(cl.Name, row)
 	d.ClusterID = cl.ID
@@ -371,7 +379,7 @@ func (w *Worker) runClusterBody(ctx context.Context, clusterID string, force boo
 	return d, nil
 }
 
-func (w *Worker) deliverAlerts(cl *model.Cluster, probeStatus string, diag *kube.DiagnoseReport, issues []kube.Issue, sync bool) {
+func (w *Worker) deliverAlerts(cl *model.Cluster, probeStatus string, diag *kube.DiagnoseReport, issues []kube.Issue, sync bool, recoverUnreachable bool) {
 	if w == nil || w.Alerts == nil || cl == nil {
 		return
 	}
@@ -380,6 +388,9 @@ func (w *Worker) deliverAlerts(cl *model.Cluster, probeStatus string, diag *kube
 		round, _ = v.(int)
 	}
 	gate := alert.RecoverGateFor(probeStatus, diag)
+	if gate.OK && !recoverUnreachable {
+		gate.HoldUnreachable = true
+	}
 	if sync {
 		w.Alerts.Notify(cl, issues, gate, round)
 		return

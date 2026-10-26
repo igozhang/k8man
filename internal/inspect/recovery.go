@@ -118,8 +118,9 @@ func (w *Worker) DropRecovery(id string) {
 		return
 	}
 	w.recoveryMu.Lock()
-	defer w.recoveryMu.Unlock()
 	delete(w.recovery, id)
+	w.recoveryMu.Unlock()
+	w.dropReach(id)
 }
 
 func (w *Worker) alertsEnabled() (bool, error) {

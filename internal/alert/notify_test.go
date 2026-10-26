@@ -224,6 +224,15 @@ func TestClassifyAlertsRecovery(t *testing.T) {
 	if len(recovered) != 1 || recovered[0].Fingerprint != fp {
 		t.Fatalf("nfs hold recovered=%+v", recovered)
 	}
+	uc := "kubeconfig|Kubeconfig||电白-TEST|Unreachable"
+	sentUC := map[string]store.AlertSentRow{
+		fp: {Fingerprint: fp, Severity: "critical", Detail: "pod"},
+		uc: {Fingerprint: uc, Severity: "critical", Detail: "uc"},
+	}
+	_, recovered = classifyAlerts(nil, sentUC, now, RecoverGate{OK: true, HoldUnreachable: true})
+	if len(recovered) != 1 || recovered[0].Fingerprint != fp {
+		t.Fatalf("unreachable hold recovered=%+v", recovered)
+	}
 	still := []kube.Issue{{
 		Severity: "warning", Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "CrashLoopBackOff",
 	}}

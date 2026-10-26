@@ -157,19 +157,28 @@ func (w *Worker) scopedRecovery(ctx context.Context, id string) (*scopedOutcome,
 		return nil, err
 	}
 	applyProbeStatus(cl, probe)
-	if err := w.Store.UpdateClusterProbe(cl, strings.EqualFold(strings.TrimSpace(probe.Status), "ok")); err != nil {
+	probeOK := strings.EqualFold(strings.TrimSpace(probe.Status), "ok")
+	if err := w.Store.UpdateClusterProbe(cl, probeOK); err != nil {
 		log.Printf("recovery probe update cluster %s: %v", cl.ID, err)
 	}
-	if !strings.EqualFold(strings.TrimSpace(probe.Status), "ok") {
+	fireUC, recoverUC := w.noteReach(cl.ID, probeOK)
+	if !probeOK {
+		var issues []kube.Issue
+		if fireUC {
+			issues = []kube.Issue{kubeconfigIssue(cl, probe)}
+		}
 		return &scopedOutcome{
 			cluster: cl,
-			issues:  []kube.Issue{kubeconfigIssue(cl, probe)},
+			issues:  issues,
 			gate:    alert.RecoverGate{},
 			round:   round,
 		}, nil
 	}
 
 	rc := newRechecker(w, runCtx, sent)
+	if recoverUC {
+		rc.scopeConnectivity(sent)
+	}
 	if w.Pool == nil {
 		log.Printf("recovery probe %s: kube client pool missing", cl.ID)
 		return rc.outcome(cl, round), nil
@@ -253,9 +262,7 @@ func newRechecker(w *Worker, ctx context.Context, sent map[string]store.AlertSen
 		}
 		switch category {
 		case "kubeconfig":
-			if reason == "Unreachable" || reason == "ClientError" {
-				rc.scope[canon] = struct{}{}
-			}
+			// Unreachable / ClientError enter Scope only after noteReach says recover.
 		case "pod":
 			if name == "" {
 				continue
@@ -276,6 +283,21 @@ func newRechecker(w *Worker, ctx context.Context, sent map[string]store.AlertSen
 		}
 	}
 	return rc
+}
+
+func (rc *rechecker) scopeConnectivity(sent map[string]store.AlertSentRow) {
+	if rc == nil {
+		return
+	}
+	for fp := range sent {
+		category, _, _, _, reason, ok := splitFingerprint(fp)
+		if !ok || category != "kubeconfig" {
+			continue
+		}
+		if reason == "Unreachable" || reason == "ClientError" {
+			rc.addScope(fp)
+		}
+	}
 }
 
 func workloadKind(kind string) bool {
@@ -353,8 +375,39 @@ func (rc *rechecker) recheckPod(key podKey, fps []string, now time.Time) {
 	if kind == "" {
 		return
 	}
-	if podMayClose(rc.controllerState(kind, pod.Namespace, name)) {
+	res := rc.controllerState(kind, pod.Namespace, name)
+	if res == ctrlGone {
 		rc.addScope(fps...)
+		return
+	}
+	if res != ctrlReady {
+		return
+	}
+	// Controller ready is not enough: close only fingerprints no longer present
+	// on this pod (CrashLoop cleared but Restarts left must not block recover).
+	issues := kube.PodIssues(*pod, now)
+	rc.closeOwnedPodAlerts(fps, issues)
+}
+
+// closeOwnedPodAlerts scopes fingerprints that disappeared from PodIssues and
+// keeps any remaining diagnose rows in still so they stay open / can re-alert.
+func (rc *rechecker) closeOwnedPodAlerts(fps []string, issues []kube.Issue) {
+	present := map[string]struct{}{}
+	for _, it := range issues {
+		present[alert.IssueFingerprint(it)] = struct{}{}
+	}
+	var closable []string
+	for _, fp := range fps {
+		if _, ok := present[alert.CanonicalFingerprint(fp)]; ok {
+			continue
+		}
+		closable = append(closable, fp)
+	}
+	if len(closable) > 0 {
+		rc.addScope(closable...)
+	}
+	if len(issues) > 0 {
+		rc.addStill(issues, true)
 	}
 }
 
@@ -573,6 +626,18 @@ func (rc *rechecker) addStill(issues []kube.Issue, allowNew bool) {
 
 func podMayClose(res ctrlResult) bool {
 	return res == ctrlReady || res == ctrlGone
+}
+
+// ownedPodFPClosable reports whether a stored fingerprint may close while the
+// controller is ready: the same canonical incident must no longer appear in PodIssues.
+func ownedPodFPClosable(fp string, issues []kube.Issue) bool {
+	canon := alert.CanonicalFingerprint(fp)
+	for _, it := range issues {
+		if alert.IssueFingerprint(it) == canon {
+			return false
+		}
+	}
+	return true
 }
 
 func controllerReady(desired, ready, miss int32) bool {

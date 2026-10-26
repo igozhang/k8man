@@ -1,6 +1,10 @@
 package inspect
 
-import "testing"
+import (
+	"testing"
+
+	"gitee.com/k8man/internal/kube"
+)
 
 func TestFastAlertFP(t *testing.T) {
 	if !fastAlertFP("pod|Pod|ns|web|CrashLoopBackOff") {
@@ -41,6 +45,25 @@ func TestControllerReadyDoesNotUseRolloutGrace(t *testing.T) {
 	}
 	if podMayClose(ctrlNotReady) || !podMayClose(ctrlReady) || !podMayClose(ctrlGone) || podMayClose(ctrlUnknown) {
 		t.Fatal("pod alerts close only when the controller is ready or gone")
+	}
+}
+
+func TestOwnedPodFPClosableIgnoresUnrelatedIssues(t *testing.T) {
+	crashFP := "pod|Pod|ns|web|CrashLoopBackOff"
+	crash := []kube.Issue{{
+		Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "CrashLoopBackOff",
+	}}
+	restarts := []kube.Issue{{
+		Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "Restarts",
+	}}
+	if ownedPodFPClosable(crashFP, crash) {
+		t.Fatal("CrashLoop fingerprint must stay open while CrashLoop remains")
+	}
+	if !ownedPodFPClosable(crashFP, restarts) {
+		t.Fatal("Restarts alone must not block CrashLoop recovery")
+	}
+	if !ownedPodFPClosable(crashFP, nil) {
+		t.Fatal("empty PodIssues should close")
 	}
 }
 

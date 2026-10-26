@@ -163,13 +163,16 @@ func ValidateWebhookURL(raw string) error {
 // OK on a full diagnose requires a successful probe and a complete diagnose
 // (not truncated, no category errors). HoldNFS / HoldLargePod keep those
 // fingerprints open when that scan was skipped.
+// HoldUnreachable keeps kubeconfig Unreachable / ClientError open until Probe
+// has succeeded enough times in a row (inspect-side hysteresis).
 // Scope, when non-nil, is the only set of canonical fingerprints this round
 // may close. Nil means a complete diagnose. An empty map closes nothing.
 type RecoverGate struct {
-	OK           bool
-	HoldNFS      bool
-	HoldLargePod bool
-	Scope        map[string]struct{}
+	OK              bool
+	HoldNFS         bool
+	HoldLargePod    bool
+	HoldUnreachable bool
+	Scope           map[string]struct{}
 }
 
 // RecoverGateFor is closed unless probe succeeded and diagnose finished without truncation or category errors.
@@ -511,6 +514,9 @@ func allowRecover(fp string, gate RecoverGate) bool {
 		return false
 	}
 	if gate.HoldLargePod && reason == "LargeEphemeral" {
+		return false
+	}
+	if gate.HoldUnreachable && (reason == "Unreachable" || reason == "ClientError") {
 		return false
 	}
 	return true
