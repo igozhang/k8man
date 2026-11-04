@@ -178,3 +178,28 @@ func (s *Store) ClearAlertSent(clusterID string) error {
 	_, err := s.db.Exec(`DELETE FROM alert_sent WHERE cluster_id=?`, clusterID)
 	return err
 }
+
+// GetAlertMuteTestClusters reports whether kubeconfig titles containing test/测试
+// should skip media notify. Missing row defaults to true (feature on).
+func (s *Store) GetAlertMuteTestClusters() (bool, error) {
+	var v int
+	err := s.db.QueryRow(`SELECT mute_test_clusters FROM alert_settings WHERE id=1`).Scan(&v)
+	if err == sql.ErrNoRows {
+		return true, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	return v != 0, nil
+}
+
+// SetAlertMuteTestClusters upserts the single alert_settings row.
+func (s *Store) SetAlertMuteTestClusters(mute bool) error {
+	now := fmtTime(time.Now().UTC())
+	_, err := s.db.Exec(
+		`INSERT INTO alert_settings(id, mute_test_clusters, updated_at) VALUES(1,?,?)
+		 ON CONFLICT(id) DO UPDATE SET mute_test_clusters=excluded.mute_test_clusters, updated_at=excluded.updated_at`,
+		boolToInt(mute), now,
+	)
+	return err
+}

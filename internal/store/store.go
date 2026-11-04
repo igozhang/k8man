@@ -127,7 +127,14 @@ CREATE TABLE IF NOT EXISTS alert_sent (
 		return err
 	}
 	_, _ = s.db.Exec(`ALTER TABLE alert_sent ADD COLUMN detail TEXT NOT NULL DEFAULT ''`)
-	return nil
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS alert_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  mute_test_clusters INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+`)
+	return err
 }
 
 func encodeStrings(v []string) string {

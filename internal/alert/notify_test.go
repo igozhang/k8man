@@ -17,6 +17,77 @@ import (
 	"gitee.com/k8man/internal/store"
 )
 
+func TestTitleLooksLikeTest(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"义乌-test", true},
+		{"义乌-TEST", true},
+		{"测试环境", true},
+		{"prod-测试", true},
+		{"义乌-MOM", false},
+		{"prod", false},
+		{"", false},
+		{"contest", true}, // substring match by design
+	}
+	for _, tc := range cases {
+		if got := TitleLooksLikeTest(tc.name); got != tc.want {
+			t.Fatalf("%q: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+	if MuteMediaForCluster("义乌-test", true) != true {
+		t.Fatal("mute on + test title")
+	}
+	if MuteMediaForCluster("义乌-test", false) {
+		t.Fatal("mute off should not mute")
+	}
+	if MuteMediaForCluster("prod", true) {
+		t.Fatal("prod should not mute")
+	}
+}
+
+func TestNotifyMuteTestClusterSkipsMedia(t *testing.T) {
+	var bodies int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodies++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer srv.Close()
+
+	st := openAlertStore(t)
+	defer st.Close()
+	now := time.Date(2026, 11, 4, 2, 0, 0, 0, time.UTC)
+	if err := st.CreateAlertWebhook(&model.AlertWebhook{
+		ID: "h1", Name: "t", URL: "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n := New(st)
+	n.now = func() time.Time { return now }
+	n.Client = &http.Client{Transport: rewriteHost{base: srv.URL, rt: http.DefaultTransport}}
+	issue := kube.Issue{Severity: "critical", Category: "pod", Kind: "Pod", Namespace: "ns", Name: "web", Reason: "CrashLoopBackOff"}
+
+	n.Notify(&model.Cluster{ID: "c-test", Name: "义乌-test"}, []kube.Issue{issue}, RecoverGate{}, 0)
+	if bodies != 0 {
+		t.Fatalf("muted test cluster posted %d", bodies)
+	}
+	left, err := st.ListAlertSent("c-test")
+	if err != nil || len(left) != 0 {
+		t.Fatalf("muted must not write alert_sent: %v %+v", err, left)
+	}
+
+	if err := st.SetAlertMuteTestClusters(false); err != nil {
+		t.Fatal(err)
+	}
+	n.Notify(&model.Cluster{ID: "c-test", Name: "义乌-test"}, []kube.Issue{issue}, RecoverGate{}, 0)
+	if bodies != 1 {
+		t.Fatalf("mute off should post, got %d", bodies)
+	}
+}
+
 func TestIsAlertable(t *testing.T) {
 	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)
 

@@ -116,5 +116,6 @@ export const writeApi = {
   createAlertWebhook: (payload) => http.post('/write/alert-webhooks', payload),
   updateAlertWebhook: (id, payload) => http.put(`/write/alert-webhooks/${id}`, payload),
   deleteAlertWebhook: (id) => http.delete(`/write/alert-webhooks/${id}`),
-  testAlertWebhook: (id) => http.post(`/write/alert-webhooks/${id}/test`, {}, { timeout: 20000 })
+  testAlertWebhook: (id) => http.post(`/write/alert-webhooks/${id}/test`, {}, { timeout: 20000 }),
+  updateAlertSettings: (payload) => http.put('/write/alert-settings', payload)
 }

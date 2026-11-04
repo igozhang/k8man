@@ -93,13 +93,21 @@ func (w *Worker) armMissingAlerts() {
 		log.Printf("recovery probe list: %v", err)
 		return
 	}
+	// Resolve mute outside recoveryMu — GetCluster/settings must not run under that lock.
+	arm := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if cl, err := w.Store.GetCluster(id, false); err == nil && cl != nil && w.mediaMuted(cl) {
+			continue
+		}
+		arm = append(arm, id)
+	}
 	now := w.now()
 	w.recoveryMu.Lock()
 	defer w.recoveryMu.Unlock()
 	if w.recovery == nil {
 		w.recovery = map[string]*recoveryTrack{}
 	}
-	for _, id := range ids {
+	for _, id := range arm {
 		if _, exists := w.recovery[id]; exists {
 			continue
 		}
@@ -108,6 +116,27 @@ func (w *Worker) armMissingAlerts() {
 			nextAt:     now.Add(recoveryFirstDelay),
 			generation: 1,
 		}
+	}
+}
+
+// pruneMutedRecovery drops tracks for clusters whose titles are media-muted,
+// so turning mute on stops probes within one recovery tick (not waiting for nextAt).
+func (w *Worker) pruneMutedRecovery() {
+	if w == nil || w.Store == nil {
+		return
+	}
+	w.recoveryMu.Lock()
+	ids := make([]string, 0, len(w.recovery))
+	for id := range w.recovery {
+		ids = append(ids, id)
+	}
+	w.recoveryMu.Unlock()
+	for _, id := range ids {
+		cl, err := w.Store.GetCluster(id, false)
+		if err != nil || cl == nil || !w.mediaMuted(cl) {
+			continue
+		}
+		w.DropRecovery(id)
 	}
 }
 
@@ -150,6 +179,7 @@ func (w *Worker) kickRecoveryProbes(ctx context.Context) {
 	// Pick up alerts that were open before this process, or after webhooks were turned back on.
 	// Existing tracks are left alone, so a fresh 3-minute delay is not reset every tick.
 	w.armMissingAlerts()
+	w.pruneMutedRecovery()
 	now := w.now()
 	type dueProbe struct {
 		id  string

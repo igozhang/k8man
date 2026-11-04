@@ -881,3 +881,20 @@ func (h *Handler) TestAlertWebhook(c *gin.Context) {
 	}
 	respond.OK(c, gin.H{"ok": true, "id": id})
 }
+
+func (h *Handler) UpdateAlertSettings(c *gin.Context) {
+	var in model.AlertSettingsUpdate
+	if err := c.ShouldBindJSON(&in); err != nil {
+		respond.BadRequest(c, err.Error())
+		return
+	}
+	if in.MuteTestClusters == nil {
+		respond.BadRequest(c, "muteTestClusters is required")
+		return
+	}
+	if err := h.Store.SetAlertMuteTestClusters(*in.MuteTestClusters); err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, model.AlertSettings{MuteTestClusters: *in.MuteTestClusters})
+}

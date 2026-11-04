@@ -723,7 +723,7 @@ function toggleCategory(cat) {
   category.value = category.value === cat ? '' : cat
 }
 
-/* ---- 告警 Webhook ---- */
+/* ---- 告警 Webhook / 屏蔽 ---- */
 const hooks = ref([])
 const hooksLoading = ref(false)
 const hooksError = ref('')
@@ -735,6 +735,10 @@ const hookBusy = ref(false)
 const hookTesting = ref(false)
 const hookFormError = ref('')
 const hookForm = ref(emptyHookForm())
+const muteTestClusters = ref(true)
+const muteBusy = ref(false)
+const muteError = ref('')
+const muteSeq = createSeq()
 
 function emptyHookForm() {
   return { name: '', url: '', note: '', enabled: true }
@@ -760,6 +764,47 @@ async function loadHooks() {
     hooks.value = []
   } finally {
     if (hooksSeq.is(seq)) hooksLoading.value = false
+  }
+}
+
+async function loadAlertSettings() {
+  const seq = muteSeq.bump()
+  muteError.value = ''
+  try {
+    const data = await readApi.getAlertSettings()
+    if (!muteSeq.is(seq)) return
+    muteTestClusters.value = data?.muteTestClusters !== false
+  } catch (e) {
+    if (!muteSeq.is(seq)) return
+    muteError.value = errMessage(e)
+    muteTestClusters.value = true
+  }
+}
+
+function refreshAlertPage() {
+  loadHooks()
+  loadAlertSettings()
+}
+
+async function onMuteToggle(ev) {
+  if (!canWrite.value || muteBusy.value) {
+    if (ev?.target) ev.target.checked = muteTestClusters.value
+    return
+  }
+  const next = !!ev?.target?.checked
+  const prev = muteTestClusters.value
+  muteTestClusters.value = next
+  muteBusy.value = true
+  muteError.value = ''
+  try {
+    const data = await writeApi.updateAlertSettings({ muteTestClusters: next })
+    muteTestClusters.value = data?.muteTestClusters !== false
+  } catch (e) {
+    muteTestClusters.value = prev
+    if (ev?.target) ev.target.checked = prev
+    muteError.value = errMessage(e)
+  } finally {
+    muteBusy.value = false
   }
 }
 
@@ -927,15 +972,20 @@ watch(
   }
 )
 watch(pageModule, (mod) => {
-  if (mod === 'alert') loadHooks()
+  if (mod === 'alert') {
+    loadHooks()
+    loadAlertSettings()
+  }
   if (mod === 'diagnose' && currentClusterId.value) load()
 })
 onMounted(() => {
   window.addEventListener('resize', measureSummary)
   applyPageModuleFromRoute()
   applyQueryCategory()
-  if (pageModule.value === 'alert') loadHooks()
-  else load()
+  if (pageModule.value === 'alert') {
+    loadHooks()
+    loadAlertSettings()
+  } else load()
   nextTick(measureSummary)
 })
 onUnmounted(() => {
@@ -961,14 +1011,30 @@ onUnmounted(() => {
 
     <template v-if="pageModule === 'alert'">
       <div class="toolbar">
+        <strong>屏蔽</strong>
+        <div class="actions">
+          <label class="mute-toggle">
+            <input
+              type="checkbox"
+              :checked="muteTestClusters"
+              :disabled="!canWrite || muteBusy"
+              @change="onMuteToggle"
+            />
+            标题含 test / 测试 的集群不向媒介外发（页面仍可查看）
+          </label>
+        </div>
+      </div>
+      <p v-if="muteError" class="error">{{ muteError }}</p>
+
+      <div class="toolbar">
         <strong>飞书 Webhook</strong>
         <div class="actions">
-          <button class="btn btn-sm" type="button" :disabled="hooksLoading" @click="loadHooks">刷新</button>
+          <button class="btn btn-sm" type="button" :disabled="hooksLoading || muteBusy" @click="refreshAlertPage">刷新</button>
           <button v-if="canWrite" class="btn btn-sm btn-primary" type="button" @click="openHookCreate">新增</button>
         </div>
       </div>
       <p class="muted alert-rule-hint">
-        推送规则：严重一律推送；错误及以上且问题出现时间在 2 小时内也会推送。同一问题指纹成功推送后去重，消失后再出现会重新推。
+        推送规则：严重一律推送；错误及以上且问题出现时间在 2 小时内也会推送。同一问题指纹成功推送后去重，消失后再出现会重新推。开启上方屏蔽后，标题含 test / 测试 的集群只巡检不上报媒介。
       </p>
       <p v-if="hooksError" class="error">{{ hooksError }}</p>
       <p v-if="hooksLoading && !hooks.length" class="muted">加载中…</p>
@@ -1245,6 +1311,19 @@ onUnmounted(() => {
 <style scoped>
 .alert-rule-hint {
   margin: 0 0 12px;
+}
+.mute-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: default;
+  user-select: none;
+}
+.mute-toggle input:disabled {
+  cursor: not-allowed;
 }
 .hook-url {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

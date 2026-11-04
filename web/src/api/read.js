@@ -49,5 +49,6 @@ export const readApi = {
   getDoc: (docId) => http.get(`/read/docs/${docId}`),
   listHosts: () => http.get('/read/hosts'),
   listAlertWebhooks: () => http.get('/read/alert-webhooks'),
-  getAlertWebhook: (id) => http.get(`/read/alert-webhooks/${id}`)
+  getAlertWebhook: (id) => http.get(`/read/alert-webhooks/${id}`),
+  getAlertSettings: () => http.get('/read/alert-settings')
 }

@@ -383,6 +383,9 @@ func (w *Worker) deliverAlerts(cl *model.Cluster, probeStatus string, diag *kube
 	if w == nil || w.Alerts == nil || cl == nil {
 		return
 	}
+	if w.mediaMuted(cl) {
+		return
+	}
 	round := 0
 	if v, ok := w.alertRound.Load(cl.ID); ok {
 		round, _ = v.(int)
@@ -396,6 +399,20 @@ func (w *Worker) deliverAlerts(cl *model.Cluster, probeStatus string, diag *kube
 		return
 	}
 	w.Alerts.NotifyAsync(cl, issues, gate, round)
+}
+
+// mediaMuted reports whether this cluster title should skip all media notify.
+func (w *Worker) mediaMuted(cl *model.Cluster) bool {
+	if w == nil || w.Store == nil || cl == nil {
+		return false
+	}
+	mute := true
+	if v, err := w.Store.GetAlertMuteTestClusters(); err != nil {
+		log.Printf("alert mute-settings: %v", err)
+	} else {
+		mute = v
+	}
+	return alert.MuteMediaForCluster(cl.Name, mute)
 }
 
 func applyProbe(cl *model.Cluster, probe kube.ProbeResult, now time.Time) {

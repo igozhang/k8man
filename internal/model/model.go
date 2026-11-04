@@ -111,6 +111,16 @@ type AlertWebhookUpdate struct {
 	Enabled *bool   `json:"enabled"`
 }
 
+// AlertSettings is global alert media policy (not per-webhook).
+type AlertSettings struct {
+	// MuteTestClusters skips media notify when kubeconfig title contains test/测试.
+	MuteTestClusters bool `json:"muteTestClusters"`
+}
+
+type AlertSettingsUpdate struct {
+	MuteTestClusters *bool `json:"muteTestClusters"`
+}
+
 type ScaleRequest struct {
 	Replicas *int32 `json:"replicas" binding:"required"`
 }

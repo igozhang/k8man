@@ -230,6 +230,55 @@ func TestRecoveryProbeDropsDeletedCluster(t *testing.T) {
 	}
 }
 
+func TestMuteSkipsRecoveryArmAndPrunes(t *testing.T) {
+	st := openRecoveryStore(t)
+	defer st.Close()
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	if err := st.CreateAlertWebhook(&model.AlertWebhook{
+		ID: "h1", Name: "t", URL: "https://open.feishu.cn/open-apis/bot/v2/hook/abc",
+		Enabled: true, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateCluster(&model.Cluster{
+		ID: "c-test", Name: "义乌-test", Kubeconfig: "k", Status: "ok",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertAlertSent("c-test", "pod|Pod|ns|web|CrashLoopBackOff", "critical", "detail", now); err != nil {
+		t.Fatal(err)
+	}
+	w := New(st, nil, nil)
+	w.now = func() time.Time { return now }
+
+	w.armMissingAlerts()
+	if len(w.recovery) != 0 {
+		t.Fatal("muted test title must not arm recovery")
+	}
+
+	w.noteAlertFired("c-test")
+	if w.recovery["c-test"] == nil {
+		t.Fatal("manual schedule for prune test")
+	}
+	w.pruneMutedRecovery()
+	if w.recovery["c-test"] != nil {
+		t.Fatal("prune should drop muted track; alert_sent kept")
+	}
+	left, err := st.ListAlertSent("c-test")
+	if err != nil || len(left) != 1 {
+		t.Fatalf("alert_sent should remain: %v %+v", err, left)
+	}
+
+	if err := st.SetAlertMuteTestClusters(false); err != nil {
+		t.Fatal(err)
+	}
+	w.armMissingAlerts()
+	if w.recovery["c-test"] == nil {
+		t.Fatal("mute off should arm open alert again")
+	}
+}
+
 func openRecoveryStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))

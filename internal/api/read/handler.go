@@ -18,6 +18,7 @@ import (
 	"gitee.com/k8man/internal/inspect"
 	"gitee.com/k8man/internal/kube"
 	"gitee.com/k8man/internal/kube/owner"
+	"gitee.com/k8man/internal/model"
 	"gitee.com/k8man/internal/store"
 )
 
@@ -618,6 +619,15 @@ func (h *Handler) GetAlertWebhook(c *gin.Context) {
 		return
 	}
 	respond.OK(c, w)
+}
+
+func (h *Handler) GetAlertSettings(c *gin.Context) {
+	mute, err := h.Store.GetAlertMuteTestClusters()
+	if err != nil {
+		respond.Internal(c, err.Error())
+		return
+	}
+	respond.OK(c, model.AlertSettings{MuteTestClusters: mute})
 }
 
 func (h *Handler) ListConfigMaps(c *gin.Context) {

@@ -261,7 +261,7 @@
 
 ### 告警 Webhook
 
-飞书机器人 webhook（可多条）。空库**不再**自动写入默认 hook，需在告警页自行添加。巡检落库后**异步**推送，不拉长本轮巡检：
+飞书机器人 webhook（可多条）。空库**不再**自动写入默认 hook，需在告警页自行添加。巡检落库后**异步**推送，不拉长本轮巡检。全局设置 `muteTestClusters`（默认开）：kubeconfig **标题**含 `test`（不区分大小写）或 `测试` 的集群**不向媒介外发**告警/恢复，巡检与诊断页仍可查看：
 
 - **严重**（`critical`）：一律纳入推送候选
 - **错误**且 `sinceAt` 在 **2 小时内**（无 `sinceAt` 视为新出现）：纳入推送候选
@@ -274,6 +274,7 @@
 |------|------|------|
 | GET | `/alert-webhooks` | 列表 `{id,name,url,note,enabled,createdAt,updatedAt}` |
 | GET | `/alert-webhooks/:hookId` | 详情 |
+| GET | `/alert-settings` | 告警屏蔽设置 `{muteTestClusters}`（默认 `true`：标题含 `test`/`测试` 的集群不向外发媒介推送，页面巡检/诊断仍可见） |
 
 ## 鉴权 `/api/v1/auth`
 
@@ -369,3 +370,4 @@
 | PUT | `/alert-webhooks/:hookId` | 更新 body: `{name?,url?,note?,enabled?}` |
 | DELETE | `/alert-webhooks/:hookId` | 删除 |
 | POST | `/alert-webhooks/:hookId/test` | 向该 hook 发一条测试文本；失败 502 |
+| PUT | `/alert-settings` | 更新屏蔽 body: `{muteTestClusters}`（bool，必填） |

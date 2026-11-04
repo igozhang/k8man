@@ -99,6 +99,24 @@ func fingerprintOK(fp string) bool {
 	return fp != "" && fp != "||||"
 }
 
+// TitleLooksLikeTest reports whether a kubeconfig title should be treated as a test env.
+// Match is substring of "test" (case-insensitive) or "测试".
+func TitleLooksLikeTest(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if strings.Contains(strings.ToLower(name), "test") {
+		return true
+	}
+	return strings.Contains(name, "测试")
+}
+
+// MuteMediaForCluster reports whether media notify should be skipped for this cluster title.
+func MuteMediaForCluster(name string, muteTestClusters bool) bool {
+	return muteTestClusters && TitleLooksLikeTest(name)
+}
+
 // IsAlertable reports whether an issue matches push rules:
 // - critical always
 // - error when first seen within NewWindow
@@ -252,6 +270,15 @@ func (n *Notifier) notifyCluster(ctx context.Context, cluster *model.Cluster, is
 	unlock := n.lockCluster(cluster.ID)
 	defer unlock()
 	if round > 0 && round != n.latestRound(cluster.ID) {
+		return
+	}
+	muteTest := true
+	if v, err := n.Store.GetAlertMuteTestClusters(); err != nil {
+		log.Printf("alert mute-settings %s: %v", cluster.ID, err)
+	} else {
+		muteTest = v
+	}
+	if MuteMediaForCluster(cluster.Name, muteTest) {
 		return
 	}
 	now := n.now()
