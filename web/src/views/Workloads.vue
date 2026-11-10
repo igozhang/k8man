@@ -36,8 +36,8 @@ const router = useRouter()
 const { currentClusterId, currentCluster } = useClusterStore()
 const namespaces = ref([])
 const ns = ref('')
-/** pods | controllers | services | configmaps | metrics | nodes */
-const tab = ref('pods')
+/** nodes | controllers | services | configmaps | pods | metrics */
+const tab = ref('nodes')
 /** 控制器多选：'Deployment/name'；空=不过滤 */
 const selectedControllers = ref([])
 const controllerOptions = ref([])
@@ -103,32 +103,52 @@ const specEditor = ref({
 })
 const specSeq = createSeq()
 
-function applyNsList(list) {
-  namespaces.value = list
-  if (ns.value && !list.some((n) => n.name === ns.value)) ns.value = ''
+const DEFAULT_NS_CANDIDATES = ['kube-system', 'ingress-nginx']
+
+function pickDefaultNamespace(list) {
+  const names = new Set(asArray(list).map((n) => n?.name).filter(Boolean))
+  for (const c of DEFAULT_NS_CANDIDATES) {
+    if (names.has(c)) return c
+  }
+  return ''
+}
+
+/**
+ * 更新命名空间列表。
+ * fillDefault：仅在「进入集群且当前无有效 ns」时补齐默认，避免后台刷新把用户手动清空的选择填回。
+ */
+function applyNsList(list, { fillDefault = false } = {}) {
+  namespaces.value = asArray(list)
+  if (ns.value && !namespaces.value.some((n) => n.name === ns.value)) ns.value = ''
+  if (fillDefault && !ns.value) ns.value = pickDefaultNamespace(namespaces.value)
+}
+
+function fallbackTabWithoutNodes() {
+  return 'controllers'
 }
 
 function normalizeWorkloadTab(raw) {
-  if (raw === 'nodes') return 'nodes'
   if (WORKLOAD_TABS.has(raw)) return raw
-  return 'pods'
+  return 'nodes'
 }
 
 function consumeTabQuery() {
-  const q = normalizeWorkloadTab(route.query.tab)
-  if (!route.query.tab) return ''
+  const raw = route.query.tab
+  if (raw == null || raw === '') return ''
+  const key = String(Array.isArray(raw) ? raw[0] : raw)
   // 一次性消费 ?tab=，避免刷新后粘住覆盖用户偏好
   const nextQuery = { ...route.query }
   delete nextQuery.tab
   router.replace({ path: route.path, query: nextQuery }).catch(() => {})
-  return q
+  // 非法值不覆盖已有偏好
+  return WORKLOAD_TABS.has(key) ? key : ''
 }
 
 function applyWorkloadsPref() {
   const pref = getViewPref('workloads', currentClusterId.value)
   const fromQuery = consumeTabQuery()
   let next = fromQuery || normalizeWorkloadTab(pref?.tab)
-  if (next === 'nodes' && !showNodesTab.value) next = 'pods'
+  if (next === 'nodes' && !showNodesTab.value) next = fallbackTabWithoutNodes()
   tab.value = next
   ns.value = pref?.ns || ''
 }
@@ -174,7 +194,7 @@ function clearNodes() {
   nodeRefreshing.value = false
 }
 
-async function loadNamespaces({ force = false } = {}) {
+async function loadNamespaces({ force = false, fillDefault = false } = {}) {
   const seq = nsSeq.next()
   const clusterId = currentClusterId.value
   if (!clusterId) {
@@ -185,16 +205,21 @@ async function loadNamespaces({ force = false } = {}) {
     refreshing.value = false
     return
   }
+  let shouldFill = !!fillDefault
   const key = cacheKey('namespaces', clusterId)
   const hit = cacheGet(key)
-  if (hit) applyNsList(asArray(hit.data))
+  if (hit) {
+    applyNsList(asArray(hit.data), { fillDefault: shouldFill })
+    // 已有有效 ns（偏好或默认）后，后续异步刷新不再自动填回
+    if (ns.value) shouldFill = false
+  }
   if (!force && cacheFresh(key, TTL.namespaces)) return
   try {
     const list = asArray(
       await cacheLoad(key, TTL.namespaces, () => readApi.listNamespaces(clusterId), { force })
     )
     if (!nsSeq.is(seq)) return
-    applyNsList(list)
+    applyNsList(list, { fillDefault: shouldFill })
     error.value = ''
   } catch (e) {
     if (!nsSeq.is(seq)) return
@@ -1081,15 +1106,16 @@ watch(currentClusterId, async () => {
   applyWorkloadsPref()
   // Project 凭证不能看节点；cluster 对象可能稍后才就绪，permType watch 会再纠一次
   if (tab.value === 'nodes' && !showNodesTab.value) {
-    tab.value = 'pods'
+    tab.value = fallbackTabWithoutNodes()
   }
-  await loadNamespaces()
+  // 无有效 ns（含偏好失效被清空）时补 kube-system / ingress-nginx
+  await loadNamespaces({ fillDefault: true })
   persistWorkloadsPref()
   // 同 Tab/同 ns 切集群时 watch([ns,tab]) 不会触发，这里必须主动拉数
   if (tab.value === 'nodes') {
     if (showNodesTab.value) loadNodes()
     else {
-      tab.value = 'pods'
+      tab.value = fallbackTabWithoutNodes()
       persistWorkloadsPref()
       if (ns.value) {
         loadControllerOptions()
@@ -1115,7 +1141,7 @@ watch(
     if (!currentClusterId.value || !currentCluster.value) return
     if (isProject.value && tab.value === 'nodes') {
       clearNodes()
-      tab.value = 'pods'
+      tab.value = fallbackTabWithoutNodes()
       persistWorkloadsPref()
       return
     }
@@ -1152,7 +1178,7 @@ watch([ns, tab], async () => {
     if (showNodesTab.value) loadNodes()
     else {
       clearNodes()
-      tab.value = 'pods'
+      tab.value = fallbackTabWithoutNodes()
     }
     return
   }
@@ -1181,24 +1207,7 @@ watch([ns, tab], async () => {
     </p>
     <div v-if="!currentClusterId" class="empty">请先在顶部选择当前集群，或到「概览」里点选用。</div>
     <template v-else>
-      <div class="toolbar" :class="{ 'toolbar-start': isNodesTab }">
-        <FilterSelect
-          v-if="!isNodesTab"
-          v-model="ns"
-          :options="namespaces"
-          empty-label="请选择命名空间"
-          placeholder="输入 1–3 个字母筛选命名空间"
-          aria-label="选择命名空间"
-        />
-        <FilterMultiSelect
-          v-if="!isNodesTab && ns"
-          v-model="selectedControllers"
-          :options="controllerOptions"
-          all-label="控制器 · 全部"
-          empty-label="控制器未筛选（全部）"
-          placeholder="筛选 Deploy / STS / Daemon"
-          aria-label="按控制器筛选"
-        />
+      <div class="toolbar">
         <div class="tabs">
           <button
             v-if="showNodesTab"
@@ -1206,7 +1215,6 @@ watch([ns, tab], async () => {
             :class="{ active: tab === 'nodes' }"
             @click="selectTab('nodes')"
           >节点</button>
-          <button class="tab" :class="{ active: tab === 'pods' }" @click="selectTab('pods')">Pods</button>
           <button
             class="tab"
             :class="{ active: tab === 'controllers' }"
@@ -1218,11 +1226,30 @@ watch([ns, tab], async () => {
             :class="{ active: tab === 'configmaps' }"
             @click="selectTab('configmaps')"
           >ConfigMap</button>
+          <button class="tab" :class="{ active: tab === 'pods' }" @click="selectTab('pods')">Pods</button>
           <button
             class="tab"
             :class="{ active: tab === 'metrics' }"
             @click="selectTab('metrics')"
           >Pod 指标</button>
+        </div>
+        <div v-if="!isNodesTab" class="actions">
+          <FilterMultiSelect
+            v-if="ns"
+            v-model="selectedControllers"
+            :options="controllerOptions"
+            all-label="控制器 · 全部"
+            empty-label="控制器未筛选（全部）"
+            placeholder="筛选 Deploy / STS / Daemon"
+            aria-label="按控制器筛选"
+          />
+          <FilterSelect
+            v-model="ns"
+            :options="namespaces"
+            empty-label="请选择命名空间"
+            placeholder="输入 1–3 个字母筛选命名空间"
+            aria-label="选择命名空间"
+          />
         </div>
       </div>
       <p v-if="error" class="error">{{ error }}</p>

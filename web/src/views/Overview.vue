@@ -13,6 +13,7 @@ import {
   cacheLoad,
   cacheSet,
   notifyInspectionsChanged,
+  getViewPref,
   setViewPref,
   ttlOf
 } from '../utils/resourceCache'
@@ -780,7 +781,9 @@ function goMore() {
   const id = d.clusterId
   if (!id) return
   if (d.kind === 'nodes') {
-    setViewPref('workloads', id, { tab: 'nodes', ns: '' })
+    // 只切到节点 Tab，保留已有命名空间偏好，避免被默认 ns 写回冲掉
+    const pref = getViewPref('workloads', id) || {}
+    setViewPref('workloads', id, { tab: 'nodes', ns: pref.ns || '' })
     router.push('/workloads')
     return
   }
@@ -792,7 +795,10 @@ function goMore() {
     router.push({ path: '/diagnose', query: { module: 'diagnose', category: 'storage' } })
     return
   }
-  setViewPref('workloads', id, { ns: '', tab: 'pods' })
+  {
+    const pref = getViewPref('workloads', id) || {}
+    setViewPref('workloads', id, { tab: 'pods', ns: pref.ns || '' })
+  }
   router.push('/workloads')
 }
 
