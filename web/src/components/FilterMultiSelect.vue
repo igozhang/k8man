@@ -10,7 +10,10 @@ const props = defineProps({
   emptyLabel: { type: String, default: '全部（未筛选）' },
   ariaLabel: { type: String, default: '多选筛选' },
   /** 未选时 trigger 文案前缀 */
-  allLabel: { type: String, default: '全部' }
+  allLabel: { type: String, default: '全部' },
+  /** 禁用时占位但不展开（避免 v-if 卸载造成布局跳动） */
+  disabled: { type: Boolean, default: false },
+  disabledTitle: { type: String, default: '' }
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -112,7 +115,14 @@ watch(filtered, (list) => {
   if (highlight.value >= list.length) highlight.value = 0
 })
 
+function cancelClose() {
+  open.value = false
+  query.value = ''
+  highlight.value = 0
+}
+
 function openList() {
+  if (props.disabled) return
   open.value = true
   query.value = ''
   highlight.value = 0
@@ -122,13 +132,15 @@ function openList() {
   })
 }
 
-function cancelClose() {
-  open.value = false
-  query.value = ''
-  highlight.value = 0
-}
+watch(
+  () => props.disabled,
+  (off) => {
+    if (off && open.value) cancelClose()
+  }
+)
 
 function emitSelection(next) {
+  if (props.disabled) return
   const uniq = []
   const seen = new Set()
   for (const v of next) {
@@ -143,6 +155,7 @@ function emitSelection(next) {
 }
 
 function toggle(value) {
+  if (props.disabled) return
   const v = String(value || '').trim()
   if (!v) return
   if (!items.value.some((it) => it.value === v)) return
@@ -153,22 +166,33 @@ function toggle(value) {
 }
 
 function clearAll() {
+  if (props.disabled) return
   emitSelection([])
 }
 
 function selectVisible() {
+  if (props.disabled) return
   const set = new Set(selectedSet.value)
   for (const it of filtered.value) set.add(it.value)
   emitSelection([...set])
 }
 
 function onInput() {
+  if (props.disabled) {
+    cancelClose()
+    return
+  }
   open.value = true
   highlight.value = 0
 }
 
 function onKeydown(e) {
   if (e.isComposing || e.keyCode === 229) return
+  if (props.disabled) {
+    e.preventDefault()
+    cancelClose()
+    return
+  }
   if (e.key === 'Escape') {
     e.preventDefault()
     cancelClose()
@@ -235,7 +259,11 @@ onUnmounted(() => document.removeEventListener('pointerdown', onDocPointerDown))
 </script>
 
 <template>
-  <div ref="rootRef" class="filter-select filter-multi" :class="{ open }">
+  <div
+    ref="rootRef"
+    class="filter-select filter-multi"
+    :class="{ open, 'is-disabled': disabled }"
+  >
     <button
       v-if="!open"
       type="button"
@@ -243,9 +271,11 @@ onUnmounted(() => document.removeEventListener('pointerdown', onDocPointerDown))
       :aria-label="ariaLabel"
       aria-haspopup="listbox"
       :aria-expanded="false"
+      :disabled="disabled"
+      :title="disabled ? disabledTitle : undefined"
       @click="openList"
     >
-      <span class="filter-select-value" :class="{ muted: !selectedCount }">{{ triggerLabel }}</span>
+      <span class="filter-select-value" :class="{ muted: !selectedCount || disabled }">{{ triggerLabel }}</span>
       <span class="filter-select-caret" aria-hidden="true">▾</span>
     </button>
     <input

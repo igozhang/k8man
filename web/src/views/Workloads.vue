@@ -1235,9 +1235,10 @@ watch([ns, tab], async () => {
         </div>
         <div v-if="!isNodesTab" class="actions">
           <FilterMultiSelect
-            v-if="ns"
             v-model="selectedControllers"
             :options="controllerOptions"
+            :disabled="!ns"
+            disabled-title="请先选择命名空间"
             all-label="控制器 · 全部"
             empty-label="控制器未筛选（全部）"
             placeholder="筛选 Deploy / STS / Daemon"

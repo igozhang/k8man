@@ -638,6 +638,12 @@ textarea {
 td.actions {
   margin-top: 0;
 }
+/* 筛选控件横排不折行，避免开合/显隐时上下叠放抖动。
+ * 巡检页 .inspect-actions .actions 仍用 wrap（选择器在后、同优先级覆盖）。 */
+.toolbar .actions {
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
 .tag {
   display: inline-block;
   font-size: 12px;
@@ -1101,14 +1107,19 @@ body.is-drawer-resizing {
   flex: 0 0 auto;
 }
 .toolbar .filter-select {
-  flex: 0 1 16rem;
-  max-width: min(18rem, 100%);
-  min-width: 10rem;
+  /* 定宽：开合/文案变化不挤动兄弟控件 */
+  flex: 0 0 16rem;
+  width: 16rem;
+  max-width: 16rem;
+  min-width: 16rem;
   /* 下拉浮层不被工具栏裁切 */
   z-index: 5;
 }
 .toolbar .filter-select.open {
   z-index: 30;
+}
+.toolbar .filter-select.is-disabled {
+  opacity: 0.55;
 }
 .toolbar input[type="text"],
 .toolbar input[type="search"],
