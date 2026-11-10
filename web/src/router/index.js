@@ -27,7 +27,7 @@ const router = createRouter({
           name: 'workloads',
           component: () => import('../views/Workloads.vue')
         },
-        { path: 'nodes', redirect: '/monitor' },
+        { path: 'nodes', redirect: { path: '/workloads', query: { tab: 'nodes' } } },
         {
           path: 'monitor',
           name: 'monitor',

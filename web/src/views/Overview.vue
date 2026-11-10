@@ -340,7 +340,7 @@ async function refreshPodsInspect(clusterId, { autoKey = '' } = {}) {
       mergeInspectIntoCard(clusterId, insp)
     }
     cacheInvalidate(INSPECT_KEY)
-    // 后台刷新摘要列表，供监控页 / 顶栏共用；失败不影响卡片
+    // 后台刷新摘要列表，供巡检页 / 顶栏共用；失败不影响卡片
     loadInspectIndex({ force: true }).catch(() => {})
   } catch (e) {
     if (autoKey) autoPodsRefreshKeys.delete(autoKey)
@@ -770,7 +770,7 @@ async function openStat(cluster, kind) {
 }
 
 function moreLabel(kind) {
-  if (kind === 'nodes') return '去监控'
+  if (kind === 'nodes') return '去工作负载'
   if (kind === 'badPods' || kind === 'largePods' || kind === 'nfsUsage') return '去诊断'
   return '去工作负载'
 }
@@ -780,8 +780,8 @@ function goMore() {
   const id = d.clusterId
   if (!id) return
   if (d.kind === 'nodes') {
-    setViewPref('monitor', id, { tab: 'nodes', ns: '' })
-    router.push('/monitor')
+    setViewPref('workloads', id, { tab: 'nodes', ns: '' })
+    router.push('/workloads')
     return
   }
   if (d.kind === 'badPods') {
@@ -826,7 +826,7 @@ onUnmounted(() => {
 <template>
   <div>
     <h1>概览</h1>
-    <p class="page-desc">查看已导入的全部 kubeconfig。点「选用」会设为顶部当前集群，供工作负载、监控、告警使用。Pods / 异常 Pod 优先展示巡检缓存<template v-if="canWrite">；当前选用集群缓存超过 10 分钟会自动实时巡检一次，也可点「刷新 Pods」立即更新</template>。尚未巡检时才退回命名空间抽样。全部配置的定时巡检摘要在「巡检」页底部。</p>
+    <p class="page-desc">查看已导入的全部 kubeconfig。点「选用」会设为顶部当前集群，供工作负载、巡检、告警使用。Pods / 异常 Pod 优先展示巡检缓存<template v-if="canWrite">；当前选用集群缓存超过 10 分钟会自动实时巡检一次，也可点「刷新 Pods」立即更新</template>。尚未巡检时才退回命名空间抽样。全部配置的定时巡检摘要在「巡检」页。节点与用量在「工作负载」。</p>
     <div v-if="!clusters.length" class="empty">{{ canWrite ? '请先导入 kubeconfig（页脚双击 kubeconfig）。' : '暂无集群配置。' }}</div>
     <div v-else class="cluster-list">
       <div
