@@ -50,6 +50,16 @@ export function issueTimeLabel(row) {
   return '—'
 }
 
+/** 将 nfs-client PVC 子目录裁成导出根：/data/xxx-pvc-<uuid> → /data */
+export function sanitizeNFSExportRoot(path) {
+  let p = String(path || '').trim()
+  if (!p) return ''
+  const m = p.match(/^(.+)\/[^/]+-pvc-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/?$/i)
+  if (m && m[1]) p = m[1]
+  while (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1)
+  return p
+}
+
 function nfsLocationFromRow(row) {
   const server = String(
     row?.nodeIP ||
@@ -59,12 +69,15 @@ function nfsLocationFromRow(row) {
       evidenceValue(row, 'addr') ||
       ''
   ).trim()
-  const path =
+  const path = sanitizeNFSExportRoot(
     evidenceValue(row, 'path') ||
-    evidenceValue(row, 'share') ||
-    evidenceValue(row, 'export') ||
-    evidenceValue(row, 'nfsPath') ||
-    ''
+      evidenceValue(row, 'share') ||
+      evidenceValue(row, 'export') ||
+      evidenceValue(row, 'nfsPath') ||
+      evidenceValue(row, 'baseDir') ||
+      evidenceValue(row, 'basePath') ||
+      ''
+  )
   if (!server) return ''
   if (!path) return server
   return path.startsWith('/') ? `${server}:${path}` : `${server}:/${path}`
@@ -154,9 +167,21 @@ export function formatEvidenceLine(line) {
   s = s.replace(/\bready=(\d+)\/(\d+)/gi, 'Ready=$1/$2')
   if (s.startsWith('server=')) s = 'NFS服务器 ' + s.slice('server='.length)
   else if (s.startsWith('nfsServer=')) s = 'NFS服务器 ' + s.slice('nfsServer='.length)
-  else if (s.startsWith('path=')) s = '导出路径 ' + s.slice('path='.length)
-  else if (s.startsWith('share=')) s = '共享 ' + s.slice('share='.length)
-  else if (s.startsWith('sc=')) s = 'StorageClass ' + s.slice('sc='.length)
+  else if (
+    s.startsWith('path=') ||
+    s.startsWith('share=') ||
+    s.startsWith('export=') ||
+    s.startsWith('baseDir=') ||
+    s.startsWith('basePath=')
+  ) {
+    for (const prefix of ['path=', 'share=', 'export=', 'baseDir=', 'basePath=']) {
+      if (s.startsWith(prefix)) {
+        const root = sanitizeNFSExportRoot(s.slice(prefix.length))
+        if (root) s = '导出根 ' + root
+        break
+      }
+    }
+  } else if (s.startsWith('sc=')) s = 'StorageClass ' + s.slice('sc='.length)
   else if (s.startsWith('ip=')) s = 'IP ' + s.slice('ip='.length)
   if (s.startsWith('severityNote: ')) {
     s = '降级: ' + s.slice('severityNote: '.length)

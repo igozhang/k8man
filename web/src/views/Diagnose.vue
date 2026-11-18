@@ -7,7 +7,7 @@ import { asArray, createSeq, errMessage } from '../utils/safe'
 import { copyText } from '../utils/clipboard'
 import { TTL, cacheFresh, cacheGet, cacheKey, cacheLoad, getViewPref, setViewPref } from '../utils/resourceCache'
 import { permTypeLabel, severityLabel, severityClass, issueCategoryLabel, issueReasonDisplay } from '../utils/labels'
-import { formatIssueMessage, issueMessageSuffix, issueTimeLabel, issueInspectBrief, formatEvidenceLine } from '../utils/inspect'
+import { formatIssueMessage, issueMessageSuffix, issueTimeLabel, issueInspectBrief, formatEvidenceLine, sanitizeNFSExportRoot } from '../utils/inspect'
 import PodLogsDrawer from '../components/PodLogsDrawer.vue'
 import YamlDrawer from '../components/YamlDrawer.vue'
 import TextDrawer from '../components/TextDrawer.vue'
@@ -168,7 +168,7 @@ function locationLine(row) {
 
 function formatNFSEndpoint(server, path) {
   const s = String(server || '').trim()
-  const p = String(path || '').trim()
+  const p = sanitizeNFSExportRoot(path)
   if (!s) return ''
   if (!p) return s
   return p.startsWith('/') ? `${s}:${p}` : `${s}:/${p}`

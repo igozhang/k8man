@@ -853,7 +853,7 @@ func pickAlertDetails(it kube.Issue, limit int) []string {
 func scoreEvidenceLine(line string, it kube.Issue) int {
 	low := strings.ToLower(line)
 	switch {
-	// 定位关键信息优先：NFS 服务器、导出路径、副本态等
+	// 定位关键信息优先：NFS 服务器、导出根、副本态等
 	case strings.HasPrefix(low, "server=") || strings.HasPrefix(low, "nfsserver=") ||
 		strings.HasPrefix(low, "host=") || strings.HasPrefix(low, "addr="):
 		return 110
@@ -908,11 +908,14 @@ func humanizeEvidenceLine(s string) string {
 	if strings.HasPrefix(s, "addr=") {
 		s = "NFS服务器 " + strings.TrimPrefix(s, "addr=")
 	}
-	if strings.HasPrefix(s, "path=") {
-		s = "导出路径 " + strings.TrimPrefix(s, "path=")
-	}
-	if strings.HasPrefix(s, "share=") {
-		s = "共享 " + strings.TrimPrefix(s, "share=")
+	for _, prefix := range []string{"path=", "share=", "export=", "baseDir=", "basePath="} {
+		if strings.HasPrefix(s, prefix) {
+			root := kube.SanitizeNFSExportRoot(strings.TrimPrefix(s, prefix))
+			if root != "" {
+				s = "导出根 " + root
+			}
+			break
+		}
 	}
 	if strings.HasPrefix(s, "sc=") {
 		s = "StorageClass " + strings.TrimPrefix(s, "sc=")

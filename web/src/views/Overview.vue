@@ -18,7 +18,7 @@ import {
   ttlOf
 } from '../utils/resourceCache'
 import { permTypeLabel, clusterStatusLabel, clusterStatusClass, frontProxyLabel, frontProxyClass, severityLabel, issueReasonDisplay } from '../utils/labels'
-import { formatIssueMessage, issueMessageSuffix } from '../utils/inspect'
+import { formatIssueMessage, issueMessageSuffix, sanitizeNFSExportRoot } from '../utils/inspect'
 import { canWrite } from '../stores/opsAuth'
 
 /** 选用集群：巡检缓存超过此时长则自动实时刷一次 Pods */
@@ -624,7 +624,7 @@ async function collectInspectNFSRows(clusterId) {
 
 function formatNFSEndpoint(server, path) {
   const s = String(server || '').trim()
-  const p = String(path || '').trim()
+  const p = sanitizeNFSExportRoot(path)
   if (!s) return ''
   if (!p) return s
   return p.startsWith('/') ? `${s}:${p}` : `${s}:/${p}`

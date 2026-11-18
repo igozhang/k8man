@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -38,6 +40,9 @@ const (
 
 	diagnoseNFSExecTimeout  = 2500 * time.Millisecond
 	diagnoseNFSExecAttempts = 2
+
+	diagnoseNFSProvisionerListTimeout = 2 * time.Second
+	diagnoseNFSProvisionerListLimit   = int64(200)
 
 	diagnoseLargePodIssueCap = 40
 )
@@ -190,7 +195,7 @@ func (c *Clients) scanStorage(ctx context.Context, opt DiagnoseOptions, pods []c
 	nfs := c.probeNFSUsage(sctx, pods, summaries)
 	scan.NFSStorageClass = nfs.StorageClass
 	scan.NFSServer = sanitizeNFSServer(nfs.Server)
-	scan.NFSPath = sanitizeNFSPath(nfs.Path)
+	scan.NFSPath = sanitizeNFSExportRoot(nfs.Path)
 	scan.NFSSource = nfs.Source
 	scan.NFSProbe = nfs.Probe
 	scan.NFSSkipped = nfs.Skipped
@@ -579,7 +584,7 @@ func (c *Clients) probeNFSUsage(ctx context.Context, pods []corev1.Pod, summarie
 
 func nfsHighUsageIssue(pick nfsSCPick, res nfsUsageResult) *Issue {
 	server := sanitizeNFSServer(res.Server)
-	path := sanitizeNFSPath(res.Path)
+	path := sanitizeNFSExportRoot(res.Path)
 	target := FormatNFSEndpoint(server, path)
 	if target == "" {
 		target = "SC=" + pick.Name
@@ -657,6 +662,32 @@ func sanitizeNFSPath(p string) string {
 	return p
 }
 
+// nfsPVCSubdirRE matches nfs-client / nfs-subdir style dirs: <export>/<name>-pvc-<uuid>
+var nfsPVCSubdirRE = regexp.MustCompile(`(?i)^(.+)/[^/]+-pvc-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/?$`)
+
+// SanitizeNFSExportRoot keeps NFS export roots (near /etc/exports), stripping provisioner PVC subdirs.
+// Example: /data/mysql-...-pvc-<uuid> → /data. Plain /data stays /data.
+func SanitizeNFSExportRoot(p string) string {
+	return sanitizeNFSExportRoot(p)
+}
+
+func sanitizeNFSExportRoot(p string) string {
+	p = sanitizeNFSPath(p)
+	if p == "" {
+		return ""
+	}
+	if m := nfsPVCSubdirRE.FindStringSubmatch(p); len(m) == 2 {
+		if root := sanitizeNFSPath(m[1]); root != "" {
+			p = root
+		}
+	}
+	// Keep "/" as-is; trim trailing slashes on longer paths (/data/ → /data).
+	for len(p) > 1 && strings.HasSuffix(p, "/") {
+		p = strings.TrimSuffix(p, "/")
+	}
+	return p
+}
+
 // nfsEndpointFromParams reads common StorageClass / CSI parameter keys used by NFS provisioners.
 func nfsEndpointFromParams(params map[string]string) (server, path string) {
 	if len(params) == 0 {
@@ -676,7 +707,7 @@ func nfsEndpointFromParams(params map[string]string) (server, path string) {
 		"export", "baseDir", "basePath",
 	} {
 		// Prefer real export roots; skip bare "subdir" (often a template token, not the share).
-		if v := sanitizeNFSPath(params[k]); v != "" {
+		if v := sanitizeNFSExportRoot(params[k]); v != "" {
 			path = v
 			break
 		}
@@ -708,7 +739,10 @@ func mergeNFSEndpoint(server, path, addServer, addPath string) (string, string) 
 		server = sanitizeNFSServer(addServer)
 	}
 	if strings.TrimSpace(path) == "" {
-		path = sanitizeNFSPath(addPath)
+		path = sanitizeNFSExportRoot(addPath)
+	} else {
+		// Already have a path (often SC export root); never replace with a longer PVC subdir.
+		path = sanitizeNFSExportRoot(path)
 	}
 	return server, path
 }
@@ -719,7 +753,7 @@ func nfsEndpointFromPV(pv *corev1.PersistentVolume) (server, path string) {
 	}
 	if pv.Spec.NFS != nil {
 		server = sanitizeNFSServer(pv.Spec.NFS.Server)
-		path = sanitizeNFSPath(pv.Spec.NFS.Path)
+		path = sanitizeNFSExportRoot(pv.Spec.NFS.Path)
 	}
 	if pv.Spec.CSI != nil && len(pv.Spec.CSI.VolumeAttributes) > 0 {
 		s, p := nfsEndpointFromParams(pv.Spec.CSI.VolumeAttributes)
@@ -730,6 +764,7 @@ func nfsEndpointFromPV(pv *corev1.PersistentVolume) (server, path string) {
 }
 
 // parseNFSFilesystem parses df Filesystem like "192.168.1.1:/export" or "nfs.example.com:/data".
+// PVC subdirs under the export are folded to the export root.
 func parseNFSFilesystem(fs string) (server, path string) {
 	fs = strings.TrimSpace(fs)
 	if fs == "" {
@@ -737,7 +772,7 @@ func parseNFSFilesystem(fs string) (server, path string) {
 	}
 	// host:/path  (NFS classic); also works for IPv6 "2001:db8::1:/export"
 	if i := strings.Index(fs, ":/"); i > 0 {
-		return sanitizeNFSServer(fs[:i]), sanitizeNFSPath(fs[i+1:])
+		return sanitizeNFSServer(fs[:i]), sanitizeNFSExportRoot(fs[i+1:])
 	}
 	// host:path without leading slash on path (avoid Windows drive letters like C:)
 	if i := strings.IndexByte(fs, ':'); i > 1 {
@@ -747,16 +782,16 @@ func parseNFSFilesystem(fs string) (server, path string) {
 			if !strings.HasPrefix(rest, "/") {
 				rest = "/" + rest
 			}
-			return sanitizeNFSServer(host), sanitizeNFSPath(rest)
+			return sanitizeNFSServer(host), sanitizeNFSExportRoot(rest)
 		}
 	}
 	return "", ""
 }
 
-// FormatNFSEndpoint builds server:/path for alerts and UI.
+// FormatNFSEndpoint builds server:/exportRoot for alerts and UI.
 func FormatNFSEndpoint(server, path string) string {
 	server = sanitizeNFSServer(server)
-	path = sanitizeNFSPath(path)
+	path = sanitizeNFSExportRoot(path)
 	if server == "" {
 		return ""
 	}
@@ -769,12 +804,18 @@ func FormatNFSEndpoint(server, path string) string {
 	return server + ":/" + path
 }
 
-// resolveNFSEndpoint tries SC parameters/mountOptions, df filesystem, matched PVC/PV, pod PVCs, then PV list.
+// resolveNFSEndpoint tries SC parameters/mountOptions, provisioner Deployment NFS_* env,
+// df filesystem, matched PVC/PV, pod PVCs, then PV list.
 // Fills server and path independently so a path-only SC param can combine with a PV server.
 func (c *Clients) resolveNFSEndpoint(ctx context.Context, pick nfsSCPick, pods []corev1.Pod, matched *pvcRef, fsFromDF string) (server, path string) {
 	server, path = nfsEndpointFromParams(pick.SC.Parameters)
 	{
 		s, p := nfsEndpointFromMountOptions(pick.SC.MountOptions)
+		server, path = mergeNFSEndpoint(server, path, s, p)
+	}
+	// nfs-client / nfs-subdir: export root lives on the provisioner Deploy as NFS_PATH (often absent from SC).
+	if (server == "" || path == "") && nfsProvisionerLookupBudgetOK(ctx) {
+		s, p := c.lookupNFSEndpointFromProvisioner(ctx, pick.SC.Provisioner)
 		server, path = mergeNFSEndpoint(server, path, s, p)
 	}
 	if server != "" && path != "" {
@@ -806,6 +847,128 @@ func (c *Clients) resolveNFSEndpoint(ctx context.Context, pick nfsSCPick, pods [
 		server, path = mergeNFSEndpoint(server, path, s, p)
 	}
 	return server, path
+}
+
+// nfsProvisionerLookupBudgetOK reports whether the storage context still has room for a provisioner Deploy list.
+func nfsProvisionerLookupBudgetOK(ctx context.Context) bool {
+	if ctx == nil || ctx.Err() != nil {
+		return false
+	}
+	need := diagnoseNFSProvisionerListTimeout + diagnoseStorageSlack
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return true
+	}
+	return time.Until(dl) >= need
+}
+
+// lookupNFSEndpointFromProvisioner reads NFS_SERVER / NFS_PATH from Deployments that run the SC provisioner.
+func (c *Clients) lookupNFSEndpointFromProvisioner(ctx context.Context, provisioner string) (server, path string) {
+	if c == nil || c.Clientset == nil || ctx.Err() != nil {
+		return "", ""
+	}
+	gctx, cancel := context.WithTimeout(ctx, diagnoseNFSProvisionerListTimeout)
+	defer cancel()
+	list, err := c.Clientset.AppsV1().Deployments("").List(gctx, metav1.ListOptions{
+		Limit: diagnoseNFSProvisionerListLimit,
+	})
+	if err != nil || list == nil {
+		return "", ""
+	}
+	return pickNFSEndpointFromDeployments(list.Items, provisioner)
+}
+
+// nfsProvisionerEnv holds NFS_* / PROVISIONER_NAME from a pod template.
+type nfsProvisionerEnv struct {
+	Server          string
+	Path            string
+	ProvisionerName string
+}
+
+func nfsProvisionerEnvFromPodSpec(spec corev1.PodSpec) nfsProvisionerEnv {
+	var out nfsProvisionerEnv
+	for i := range spec.Containers {
+		for _, e := range spec.Containers[i].Env {
+			if strings.TrimSpace(e.Value) == "" {
+				continue // skip valueFrom-only; we only use inline values
+			}
+			switch e.Name {
+			case "NFS_SERVER", "NFS_SERVER_HOST":
+				if out.Server == "" {
+					out.Server = sanitizeNFSServer(e.Value)
+				}
+			case "NFS_PATH", "NFS_SHARE":
+				if out.Path == "" {
+					out.Path = sanitizeNFSExportRoot(e.Value)
+				}
+			case "PROVISIONER_NAME":
+				if out.ProvisionerName == "" {
+					out.ProvisionerName = strings.TrimSpace(e.Value)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// pickNFSEndpointFromDeployments prefers a Deploy whose PROVISIONER_NAME matches the SC provisioner.
+// If none match: only accept a unique Deploy that exposes both NFS_SERVER and NFS_PATH, and only when
+// no other NFS_* deploy declares a different PROVISIONER_NAME (avoids grabbing an unrelated app).
+func pickNFSEndpointFromDeployments(items []appsv1.Deployment, provisioner string) (server, path string) {
+	provisioner = strings.TrimSpace(provisioner)
+	var (
+		matched           nfsProvisionerEnv
+		matchedOK         bool
+		candidates        []nfsProvisionerEnv
+		foreignProvisioner bool
+	)
+	for i := range items {
+		env := nfsProvisionerEnvFromPodSpec(items[i].Spec.Template.Spec)
+		if env.Server == "" && env.Path == "" {
+			continue
+		}
+		if provisioner != "" && env.ProvisionerName != "" && env.ProvisionerName != provisioner {
+			foreignProvisioner = true
+		}
+		if provisioner != "" && env.ProvisionerName == provisioner {
+			// Prefer a richer match if multiple deploys share the same PROVISIONER_NAME.
+			if !matchedOK || richerNFSProvisionerEnv(env, matched) {
+				matched = env
+				matchedOK = true
+			}
+			if matched.Server != "" && matched.Path != "" {
+				return matched.Server, matched.Path
+			}
+			continue
+		}
+		if env.Server != "" && env.Path != "" {
+			candidates = append(candidates, env)
+		}
+	}
+	if matchedOK {
+		return matched.Server, matched.Path
+	}
+	if len(candidates) == 1 && !foreignProvisioner {
+		return candidates[0].Server, candidates[0].Path
+	}
+	return "", ""
+}
+
+func richerNFSProvisionerEnv(a, b nfsProvisionerEnv) bool {
+	aScore, bScore := 0, 0
+	if a.Server != "" {
+		aScore++
+	}
+	if a.Path != "" {
+		aScore++
+	}
+	if b.Server != "" {
+		bScore++
+	}
+	if b.Path != "" {
+		bScore++
+	}
+	return aScore > bScore
 }
 
 func (c *Clients) lookupNFSEndpointFromPVCRef(ctx context.Context, ref pvcRef) (server, path string) {

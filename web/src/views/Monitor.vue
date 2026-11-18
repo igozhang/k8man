@@ -4,7 +4,7 @@ import { readApi, writeApi } from '../api'
 import { useClusterStore } from '../stores/cluster'
 import { asArray, createSeq, errMessage } from '../utils/safe'
 import { severityLabel, severityClass } from '../utils/labels'
-import { issueInspectBrief } from '../utils/inspect'
+import { issueInspectBrief, sanitizeNFSExportRoot } from '../utils/inspect'
 import {
   TTL,
   cacheFresh,
@@ -183,7 +183,7 @@ function issueLineBrief(row) {
 function nfsTagTitle(block) {
   const parts = []
   const server = String(block?.nfsServer || '').trim()
-  const path = String(block?.nfsPath || '').trim()
+  const path = sanitizeNFSExportRoot(block?.nfsPath)
   if (server) {
     parts.push(path ? (path.startsWith('/') ? `${server}:${path}` : `${server}:/${path}`) : server)
   }

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -261,6 +262,127 @@ func TestFormatNFSEndpoint(t *testing.T) {
 	}
 	if got := FormatNFSEndpoint("10.0.0.1", ""); got != "10.0.0.1" {
 		t.Fatalf("got %q", got)
+	}
+	pvc := "/data/mysql-data-mysql-cluster-primary-0-pvc-e89a5536-31d0-414f-9487-088c08910161"
+	if got := FormatNFSEndpoint("10.152.13.36", pvc); got != "10.152.13.36:/data" {
+		t.Fatalf("PVC subdir should fold to export root, got %q", got)
+	}
+}
+
+func TestSanitizeNFSExportRoot(t *testing.T) {
+	pvc := "/data/mysql-data-mysql-cluster-primary-0-pvc-e89a5536-31d0-414f-9487-088c08910161"
+	if got := sanitizeNFSExportRoot(pvc); got != "/data" {
+		t.Fatalf("got %q", got)
+	}
+	if got := sanitizeNFSExportRoot("/data"); got != "/data" {
+		t.Fatalf("plain export got %q", got)
+	}
+	if got := sanitizeNFSExportRoot("/data/"); got != "/data" {
+		t.Fatalf("trailing slash got %q", got)
+	}
+	if got := sanitizeNFSExportRoot("/exports/k8s/app-data"); got != "/exports/k8s/app-data" {
+		t.Fatalf("non-PVC path should stay, got %q", got)
+	}
+}
+
+func TestParseNFSFilesystemStripsPVCSubdir(t *testing.T) {
+	fs := "10.152.13.36:/data/mysql-data-mysql-cluster-primary-0-pvc-e89a5536-31d0-414f-9487-088c08910161"
+	s, p := parseNFSFilesystem(fs)
+	if s != "10.152.13.36" || p != "/data" {
+		t.Fatalf("got %q %q", s, p)
+	}
+}
+
+func TestMergeNFSEndpointKeepsSCExportRoot(t *testing.T) {
+	s, p := mergeNFSEndpoint("10.0.0.1", "/data", "10.0.0.1",
+		"/data/foo-pvc-e89a5536-31d0-414f-9487-088c08910161")
+	if s != "10.0.0.1" || p != "/data" {
+		t.Fatalf("SC export root must win, got %q %q", s, p)
+	}
+}
+
+func TestNFSProvisionerEnvFromPodSpec(t *testing.T) {
+	env := nfsProvisionerEnvFromPodSpec(corev1.PodSpec{
+		Containers: []corev1.Container{{
+			Env: []corev1.EnvVar{
+				{Name: "PROVISIONER_NAME", Value: "cluster.local/nfs-subdir-external-provisioner"},
+				{Name: "NFS_SERVER", Value: "10.152.13.36"},
+				{Name: "NFS_PATH", Value: "/data"},
+			},
+		}},
+	})
+	if env.Server != "10.152.13.36" || env.Path != "/data" {
+		t.Fatalf("got %+v", env)
+	}
+	if env.ProvisionerName != "cluster.local/nfs-subdir-external-provisioner" {
+		t.Fatalf("provisioner=%q", env.ProvisionerName)
+	}
+}
+
+func TestPickNFSEndpointFromDeployments(t *testing.T) {
+	mk := func(prov, server, path string) appsv1.Deployment {
+		return appsv1.Deployment{
+			Spec: appsv1.DeploymentSpec{
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{
+							Env: []corev1.EnvVar{
+								{Name: "PROVISIONER_NAME", Value: prov},
+								{Name: "NFS_SERVER", Value: server},
+								{Name: "NFS_PATH", Value: path},
+							},
+						}},
+					},
+				},
+			},
+		}
+	}
+	items := []appsv1.Deployment{
+		mk("other/prov", "10.0.0.1", "/other"),
+		mk("cluster.local/nfs-subdir-external-provisioner", "10.152.13.36", "/data"),
+	}
+	s, p := pickNFSEndpointFromDeployments(items, "cluster.local/nfs-subdir-external-provisioner")
+	if s != "10.152.13.36" || p != "/data" {
+		t.Fatalf("matched got %q %q", s, p)
+	}
+	// Sole NFS_* deploy when PROVISIONER_NAME absent/mismatch: only one candidate.
+	sole := []appsv1.Deployment{{
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Env: []corev1.EnvVar{
+							{Name: "NFS_SERVER", Value: "10.1.1.1"},
+							{Name: "NFS_PATH", Value: "/exports"},
+						},
+					}},
+				},
+			},
+		},
+	}}
+	s, p = pickNFSEndpointFromDeployments(sole, "cluster.local/nfs-subdir-external-provisioner")
+	if s != "10.1.1.1" || p != "/exports" {
+		t.Fatalf("sole candidate got %q %q", s, p)
+	}
+	// Foreign PROVISIONER_NAME blocks sole-candidate guessing.
+	ambiguous := []appsv1.Deployment{
+		sole[0],
+		mk("other/nfs-prov", "10.2.2.2", "/other"),
+	}
+	s, p = pickNFSEndpointFromDeployments(ambiguous, "cluster.local/nfs-subdir-external-provisioner")
+	if s != "" || p != "" {
+		t.Fatalf("ambiguous should yield empty, got %q %q", s, p)
+	}
+}
+
+func TestNFSProvisionerLookupBudgetOK(t *testing.T) {
+	if !nfsProvisionerLookupBudgetOK(context.Background()) {
+		t.Fatal("no deadline should allow")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if nfsProvisionerLookupBudgetOK(ctx) {
+		t.Fatal("tight deadline should skip provisioner list")
 	}
 }
 

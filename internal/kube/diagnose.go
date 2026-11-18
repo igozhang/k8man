@@ -117,7 +117,7 @@ type DiagnoseScan struct {
 	NFSCapacityBytes int64    `json:"nfsCapacityBytes,omitempty"`
 	NFSStorageClass  string   `json:"nfsStorageClass,omitempty"`
 	NFSServer        string   `json:"nfsServer,omitempty"` // IP or hostname
-	NFSPath          string   `json:"nfsPath,omitempty"`   // export path / share
+	NFSPath          string   `json:"nfsPath,omitempty"`   // NFS export root (near /etc/exports), not PVC subdir
 	NFSSource        string   `json:"nfsSource,omitempty"` // default | unique
 	NFSProbe         string   `json:"nfsProbe,omitempty"`  // summary | exec-df
 	NFSSkipped       string   `json:"nfsSkipped,omitempty"`

@@ -45,10 +45,10 @@ func IssueNFSServer(it Issue) string {
 	return ""
 }
 
-// IssueNFSPath resolves NFS export path from evidence.
+// IssueNFSPath resolves NFS export root from evidence (PVC subdirs are folded to the export root).
 func IssueNFSPath(it Issue) string {
 	for _, k := range nfsPathEvidenceKeys {
-		if v := sanitizeNFSPath(EvidenceValue(it.Evidence, k)); v != "" {
+		if v := sanitizeNFSExportRoot(EvidenceValue(it.Evidence, k)); v != "" {
 			return v
 		}
 	}

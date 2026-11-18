@@ -86,6 +86,17 @@ func TestFinalizeIssueMessages(t *testing.T) {
 	}
 }
 
+func TestIssueNFSPathFoldsPVCSubdir(t *testing.T) {
+	got := IssueNFSPath(Issue{
+		Evidence: []string{
+			"path=/data/mysql-data-mysql-cluster-primary-0-pvc-e89a5536-31d0-414f-9487-088c08910161",
+		},
+	})
+	if got != "/data" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func containsAll(s string, parts ...string) bool {
 	for _, p := range parts {
 		if !strings.Contains(s, p) {

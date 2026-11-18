@@ -259,6 +259,32 @@ func TestFormatMessageNFSIncludesServer(t *testing.T) {
 	}
 }
 
+func TestFormatMessageNFSExportRootNotPVCSubdir(t *testing.T) {
+	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)
+	pvcPath := "/data/mysql-data-mysql-cluster-primary-0-pvc-e89a5536-31d0-414f-9487-088c08910161"
+	msg := FormatMessage("宜昌-pro", []kube.Issue{{
+		Severity: "critical",
+		Category: "storage",
+		Kind:     "StorageClass",
+		Name:     "nfs-client",
+		Reason:   "NFSHighUsage",
+		Message:  "NFS 10.152.13.36:/data 使用率 80%（6552.30Gi / 8190.01Gi），超过 80%",
+		NodeIP:   "10.152.13.36",
+		Evidence: []string{
+			"server=10.152.13.36",
+			"path=" + pvcPath,
+			"usage=80.0%",
+			"sc=nfs-client",
+		},
+	}}, now)
+	if !containsAll(msg, "导出根 /data", "NFS服务器 10.152.13.36") {
+		t.Fatalf("expected export root, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "pvc-e89a5536") {
+		t.Fatalf("PVC subdir should not appear:\n%s", msg)
+	}
+}
+
 func TestControllerLabel(t *testing.T) {
 	cases := map[string]string{
 		"Deployment":   "deploy",
