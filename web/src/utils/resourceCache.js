@@ -3,14 +3,25 @@
  * 在 TTL 内视为新鲜，跳过立刻打 API。写操作后需主动 invalidate。
  *
  * 内存 Map 服务 SPA 内切页；sessionStorage 撑住同标签 F5。
+ * overview / clusters / inspections 额外落 localStorage，新开标签也能瞬间有数。
  * 选用集群用 TTL，非选用用 TTL_IDLE（刷新不必勤）。
  */
 
 const STORE_PREFIX = 'k8man.rc.v1.'
 const INDEX_KEY = 'k8man.rc.v1.__keys'
+const LOCAL_INDEX_KEY = 'k8man.rc.v1.__local_keys'
 const PREF_PREFIX = 'k8man.pref.v1.'
 const MAX_ENTRIES = 96
 const MAX_ITEM_CHARS = 400_000
+
+/** 跨会话仍需「打开瞬间有数」的首页相关 key */
+function isDurableKey(key) {
+  return (
+    key.startsWith('overview::') ||
+    key.startsWith('clusters::') ||
+    key.startsWith('inspections::')
+  )
+}
 
 /** 当前选用集群：命中则不再请求。过期仍可展示，并在后台刷新。 */
 export const TTL = {
@@ -101,10 +112,55 @@ function writeIndex(keys) {
   }
 }
 
-function persist(key, entry) {
+function readLocalIndex() {
   try {
-    const json = JSON.stringify(entry)
-    if (json.length > MAX_ITEM_CHARS) return
+    const raw = localStorage.getItem(LOCAL_INDEX_KEY)
+    const list = raw ? JSON.parse(raw) : []
+    return Array.isArray(list) ? list : []
+  } catch {
+    return []
+  }
+}
+
+function writeLocalIndex(keys) {
+  try {
+    localStorage.setItem(LOCAL_INDEX_KEY, JSON.stringify(keys.slice(-MAX_ENTRIES)))
+  } catch {
+    /* quota / 隐私模式 */
+  }
+}
+
+function persistLocal(key, entry, json) {
+  if (!isDurableKey(key)) return
+  try {
+    localStorage.setItem(STORE_PREFIX + key, json)
+    const idx = readLocalIndex().filter((k) => k !== key)
+    idx.push(key)
+    while (idx.length > MAX_ENTRIES) {
+      const drop = idx.shift()
+      if (drop) {
+        try {
+          localStorage.removeItem(STORE_PREFIX + drop)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    writeLocalIndex(idx)
+  } catch {
+    /* quota */
+  }
+}
+
+function persist(key, entry) {
+  let json
+  try {
+    json = JSON.stringify(entry)
+  } catch {
+    return
+  }
+  if (json.length > MAX_ITEM_CHARS) return
+  try {
     sessionStorage.setItem(STORE_PREFIX + key, json)
     const idx = readIndex().filter((k) => k !== key)
     idx.push(key)
@@ -112,13 +168,15 @@ function persist(key, entry) {
       const drop = idx.shift()
       if (drop) {
         sessionStorage.removeItem(STORE_PREFIX + drop)
-        mem.delete(drop)
+        if (!isDurableKey(drop)) mem.delete(drop)
       }
     }
     writeIndex(idx)
   } catch {
     evictOldest(8)
   }
+  // session 写失败时仍尽量落 durable，保证下次打开瞬间有数
+  persistLocal(key, entry, json)
 }
 
 function evictOldest(n) {
@@ -131,7 +189,7 @@ function evictOldest(n) {
     } catch {
       /* ignore */
     }
-    mem.delete(drop)
+    if (!isDurableKey(drop)) mem.delete(drop)
   }
   writeIndex(idx)
 }
@@ -148,9 +206,22 @@ function readSession(key) {
   }
 }
 
+function readLocal(key) {
+  if (!isDurableKey(key)) return null
+  try {
+    const raw = localStorage.getItem(STORE_PREFIX + key)
+    if (!raw) return null
+    const entry = JSON.parse(raw)
+    if (!entry || typeof entry.at !== 'number') return null
+    return entry
+  } catch {
+    return null
+  }
+}
+
 function peekEntry(key) {
   if (mem.has(key)) return mem.get(key)
-  const entry = readSession(key)
+  const entry = readSession(key) || readLocal(key)
   if (entry) mem.set(key, entry)
   return entry || null
 }
@@ -211,6 +282,14 @@ export function cacheInvalidate(key) {
     /* ignore */
   }
   writeIndex(readIndex().filter((k) => k !== key))
+  if (isDurableKey(key)) {
+    try {
+      localStorage.removeItem(STORE_PREFIX + key)
+    } catch {
+      /* ignore */
+    }
+    writeLocalIndex(readLocalIndex().filter((k) => k !== key))
+  }
 }
 
 /** 巡检摘要更新后通知顶栏等订阅方（同页多组件共用 inspections 缓存） */
@@ -222,7 +301,7 @@ export function notifyInspectionsChanged() {
 }
 
 export function cacheInvalidateWhere(pred) {
-  const keys = new Set([...mem.keys(), ...readIndex()])
+  const keys = new Set([...mem.keys(), ...readIndex(), ...readLocalIndex()])
   for (const k of keys) {
     if (pred(k)) cacheInvalidate(k)
   }

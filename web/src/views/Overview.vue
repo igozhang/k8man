@@ -112,6 +112,15 @@ const emptyDetail = () => ({
 
 const detail = ref(emptyDetail())
 
+/** 双击卡片标题打开的概要抽屉 */
+const summary = ref({
+  open: false,
+  clusterId: '',
+  clusterName: '',
+  inspecting: false,
+  error: ''
+})
+
 function fmtInspectTime(t) {
   if (!t) return ''
   const d = t instanceof Date ? t : new Date(t)
@@ -204,12 +213,56 @@ function patchCard(id, patch) {
 function hydrateCard(id) {
   const hit = cacheGet(cacheKey('overview', id))
   const has = !!(hit?.data && typeof hit.data === 'object')
+  const insp = inspectById.value[id]
+  const stats = applyInspectToStats(has ? { ...emptyStats(), ...hit.data } : emptyStats(), insp)
   patchCard(id, {
-    stats: has ? { ...emptyStats(), ...hit.data } : emptyStats(),
+    stats,
+    // overview 齐全则整卡可展示；仅有巡检时 Pods/NFS 可先出，ns/nodes 仍标 loading
     loading: !has,
     refreshing: false,
     error: ''
   })
+}
+
+/** 从本地缓存同步灌入巡检摘要，打开页立刻有 Pods / NFS 等 */
+function hydrateInspectIndex() {
+  const hit = cacheGet(INSPECT_KEY)
+  const map = buildInspectMap(hit?.data?.items)
+  if (Object.keys(map).length) inspectById.value = map
+  return map
+}
+
+function hydrateAllCards(list) {
+  const keep = {}
+  for (const c of list) {
+    if (!c?.id) continue
+    if (!cards.value[c.id]) hydrateCard(c.id)
+    else {
+      const hit = cacheGet(cacheKey('overview', c.id))
+      if (hit?.data && typeof hit.data === 'object') {
+        patchCard(c.id, {
+          stats: applyInspectToStats({ ...emptyStats(), ...hit.data }, inspectById.value[c.id]),
+          loading: false
+        })
+      } else {
+        mergeInspectIntoCard(c.id, inspectById.value[c.id])
+      }
+    }
+    keep[c.id] = cards.value[c.id] || emptyCard()
+  }
+  cards.value = keep
+}
+
+async function mapPool(items, concurrency, fn) {
+  const list = [...items]
+  const workers = Array.from({ length: Math.min(concurrency, list.length) || 0 }, async () => {
+    while (list.length) {
+      const item = list.shift()
+      if (item === undefined) return
+      await fn(item)
+    }
+  })
+  await Promise.all(workers)
 }
 
 function dnsHostHint(cluster, err) {
@@ -255,39 +308,66 @@ async function listPodsCached(id, nsName, { force = false, selected = true } = {
   return asArray(await cacheLoad(key, ttl, () => readApi.listPods(id, nsName), { force }))
 }
 
+function inspectItemToMapEntry(it) {
+  if (!it?.clusterId) return null
+  return {
+    hasScan: !!it.hasScan,
+    scanPods: Number(it.scanPods) || 0,
+    podIssues: Number(it.podIssues) || 0,
+    truncated: !!it.truncated,
+    checkedAt: it.checkedAt || null,
+    largePods: Number(it.largePods) || 0,
+    largePodSkipped: it.largePodSkipped || '',
+    nfsUsagePercent: (() => {
+      if (it.nfsUsagePercent == null || it.nfsUsagePercent === '') return null
+      const n = Number(it.nfsUsagePercent)
+      return Number.isNaN(n) ? null : n
+    })(),
+    nfsStorageClass: it.nfsStorageClass || '',
+    nfsServer: it.nfsServer || '',
+    nfsPath: it.nfsPath || '',
+    nfsSource: it.nfsSource || '',
+    nfsSkipped: it.nfsSkipped || ''
+  }
+}
+
+function buildInspectMap(items) {
+  const map = {}
+  for (const it of asArray(items)) {
+    const entry = inspectItemToMapEntry(it)
+    if (entry) map[it.clusterId] = entry
+  }
+  return map
+}
+
+function inspectCheckedAtMs(insp) {
+  if (!insp?.checkedAt) return 0
+  const t = new Date(insp.checkedAt).getTime()
+  return Number.isNaN(t) ? 0 : t
+}
+
+/** 网络摘要与内存中刚写入的实时巡检合并，避免慢请求回写冲掉更新结果 */
+function mergeInspectMaps(prev, next) {
+  const out = { ...next }
+  for (const [id, p] of Object.entries(prev || {})) {
+    const n = out[id]
+    if (!n) continue
+    if (inspectCheckedAtMs(p) > inspectCheckedAtMs(n)) out[id] = p
+  }
+  return out
+}
+
 async function loadInspectIndex({ force = false } = {}) {
   const key = cacheKey('inspections', 'local')
   try {
     const data = await cacheLoad(key, TTL.inspections, () => readApi.listInspections(), { force })
-    const map = {}
-    for (const it of asArray(data?.items)) {
-      if (!it?.clusterId) continue
-      map[it.clusterId] = {
-        hasScan: !!it.hasScan,
-        scanPods: Number(it.scanPods) || 0,
-        podIssues: Number(it.podIssues) || 0,
-        truncated: !!it.truncated,
-        checkedAt: it.checkedAt || null,
-        largePods: Number(it.largePods) || 0,
-        largePodSkipped: it.largePodSkipped || '',
-        nfsUsagePercent: (() => {
-          if (it.nfsUsagePercent == null || it.nfsUsagePercent === '') return null
-          const n = Number(it.nfsUsagePercent)
-          return Number.isNaN(n) ? null : n
-        })(),
-        nfsStorageClass: it.nfsStorageClass || '',
-        nfsServer: it.nfsServer || '',
-        nfsPath: it.nfsPath || '',
-        nfsSource: it.nfsSource || '',
-        nfsSkipped: it.nfsSkipped || ''
-      }
-    }
+    const map = mergeInspectMaps(inspectById.value, buildInspectMap(data?.items))
     inspectById.value = map
     notifyInspectionsChanged()
     return map
   } catch {
-    inspectById.value = {}
-    return {}
+    // 保留已 hydrate 的本地摘要，避免失败时清空导致后续 loadOne 误走抽样并覆盖巡检数字
+    return { ...inspectById.value }
   }
 }
 
@@ -321,9 +401,17 @@ function mergeInspectIntoCard(id, insp) {
   patchCard(id, { stats: next, podsRefreshError: '' })
   const key = cacheKey('overview', id)
   const hit = cacheGet(key)
+  // 只写回已有 overview，避免用「仅巡检字段」冒充完整卡片并被 TTL 当成新鲜而跳过 ns/nodes 拉取
   if (hit?.data && typeof hit.data === 'object') {
     cacheSet(key, { ...hit.data, ...next })
   }
+}
+
+function syncSummaryInspecting(clusterId, inspecting, error) {
+  if (summary.value.clusterId !== clusterId || !summary.value.open) return
+  const patch = { ...summary.value, inspecting: !!inspecting }
+  if (error !== undefined) patch.error = error || ''
+  summary.value = patch
 }
 
 /** 实时巡检并写回 Pods / 异常 Pod；先保留缓存数字 */
@@ -332,6 +420,7 @@ async function refreshPodsInspect(clusterId, { autoKey = '' } = {}) {
   if (cardOf(clusterId).podsRefreshing) return
   const seq = podsRefreshSeqFor(clusterId).next()
   patchCard(clusterId, { podsRefreshing: true, podsRefreshError: '' })
+  syncSummaryInspecting(clusterId, true)
   try {
     const data = await writeApi.inspectCluster(clusterId)
     if (!podsRefreshSeqFor(clusterId).is(seq)) return
@@ -346,10 +435,13 @@ async function refreshPodsInspect(clusterId, { autoKey = '' } = {}) {
   } catch (e) {
     if (autoKey) autoPodsRefreshKeys.delete(autoKey)
     if (!podsRefreshSeqFor(clusterId).is(seq)) return
-    patchCard(clusterId, { podsRefreshError: errMessage(e) })
+    const msg = errMessage(e)
+    patchCard(clusterId, { podsRefreshError: msg })
+    syncSummaryInspecting(clusterId, true, msg)
   } finally {
     if (podsRefreshSeqFor(clusterId).is(seq)) {
       patchCard(clusterId, { podsRefreshing: false })
+      syncSummaryInspecting(clusterId, false)
     }
   }
 }
@@ -410,8 +502,10 @@ async function loadOne(cluster, { force = false, selected = true, inspectMap } =
     if (!seqFor(id).is(seq)) return
     next.nodes = nodes.length
 
-    if (insp?.hasScan) {
-      Object.assign(next, applyInspectToStats(next, insp))
+    // 以最新 inspectById 为准，避免并行拉巡检时用过期 insp 走抽样、回写覆盖巡检数字
+    const latestInsp = inspectById.value[id] || insp
+    if (latestInsp?.hasScan) {
+      Object.assign(next, applyInspectToStats(next, latestInsp))
     } else {
       let pods = 0
       let bad = 0
@@ -431,13 +525,18 @@ async function loadOne(cluster, { force = false, selected = true, inspectMap } =
         })
       )
       if (!seqFor(id).is(seq)) return
-      for (const p of parts) {
-        pods += p.pods
-        bad += p.bad
+      const afterSample = inspectById.value[id]
+      if (afterSample?.hasScan) {
+        Object.assign(next, applyInspectToStats(next, afterSample))
+      } else {
+        for (const p of parts) {
+          pods += p.pods
+          bad += p.bad
+        }
+        next.pods = pods
+        next.badPods = bad
+        next.podsSource = 'sample'
       }
-      next.pods = pods
-      next.badPods = bad
-      next.podsSource = 'sample'
     }
     patchCard(id, { stats: next, error: '' })
     cacheSet(key, next)
@@ -456,6 +555,10 @@ async function loadOne(cluster, { force = false, selected = true, inspectMap } =
 
 async function loadAll({ force = false } = {}) {
   const seq = ++loadAllSeq
+  // 同步灌缓存：打开瞬间先出数，再后台刷新
+  hydrateInspectIndex()
+  if (clusters.value.length) hydrateAllCards(clusters.value)
+
   try {
     await refreshClusters(() => readApi.listClusters())
   } catch {
@@ -463,18 +566,12 @@ async function loadAll({ force = false } = {}) {
   }
   if (seq !== loadAllSeq) return
   const list = clusters.value
-  const keep = {}
-  for (const c of list) {
-    if (!cards.value[c.id]) hydrateCard(c.id)
-    keep[c.id] = cards.value[c.id] || emptyCard()
-  }
-  cards.value = keep
+  hydrateAllCards(list)
 
+  // 先拿巡检摘要再 loadOne，避免并行时抽样结果覆盖巡检数字；卡片已由 hydrate 先展示
   const inspectMap = await loadInspectIndex({ force })
   if (seq !== loadAllSeq) return
-  for (const c of list) {
-    mergeInspectIntoCard(c.id, inspectMap[c.id])
-  }
+  for (const c of list) mergeInspectIntoCard(c.id, inspectMap[c.id])
 
   const selectedId = currentClusterId.value
   const current = list.find((c) => c.id === selectedId)
@@ -484,9 +581,85 @@ async function loadAll({ force = false } = {}) {
     if (seq !== loadAllSeq) return
     maybeAutoRefreshPods(current.id, inspectById.value[current.id] || inspectMap[current.id])
   }
-  for (const c of idle) {
+
+  await mapPool(idle, 4, async (c) => {
     if (seq !== loadAllSeq) return
     await loadOne(c, { force: false, selected: false, inspectMap })
+  })
+}
+
+function openSummary(cluster) {
+  if (!cluster?.id) return
+  detail.value = emptyDetail()
+  const same = summary.value.clusterId === cluster.id && summary.value.open
+  summary.value = {
+    open: true,
+    clusterId: cluster.id,
+    clusterName: cluster.name || '',
+    // 同一集群巡检中再次打开时保留状态，避免按钮可重入并 bump 掉进行中的序号
+    inspecting: same ? summary.value.inspecting : !!cardOf(cluster.id).podsRefreshing,
+    error: same ? summary.value.error : ''
+  }
+}
+
+function closeSummary() {
+  summary.value = {
+    open: false,
+    clusterId: '',
+    clusterName: '',
+    inspecting: false,
+    error: ''
+  }
+}
+
+function summaryCluster() {
+  return clusters.value.find((c) => c.id === summary.value.clusterId) || null
+}
+
+function summaryStat(key) {
+  const id = summary.value.clusterId
+  if (!id) return '—'
+  return statNumDisplay(id, key)
+}
+
+async function runManualInspect() {
+  if (!canWrite.value) return
+  const cluster = summaryCluster()
+  if (!cluster?.id) return
+  // 与「刷新 Pods」共用 podsRefreshing，避免双入口并发巡检互相 bump seq
+  if (summary.value.inspecting || cardOf(cluster.id).podsRefreshing) return
+  // 先标 busy，再改选用，避免 watch→loadAll 与本次巡检抢同一张卡的 podsRefreshing
+  syncSummaryInspecting(cluster.id, true, '')
+  const seq = podsRefreshSeqFor(cluster.id).next()
+  patchCard(cluster.id, { podsRefreshing: true, podsRefreshError: '' })
+  if (cluster.id !== currentClusterId.value) setCurrentClusterId(cluster.id)
+  try {
+    const data = await writeApi.inspectCluster(cluster.id)
+    if (!podsRefreshSeqFor(cluster.id).is(seq)) return
+    const insp = inspFromDetail(data)
+    if (insp) {
+      inspectById.value = { ...inspectById.value, [cluster.id]: insp }
+      mergeInspectIntoCard(cluster.id, insp)
+    }
+    cacheInvalidate(INSPECT_KEY)
+    cacheInvalidate(cacheKey('namespaces', cluster.id))
+    cacheInvalidate(cacheKey('nodes', cluster.id))
+    cacheInvalidate(cacheKey('nodeUsage', cluster.id))
+    // 巡检写回后强制重拉 ns/nodes；Pods 等已用巡检结果写回卡片
+    await loadOne(cluster, { force: true, selected: true, inspectMap: inspectById.value })
+    if (!podsRefreshSeqFor(cluster.id).is(seq)) return
+    loadInspectIndex({ force: true }).catch(() => {})
+    refreshClusters(() => readApi.listClusters(), { force: true }).catch(() => {})
+  } catch (e) {
+    if (!podsRefreshSeqFor(cluster.id).is(seq)) return
+    const msg = errMessage(e)
+    patchCard(cluster.id, { podsRefreshError: msg })
+    syncSummaryInspecting(cluster.id, true, msg)
+  } finally {
+    if (podsRefreshSeqFor(cluster.id).is(seq)) {
+      patchCard(cluster.id, { podsRefreshing: false })
+      syncSummaryInspecting(cluster.id, false)
+    }
   }
 }
 
@@ -650,16 +823,32 @@ function fmtBytesUI(n) {
   return `${Math.round(v / mi)}Mi`
 }
 
+function hasCachedStats(id) {
+  return !cardOf(id).loading
+}
+
+function hasInspectStats(id) {
+  return cardOf(id).stats.podsSource === 'inspect'
+}
+
+function statNumDisplay(id, key) {
+  const card = cardOf(id)
+  if (card.loading && !hasInspectStats(id)) return '…'
+  if (card.loading && (key === 'namespaces' || key === 'nodes')) return '…'
+  const v = card.stats?.[key]
+  return v == null || v === '' ? '—' : v
+}
+
 function largePodsDisplay(id) {
   const s = cardOf(id).stats
-  if (cardOf(id).loading) return '…'
+  if (cardOf(id).loading && !hasInspectStats(id)) return '…'
   if (s.podsSource !== 'inspect' || s.largePods == null) return '—'
   return s.largePods
 }
 
 function nfsUsageDisplay(id) {
   const s = cardOf(id).stats
-  if (cardOf(id).loading) return '…'
+  if (cardOf(id).loading && !hasInspectStats(id)) return '…'
   if (s.podsSource !== 'inspect' || s.nfsUsagePercent == null) return '—'
   return `${Math.round(Number(s.nfsUsagePercent))}%`
 }
@@ -736,7 +925,9 @@ function statTitle(kind, fromInspect) {
 async function openStat(cluster, kind) {
   if (!cluster?.id) return
   if (kind === 'nodes' && cluster.permType === 'project') return
-  if (cardOf(cluster.id).loading) return
+  if (cardOf(cluster.id).loading && !hasInspectStats(cluster.id)) return
+  if (cardOf(cluster.id).loading && (kind === 'namespaces' || kind === 'nodes')) return
+  closeSummary()
   const selected = cluster.id === currentClusterId.value
   const stats = cardOf(cluster.id).stats
   const fromInspect =
@@ -825,6 +1016,7 @@ onUnmounted(() => {
   detailSeq += 1
   for (const s of podsRefreshSeqById.values()) s.next()
   document.removeEventListener('visibilitychange', onVis)
+  closeSummary()
 })
 
 </script>
@@ -844,7 +1036,7 @@ onUnmounted(() => {
         <div class="cluster-card-head">
           <div class="cluster-card-meta">
             <div class="cluster-card-title">
-              <strong>{{ c.name }}</strong>
+              <strong @dblclick.stop="openSummary(c)">{{ c.name }}</strong>
               <span v-if="c.id === currentClusterId" class="tag current">当前</span>
               <span class="tag" :class="c.permType">{{ permTypeLabel(c.permType) }}</span>
               <span class="muted cluster-server">{{ c.server }}</span>
@@ -913,22 +1105,22 @@ onUnmounted(() => {
             type="button"
             class="stat"
             title="点击查看"
-            :disabled="cardOf(c.id).loading"
+            :disabled="!hasCachedStats(c.id)"
             @click="openStat(c, 'namespaces')"
           >
             <div class="label">Namespaces</div>
-            <div class="value">{{ cardOf(c.id).loading ? '…' : cardOf(c.id).stats.namespaces }}</div>
+            <div class="value">{{ statNumDisplay(c.id, 'namespaces') }}</div>
           </button>
           <button
             v-if="c.permType !== 'project'"
             type="button"
             class="stat"
             title="点击查看"
-            :disabled="cardOf(c.id).loading"
+            :disabled="!hasCachedStats(c.id)"
             @click="openStat(c, 'nodes')"
           >
             <div class="label">Nodes</div>
-            <div class="value">{{ cardOf(c.id).loading ? '…' : cardOf(c.id).stats.nodes }}</div>
+            <div class="value">{{ statNumDisplay(c.id, 'nodes') }}</div>
           </button>
           <div v-else class="stat">
             <div class="label">Nodes</div>
@@ -938,45 +1130,45 @@ onUnmounted(() => {
             type="button"
             class="stat"
             :title="podsStatTitle(c.id)"
-            :disabled="cardOf(c.id).loading"
+            :disabled="!hasCachedStats(c.id) && !hasInspectStats(c.id)"
             @click="openStat(c, 'pods')"
           >
             <div class="label">{{ podsLabel(c.id) }}</div>
-            <div class="value">{{ cardOf(c.id).loading ? '…' : cardOf(c.id).stats.pods }}</div>
+            <div class="value">{{ statNumDisplay(c.id, 'pods') }}</div>
           </button>
           <button
             type="button"
             class="stat"
             :title="podsStatTitle(c.id)"
-            :disabled="cardOf(c.id).loading"
+            :disabled="!hasCachedStats(c.id) && !hasInspectStats(c.id)"
             @click="openStat(c, 'badPods')"
           >
             <div class="label">{{ badPodsLabel(c.id) }}</div>
             <div
               class="value"
-              :class="{ 'is-critical': !cardOf(c.id).loading && cardOf(c.id).stats.badPods > 0 }"
-            >{{ cardOf(c.id).loading ? '…' : cardOf(c.id).stats.badPods }}</div>
+              :class="{ 'is-critical': Number(statNumDisplay(c.id, 'badPods')) > 0 }"
+            >{{ statNumDisplay(c.id, 'badPods') }}</div>
           </button>
           <button
             type="button"
             class="stat"
             :title="largePodsStatTitle(c.id)"
-            :disabled="cardOf(c.id).loading"
+            :disabled="!hasCachedStats(c.id) && !hasInspectStats(c.id)"
             @click="openStat(c, 'largePods')"
           >
             <div class="label">大 POD</div>
             <div
               class="value"
-              :class="{ 'is-warning': !cardOf(c.id).loading && Number(cardOf(c.id).stats.largePods) > 0 }"
+              :class="{ 'is-warning': Number(largePodsDisplay(c.id)) > 0 }"
             >{{ largePodsDisplay(c.id) }}</div>
           </button>
           <button
             type="button"
             class="stat nfs-usage"
-            :class="{ 'is-critical': !cardOf(c.id).loading && Number(cardOf(c.id).stats.nfsUsagePercent) >= 80 }"
+            :class="{ 'is-critical': Number(cardOf(c.id).stats.nfsUsagePercent) >= 80 }"
             :title="nfsStatTitle(c.id)"
             :style="nfsCellStyle(c.id)"
-            :disabled="cardOf(c.id).loading"
+            :disabled="!hasCachedStats(c.id) && !hasInspectStats(c.id)"
             @click="openStat(c, 'nfsUsage')"
           >
             <div class="label">NFS 使用率</div>
@@ -984,6 +1176,85 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
+    </div>
+
+    <div v-if="summary.open" class="drawer-backdrop" @click="closeSummary"></div>
+    <div v-if="summary.open" class="drawer">
+      <div class="toolbar">
+        <strong>{{ summary.clusterName }}</strong>
+        <div class="actions">
+          <button
+            v-if="canWrite"
+            type="button"
+            class="btn btn-sm"
+            :disabled="summary.inspecting"
+            @click="runManualInspect"
+          >{{ summary.inspecting ? '巡检中…' : '手动巡检' }}</button>
+          <button type="button" class="btn btn-sm" @click="closeSummary">关闭</button>
+        </div>
+      </div>
+      <p v-if="summary.error" class="error">{{ summary.error }}</p>
+      <table class="table summary-table">
+        <tbody>
+          <tr>
+            <th>状态</th>
+            <td>
+              <span
+                v-if="summaryCluster()"
+                class="tag"
+                :class="clusterStatusClass(summaryCluster().status)"
+              >{{ clusterStatusLabel(summaryCluster().status) }}</span>
+              <span v-else>—</span>
+            </td>
+          </tr>
+          <tr>
+            <th>权限</th>
+            <td>{{ summaryCluster() ? permTypeLabel(summaryCluster().permType) : '—' }}</td>
+          </tr>
+          <tr>
+            <th>版本</th>
+            <td>{{ summaryCluster()?.kubeVersion || '—' }}</td>
+          </tr>
+          <tr>
+            <th>入口</th>
+            <td>{{ summaryCluster() ? (frontProxyLabel(summaryCluster().frontProxy) || '—') : '—' }}</td>
+          </tr>
+          <tr>
+            <th>API</th>
+            <td class="summary-break">{{ summaryCluster()?.server || '—' }}</td>
+          </tr>
+          <tr>
+            <th>Namespaces</th>
+            <td>{{ summaryStat('namespaces') }}</td>
+          </tr>
+          <tr>
+            <th>Nodes</th>
+            <td>{{ summaryCluster()?.permType === 'project' ? '—' : summaryStat('nodes') }}</td>
+          </tr>
+          <tr>
+            <th>Pods</th>
+            <td>{{ summaryStat('pods') }}</td>
+          </tr>
+          <tr>
+            <th>异常 Pod</th>
+            <td
+              :class="{ 'is-critical': Number(summaryStat('badPods')) > 0 }"
+            >{{ summaryStat('badPods') }}</td>
+          </tr>
+          <tr>
+            <th>大 POD</th>
+            <td>{{ largePodsDisplay(summary.clusterId) }}</td>
+          </tr>
+          <tr>
+            <th>NFS 使用率</th>
+            <td>{{ nfsUsageDisplay(summary.clusterId) }}</td>
+          </tr>
+          <tr>
+            <th>巡检时间</th>
+            <td>{{ fmtInspectTime(cardOf(summary.clusterId).stats.inspectAt) || '—' }}</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
     <div v-if="detail.open" class="drawer-backdrop" @click="closeDetail"></div>
@@ -1187,5 +1458,26 @@ onUnmounted(() => {
 }
 .stat .value.is-critical {
   color: var(--danger);
+}
+.summary-table {
+  margin-top: 4px;
+}
+.summary-table th {
+  width: 7.5em;
+  font-weight: 500;
+  color: var(--muted, #6b7a6b);
+  vertical-align: middle;
+}
+.summary-table td {
+  vertical-align: middle;
+}
+.summary-table td.is-critical {
+  color: var(--danger);
+}
+.summary-break {
+  word-break: break-all;
+}
+.toolbar .actions {
+  margin-top: 0;
 }
 </style>
